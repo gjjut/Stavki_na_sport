@@ -95,7 +95,7 @@ else
   cd "${PROJECT_DIR}/frontend"
   cp "${PROJECT_DIR}/.env" "${PROJECT_DIR}/frontend/.env.local" || true
   npm ci --no-audit --no-fund
-  npm run build
+  NODE_OPTIONS="--max-old-space-size=1536" npm run build
 
   pm2 delete valuex-web >/dev/null 2>&1 || true
   pm2 start npm --name "valuex-web" -- run start
