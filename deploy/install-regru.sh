@@ -39,6 +39,7 @@ fi
 # 2. Установка базовых системных пакетов, Nginx и Certbot
 echo "[2/6] Обновление пакетов и установка Nginx + Certbot..."
 export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
 apt-get update -y
 apt-get install -y sudo curl git ca-certificates gnupg ufw nginx certbot python3-certbot-nginx
 
@@ -77,8 +78,14 @@ else
   apt-get install -y postgresql postgresql-contrib
 
   if ! command -v node >/dev/null 2>&1 || [[ "$(node -v | cut -d. -f1 | tr -d 'v')" -lt 20 ]]; then
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-    apt-get install -y nodejs
+    if curl -fsSL https://deb.nodesource.com/setup_22.x | bash -; then
+      apt-get install -y nodejs
+    else
+      echo "NodeSource недоступен для текущей версии Ubuntu — ставим свежий Node.js и npm из штатного репозитория Ubuntu..."
+      rm -f /etc/apt/sources.list.d/nodesource.list /etc/apt/sources.list.d/nodesource.sources || true
+      apt-get update -y
+      apt-get install -y nodejs npm
+    fi
   fi
 
   npm install -g pm2 --no-audit --no-fund
@@ -133,8 +140,9 @@ nginx -t
 systemctl enable --now nginx
 systemctl reload nginx
 
-ufw allow OpenSSH >/dev/null 2>&1 || true
-ufw allow 'Nginx Full' >/dev/null 2>&1 || true
+ufw allow 22/tcp >/dev/null 2>&1 || true
+ufw allow 80/tcp >/dev/null 2>&1 || true
+ufw allow 443/tcp >/dev/null 2>&1 || true
 
 echo "=================================================================="
 echo " ГОТОВО! Платформа успешно запущена на сервере Reg.ru Cloud!"
