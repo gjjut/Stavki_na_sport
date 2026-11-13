@@ -175,6 +175,9 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         ok: Boolean(json.ok),
         message: json.message || json.error || 'Проверка завершена',
       });
+      if (json.ok || (Array.isArray(json.availableModels) && json.availableModels.length > 0)) {
+        await onRefresh();
+      }
     } finally {
       setBusyAction(null);
     }

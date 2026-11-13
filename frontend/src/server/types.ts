@@ -359,11 +359,20 @@ export interface AiChatExecutedAction {
   ok: boolean;
 }
 
+export interface AiChatErrorDiagnostic {
+  code: string;
+  title: string;
+  technicalDetails: string;
+  solutions: string[];
+}
+
 export interface AiChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  modelLabel?: string;
   executedActions?: AiChatExecutedAction[];
+  diagnostic?: AiChatErrorDiagnostic;
   createdAt: string;
 }
 

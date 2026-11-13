@@ -96,6 +96,22 @@ export async function POST(req: NextRequest) {
         llmApiKey: body.llmApiKey,
         llmModel: body.llmModel,
       });
+
+      // Автосохранение ключа и рабочей модели сразу при проверке, чтобы не терялись при переходе в ИИ-Чат!
+      if (body.llmApiKey?.trim() && (result.ok || result.availableModels.length > 0)) {
+        await mutateState((state) => {
+          state.aiAutopilot.llmProvider =
+            body.llmProvider === 'BUILTIN_QUANT'
+              ? 'ORCAROUTER'
+              : (body.llmProvider as AiAutopilotConfig['llmProvider']);
+          state.aiAutopilot.llmBaseUrl =
+            result.resolvedBaseUrl || body.llmBaseUrl.trim();
+          state.aiAutopilot.llmApiKey = body.llmApiKey.trim();
+          state.aiAutopilot.llmModel =
+            result.testedModel || body.llmModel.trim();
+        });
+      }
+
       return NextResponse.json(result);
     }
 

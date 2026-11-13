@@ -1490,6 +1490,8 @@ export async function testLlmConnectionAndModels(input: {
         headers: {
           Accept: 'application/json',
           Authorization: `Bearer ${key}`,
+          'User-Agent':
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         },
         cache: 'no-store',
       });
@@ -1539,49 +1541,73 @@ export async function testLlmConnectionAndModels(input: {
     modelToTest = 'gpt-4o-mini';
   }
 
-  // 2. Делаем реальный тестовый запрос генерации
+  // 2. Делаем реальный тестовый запрос генерации (если первая модель не активна на токене — пробуем запасные из доступного списка)
   let lastErrorText = 'Не удалось достучаться до сервера API';
   const urlsToTry = availableModels.length > 0 ? [resolvedBaseUrl] : baseUrls;
 
+  const modelsToProbe: string[] = [modelToTest];
+  if (availableModels.length > 0) {
+    const fallbacks = availableModels.filter((m) =>
+      /gemini|deepseek|gpt-4|claude|qwen|flash|pro/i.test(m),
+    );
+    for (const fb of [...fallbacks, ...availableModels]) {
+      if (modelsToProbe.length >= 4) break;
+      if (!modelsToProbe.includes(fb)) modelsToProbe.push(fb);
+    }
+  }
+
   for (const base of urlsToTry) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 12_000);
-      const res = await fetch(`${base}/chat/completions`, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: modelToTest,
-          max_tokens: 16,
-          messages: [{ role: 'user', content: 'Ответь одним словом: Готов' }],
-        }),
-      });
-      clearTimeout(timer);
+    for (const candidateModel of modelsToProbe) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 14_000);
+        const res = await fetch(`${base}/chat/completions`, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            Authorization: `Bearer ${key}`,
+            'User-Agent':
+              'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+          },
+          body: JSON.stringify({
+            model: candidateModel,
+            max_tokens: 24,
+            messages: [{ role: 'user', content: 'Ответь одним словом: Готов' }],
+          }),
+        });
+        clearTimeout(timer);
 
-      if (res.ok) {
-        return {
-          ok: true,
-          resolvedBaseUrl: base,
-          testedModel: modelToTest,
-          availableModels,
-          latencyMs: Date.now() - t0,
-          message:
-            availableModels.length > 0
-              ? `Токен подключен! Доступно моделей на вашем ключе: ${availableModels.length}. Активна модель «${modelToTest}».`
-              : `Токен успешно подключен! Модель «${modelToTest}» отвечает штатно.`,
-        };
+        if (res.ok) {
+          return {
+            ok: true,
+            resolvedBaseUrl: base,
+            testedModel: candidateModel,
+            availableModels,
+            latencyMs: Date.now() - t0,
+            message:
+              availableModels.length > 0
+                ? `Токен подключен и СОХРАНЕН! Доступно моделей: ${availableModels.length}. Активна живая модель «${candidateModel}».`
+                : `Токен успешно подключен и СОХРАНЕН! Модель «${candidateModel}» отвечает штатно.`,
+          };
+        }
+
+        const errBody = await res.text().catch(() => '');
+        const cleanErr = errBody.includes('<html')
+          ? 'Шлюз вернул HTML-страницу защиты (Cloudflare) вместо JSON API'
+          : errBody.slice(0, 180);
+        lastErrorText = `HTTP ${res.status} (${candidateModel})${
+          cleanErr ? `: ${cleanErr}` : ''
+        }`;
+
+        // При 401/403 (неверный сам токен) нет смысла перебирать другие модели на этом же URL
+        if (res.status === 401 || res.status === 403) {
+          break;
+        }
+      } catch (e) {
+        lastErrorText = e instanceof Error ? e.message : 'Сбой сети';
       }
-
-      const errBody = await res.text().catch(() => '');
-      lastErrorText = `HTTP ${res.status}${
-        errBody ? `: ${errBody.slice(0, 140)}` : ''
-      }`;
-    } catch (e) {
-      lastErrorText = e instanceof Error ? e.message : 'Сбой сети';
     }
   }
 

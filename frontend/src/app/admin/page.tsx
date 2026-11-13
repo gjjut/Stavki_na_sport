@@ -533,13 +533,14 @@ export default function AdminDashboardPage() {
           <AdminAiChatPanel
             initialMessages={data.aiChatMessages ?? []}
             llmProvider={data.aiAutopilot.llmProvider}
+            llmBaseUrl={data.aiAutopilot.llmBaseUrl}
+            llmApiKey={data.aiAutopilot.llmApiKey}
             llmModel={data.aiAutopilot.llmModel}
             hasApiKey={
               data.aiAutopilot.llmProvider !== 'BUILTIN_QUANT' &&
               data.aiAutopilot.llmApiKey.trim().length > 8
             }
             onRefresh={loadOverview}
-            onSwitchToAutopilotSettings={() => setTab('AUTOPILOT')}
           />
         )}
 

@@ -23,6 +23,7 @@ import { sendTelegramChannelAnnouncement } from './integrations';
 import type {
   AccessTier,
   AiAutopilotMode,
+  AiChatErrorDiagnostic,
   AiChatExecutedAction,
   AiChatMessage,
   ResultStatus,
@@ -639,17 +640,70 @@ function parseStructuredAgentJson(raw: string): AgentLlmStructuredOutput | null 
   }
 }
 
-async function callConfiguredLlmJson(
+interface LlmCallOutcome {
+  ok: boolean;
+  content: string | null;
+  modelLabel?: string;
+  diagnostic?: AiChatErrorDiagnostic;
+}
+
+const GATEWAY_UA =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+async function callConfiguredLlmWithDiagnostics(
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-): Promise<string | null> {
+): Promise<LlmCallOutcome> {
   const state = await readState();
   const cfg = state.aiAutopilot;
-  if (cfg.llmProvider === 'BUILTIN_QUANT' || cfg.llmApiKey.trim().length <= 8) {
-    return null;
+  const key = (cfg.llmApiKey || '').trim();
+
+  // 1. Ключ еще не введен или не сохранен
+  if (cfg.llmProvider === 'BUILTIN_QUANT' || key.length <= 8) {
+    return {
+      ok: false,
+      content: null,
+      diagnostic: {
+        code: 'KEY_NOT_SAVED',
+        title:
+          'API-ключ нейросети еще не сохранен на сервере (работает локальный встроенный модуль)',
+        technicalDetails: `Текущий провайдер в настройках: ${cfg.llmProvider}, длина сохраненного ключа: ${key.length} симв.`,
+        solutions: [
+          'Нажмите кнопку «Подключить / Проверить ключ API» прямо в верхней плашке этого чата.',
+          'Выберите шлюз (например, OrcaRouter.ai или DeepSeek), вставьте ваш секретный токен вида sk-... (со страницы https://www.orcarouter.ai/console/token — кнопка «Копировать» рядом с ключом).',
+          'Нажмите «Проверить и сохранить» — ключ и рабочая модель сразу сохранятся в базу, и нейросеть начнет отвечать в свободном диалоге!',
+        ],
+      },
+    };
+  }
+
+  // 2. Вместо секретного токена sk-... вставлено его название (например «google_306743 - initial token»)
+  if (/\s/.test(key) || key.toLowerCase().includes('initial token')) {
+    return {
+      ok: false,
+      content: null,
+      diagnostic: {
+        code: 'KEY_IS_NAME_NOT_SECRET',
+        title: 'Вместо секретного токена вставлено его название',
+        technicalDetails: `В поле ключа указан текст с пробелами («${key.slice(0, 26)}...»), а API-шлюз принимает только секретный код без пробелов (обычно начинается на sk-...).`,
+        solutions: [
+          'Откройте https://www.orcarouter.ai/console/token в браузере.',
+          'В строке вашего ключа нажмите иконку «Копировать» (два листочка) — скопируется длинный секретный ключ вида sk-...',
+          'Вставьте его в плашку настройки ключа прямо над этим чатом и нажмите «Проверить и сохранить».',
+        ],
+      },
+    };
   }
 
   const bases = buildCandidateLlmBaseUrls(cfg.llmBaseUrl, cfg.llmProvider);
+  const configuredModel = cfg.llmModel.trim() || 'gemini-2.5-flash';
+
+  let lastStatus = 0;
+  let lastUrl = bases[0] || cfg.llmBaseUrl;
+  let lastRawError = '';
+  let discoveredModelsOnToken: string[] = [];
+
   for (const base of bases) {
+    lastUrl = `${base}/chat/completions`;
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 24_000);
@@ -658,10 +712,12 @@ async function callConfiguredLlmJson(
         signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${cfg.llmApiKey.trim()}`,
+          Accept: 'application/json',
+          Authorization: `Bearer ${key}`,
+          'User-Agent': GATEWAY_UA,
         },
         body: JSON.stringify({
-          model: cfg.llmModel.trim() || 'gemini-2.5-flash',
+          model: configuredModel,
           temperature: 0.25,
           messages,
         }),
@@ -670,49 +726,247 @@ async function callConfiguredLlmJson(
 
       if (res.ok) {
         const json = (await res.json()) as {
+          model?: string;
           choices?: Array<{ message?: { content?: string } }>;
         };
         const content = json.choices?.[0]?.message?.content?.trim();
-        if (content) return content;
+        if (content) {
+          return {
+            ok: true,
+            content,
+            modelLabel: `${cfg.llmProvider} · ${json.model || configuredModel}`,
+          };
+        }
+        lastStatus = 200;
+        lastRawError = 'Сервер вернул HTTP 200, но поле choices[0].message.content пустое';
+        continue;
       }
-    } catch {
-      // пробуем резервный URL шлюза
+
+      lastStatus = res.status;
+      lastRawError = await res.text().catch(() => '');
+
+      // Если ошибка 400 / 404 / 500 / 503 (например, у токена нет канала для выбранного имени модели) —
+      // АВТОМАТИЧЕСКИ запрашиваем /models на этом токене и пробуем переключиться на живую модель!
+      if ([400, 404, 500, 502, 503].includes(res.status)) {
+        try {
+          const mRes = await fetch(`${base}/models`, {
+            headers: {
+              Accept: 'application/json',
+              Authorization: `Bearer ${key}`,
+              'User-Agent': GATEWAY_UA,
+            },
+            signal: AbortSignal.timeout(7000),
+            cache: 'no-store',
+          });
+          if (mRes.ok) {
+            const mJson = (await mRes.json()) as {
+              data?: Array<{ id?: string }>;
+            };
+            discoveredModelsOnToken = (mJson.data || [])
+              .map((m) => (m.id || '').trim())
+              .filter(Boolean);
+
+            const candidates = discoveredModelsOnToken
+              .filter(
+                (m) =>
+                  m !== configuredModel &&
+                  /gemini|deepseek|gpt-4|claude|qwen|flash|pro/i.test(m),
+              )
+              .slice(0, 3);
+
+            for (const altModel of candidates) {
+              const retryRes = await fetch(`${base}/chat/completions`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Accept: 'application/json',
+                  Authorization: `Bearer ${key}`,
+                  'User-Agent': GATEWAY_UA,
+                },
+                body: JSON.stringify({
+                  model: altModel,
+                  temperature: 0.25,
+                  messages,
+                }),
+                signal: AbortSignal.timeout(22_000),
+              });
+
+              if (retryRes.ok) {
+                const retryJson = (await retryRes.json()) as {
+                  model?: string;
+                  choices?: Array<{ message?: { content?: string } }>;
+                };
+                const retryContent =
+                  retryJson.choices?.[0]?.message?.content?.trim();
+                if (retryContent) {
+                  // Сохраняем рабочую модель в базу, чтобы все следующие сообщения летали мгновенно!
+                  await mutateState((s) => {
+                    s.aiAutopilot.llmBaseUrl = base;
+                    s.aiAutopilot.llmModel = altModel;
+                  });
+                  return {
+                    ok: true,
+                    content: retryContent,
+                    modelLabel: `${cfg.llmProvider} · ${retryJson.model || altModel} (автоподбор)`,
+                  };
+                }
+              }
+            }
+          }
+        } catch {
+          // продолжаем формирование точной диагностики
+        }
+      }
+
+      if (res.status === 401 || res.status === 403) {
+        break;
+      }
+    } catch (err) {
+      lastRawError =
+        err instanceof Error ? `${err.name}: ${err.message}` : 'Сетевой обрыв';
     }
   }
-  return null;
+
+  // Формируем понятную человеческую диагностику по точному коду ответа!
+  const isHtmlCloudflare =
+    lastRawError.includes('<!DOCTYPE html') ||
+    lastRawError.includes('<html') ||
+    lastRawError.toLowerCase().includes('cloudflare');
+
+  const cleanSnippet = isHtmlCloudflare
+    ? 'Шлюз вернул HTML-страницу защиты Cloudflare вместо JSON-ответа API.'
+    : lastRawError.replace(/\s+/g, ' ').trim().slice(0, 260) || 'Нет тела ответа';
+
+  if (lastStatus === 401 || lastStatus === 403) {
+    return {
+      ok: false,
+      content: null,
+      diagnostic: {
+        code: `AUTH_HTTP_${lastStatus}`,
+        title: isHtmlCloudflare
+          ? `Шлюз ${lastUrl} заблокировал запрос защитой Cloudflare (HTTP ${lastStatus})`
+          : `Шлюз отклонил API-ключ (HTTP ${lastStatus} — Неверный или заблокированный токен)`,
+        technicalDetails: `URL: ${lastUrl} · Модель: ${configuredModel} · Ответ сервера: ${cleanSnippet}`,
+        solutions: isHtmlCloudflare
+          ? [
+              'В настройках ключа над чатом попробуйте сменить Base URL на https://api.orcarouter.ai/v1 или переключиться на прямой API DeepSeek (https://api.deepseek.com/v1) / OpenRouter (https://openrouter.ai/api/v1).',
+            ]
+          : [
+              'Проверьте, что скопирован полный ключ вида sk-... со страницы https://www.orcarouter.ai/console/token без лишних символов.',
+              'Убедитесь, что токен включен (статус Enabled / Включен) и не истек срок его действия в личном кабинете шлюза.',
+            ],
+      },
+    };
+  }
+
+  if (lastStatus === 402 || lastStatus === 429) {
+    return {
+      ok: false,
+      content: null,
+      diagnostic: {
+        code: `QUOTA_HTTP_${lastStatus}`,
+        title: `Исчерпан баланс токена или лимит запросов на шлюзе (HTTP ${lastStatus})`,
+        technicalDetails: `URL: ${lastUrl} · Модель: ${configuredModel} · Ответ шлюза: ${cleanSnippet}`,
+        solutions: [
+          'Проверьте остаток квоты / баланса на вашем ключе в консоли https://www.orcarouter.ai/console/token (или пополните счет шлюза).',
+          'Либо выберите в списке моделей более легкую/бесплатную модель, доступную на вашей группе токена.',
+        ],
+      },
+    };
+  }
+
+  if ([400, 404, 500, 502, 503].includes(lastStatus)) {
+    const modelsHint =
+      discoveredModelsOnToken.length > 0
+        ? `На вашем токене найдены модели (${discoveredModelsOnToken.length} шт.): ${discoveredModelsOnToken.slice(0, 8).join(', ')}`
+        : 'Список моделей /v1/models не вернул активных каналов для этой группы токена.';
+    return {
+      ok: false,
+      content: null,
+      diagnostic: {
+        code: `MODEL_OR_CHANNEL_HTTP_${lastStatus}`,
+        title: `Выбранная модель «${configuredModel}» недоступна или перегружена на вашем токене (HTTP ${lastStatus})`,
+        technicalDetails: `URL: ${lastUrl} · Ответ шлюза: ${cleanSnippet}. ${modelsHint}`,
+        solutions: [
+          'Нажмите «Подключить / Проверить ключ API» в шапке этого чата и нажмите «Загрузить модели токена» — выберите из списка ту модель, которая входит в вашу группу (например, для группы google_* выбирайте модели gemini-*).',
+          'Если шлюз пишет «No available channel» для всех моделей — в личном кабинете OrcaRouter проверьте группу (Group) вашего токена (поставьте Default / Auto).',
+        ],
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    content: null,
+    diagnostic: {
+      code: 'NETWORK_OR_TIMEOUT',
+      title: 'Не удалось достучаться до сервера нейросети (таймаут или ошибка сети)',
+      technicalDetails: `Проверенный адрес: ${lastUrl} · Модель: ${configuredModel} · Детали: ${cleanSnippet}`,
+      solutions: [
+        'Проверьте правильность адреса API Base URL (для OrcaRouter: https://www.orcarouter.ai/v1, для DeepSeek: https://api.deepseek.com/v1, для OpenRouter: https://openrouter.ai/api/v1).',
+        'Нажмите кнопку «Подключить / Проверить ключ API» вверху чата для мгновенного теста связи с вашего сервера.',
+      ],
+    },
+  };
 }
 
 /**
- * Локальный умный командный процессор (работает мгновенно даже если API-ключ LLM еще не вставлен!)
+ * Локальный командный процессор (выполняет прямые поручения даже при сбое внешнего API + честно объясняет статус)
  */
 async function runDeterministicFallbackAssistant(
   userText: string,
+  diagnostic?: AiChatErrorDiagnostic,
 ): Promise<{ reply: string; executedActions: AiChatExecutedAction[] }> {
   const lower = userText.toLowerCase().trim();
   const executedActions: AiChatExecutedAction[] = [];
 
+  // Если спросили «что ты за модель? / кто ты? / привет»
   if (
-    lower.includes('найди') &&
-    (lower.includes('новост') || lower.includes('травм') || lower.includes('инф'))
+    lower.includes('модел') ||
+    lower.includes('кто ты') ||
+    lower === 'привет' ||
+    lower.startsWith('привет ')
+  ) {
+    return {
+      executedActions,
+      reply:
+        diagnostic?.code === 'KEY_NOT_SAVED'
+          ? 'Привет! Сейчас внешняя нейросеть еще не подключена (ключ API не сохранен в базе), поэтому вам отвечает встроенный локальный модуль управления VALUEX.\n\nСмотрите блок диагностики выше: нажмите «Подключить / Проверить ключ API» прямо в шапке чата, вставьте ваш токен `sk-...` и нажмите «Проверить и сохранить» — тогда я сразу переключусь на полноценную нейросеть (Gemini / GPT / DeepSeek)!'
+          : 'Привет! Я попытался обратиться к вашей внешней модели нейросети, но шлюз API вернул ошибку связи — поэтому временно ответил встроенный модуль сайта. В желто-красном блоке прямо над этим текстом указана точная причина ошибки от сервера и как исправить её за 1 минуту.',
+    };
+  }
+
+  // Любой запрос про новости / травмы / составы («проверь новости», «найди новости», «что по травмам»)
+  if (
+    lower.includes('новост') ||
+    lower.includes('травм') ||
+    lower.includes('состав') ||
+    (lower.includes('проверь') && lower.includes('источник'))
   ) {
     const cleanQ = userText
-      .replace(/найди|новости|инфу|информацию|по матчу|про/gi, '')
+      .replace(
+        /найди|проверь|посмотри|свежие|спортивные|новости|инфу|информацию|по матчу|про/gi,
+        '',
+      )
       .trim();
+    const searchTopic = cleanQ.length >= 2 ? cleanQ : 'РПЛ КХЛ футбол хоккей составы травмы';
     const res = await executeAdminAgentTool({
       tool: 'search_open_sources',
-      args: { query: cleanQ || 'РПЛ КХЛ прогнозы составы' },
+      args: { query: searchTopic },
     });
     executedActions.push(res.record);
-    const data = res.toolData as { headlines?: string[]; snippets?: string[] } | undefined;
-    const items = [...(data?.headlines || []), ...(data?.snippets || [])].slice(0, 5);
+    const data = res.toolData as
+      | { headlines?: string[]; snippets?: string[]; sources?: string[] }
+      | undefined;
+    const items = [...(data?.headlines || []), ...(data?.snippets || [])].slice(0, 6);
     return {
       executedActions,
       reply:
         items.length > 0
-          ? `Проверил открытые источники по запросу «${cleanQ}»:\n\n${items
+          ? `Проверил открытые источники по теме «${searchTopic}» (${(data?.sources || []).join(', ') || 'RSS / поиск'}):\n\n${items
               .map((x, i) => `${i + 1}. ${x}`)
               .join('\n')}`
-          : `Проверил открытые источники по запросу «${cleanQ}» — свежих тревожных новостей о травмах не обнаружено. Подключите ваш API-токен во вкладке «ИИ-Автопилот 24/7» для глубокого диалогового анализа!`,
+          : `Выполнил запрос к открытым источникам по теме «${searchTopic}», но заголовков за последние дни не вернулось (либо требуется подключение внешнего API нейросети — см. блок диагностики выше).`,
     };
   }
 
@@ -877,15 +1131,22 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
     { role: 'user', content: cleanPrompt },
   ];
 
-  const firstRaw = await callConfiguredLlmJson(llmMessages);
+  const firstOutcome = await callConfiguredLlmWithDiagnostics(llmMessages);
   let finalReply = '';
+  let activeModelLabel: string | undefined = firstOutcome.modelLabel;
+  let activeDiagnostic: AiChatErrorDiagnostic | undefined =
+    firstOutcome.diagnostic;
   const executedActions: AiChatExecutedAction[] = [];
 
-  if (!firstRaw) {
-    const fb = await runDeterministicFallbackAssistant(cleanPrompt);
+  if (!firstOutcome.ok || !firstOutcome.content) {
+    const fb = await runDeterministicFallbackAssistant(
+      cleanPrompt,
+      firstOutcome.diagnostic,
+    );
     finalReply = fb.reply;
     executedActions.push(...fb.executedActions);
   } else {
+    const firstRaw = firstOutcome.content;
     const parsed = parseStructuredAgentJson(firstRaw);
     if (!parsed) {
       finalReply = firstRaw;
@@ -916,7 +1177,7 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
 
       // Если модель запрашивала живой поиск в открытых источниках — делаем второй проход с реальными найденными фактами!
       if (researchResultsForSecondPass.length > 0) {
-        const secondPassRaw = await callConfiguredLlmJson([
+        const secondOutcome = await callConfiguredLlmWithDiagnostics([
           ...llmMessages,
           { role: 'assistant', content: firstRaw },
           {
@@ -926,6 +1187,12 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
             )}. Теперь дай итоговый точный и честный ответ владельцу строго на основе этих реальных данных в формате JSON {"actions":[],"reply":"..."} (не выдумывая ничего сверх найденных фактов).`,
           },
         ]);
+        const secondPassRaw = secondOutcome.content;
+        if (secondOutcome.modelLabel) activeModelLabel = secondOutcome.modelLabel;
+        if (!secondOutcome.ok && secondOutcome.diagnostic) {
+          activeDiagnostic = secondOutcome.diagnostic;
+        }
+
         const parsedSecond = secondPassRaw
           ? parseStructuredAgentJson(secondPassRaw)
           : null;
@@ -950,7 +1217,9 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
     id: `chat_${randomUUID().slice(0, 10)}`,
     role: 'assistant',
     content: finalReply,
+    modelLabel: activeModelLabel || 'Локальный модуль сайта',
     executedActions: executedActions.length > 0 ? executedActions : undefined,
+    diagnostic: activeDiagnostic,
     createdAt: new Date().toISOString(),
   };
 
