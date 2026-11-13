@@ -15,9 +15,9 @@ export async function GET() {
     const user = await requireAuthenticatedUser();
     const state = await readState();
 
-    const unlockedPredictions = state.predictions
-      .map((p) => toPublicPredictionDto(p, user))
-      .filter((dto) => user.purchasedPredictionIds.includes(dto.id) || !dto.isLocked);
+    const purchasedPredictions = state.predictions
+      .filter((p) => user.purchasedPredictionIds.includes(p.id))
+      .map((p) => toPublicPredictionDto(p, user));
 
     const myOrders = state.transactions.filter((t) => t.userId === user.id);
     const myAffiliateLinks = state.affiliateLinks.filter((l) => l.userId === user.id);
@@ -25,7 +25,7 @@ export async function GET() {
 
     return NextResponse.json({
       user: toSafeSessionUser(user),
-      unlockedPredictions,
+      purchasedPredictions,
       orders: myOrders,
       affiliateLinks: myAffiliateLinks,
       payouts: myPayouts,
@@ -47,7 +47,6 @@ export async function PATCH(req: NextRequest) {
       city?: string;
       telegramUsername?: string;
       referenceBankrollRub?: number;
-      cancelAutoRenew?: boolean;
       currentPassword?: string;
       newPassword?: string;
     };
@@ -64,13 +63,17 @@ export async function PATCH(req: NextRequest) {
       }
       if (typeof body.telegramUsername === 'string') {
         const cleanTg = body.telegramUsername.trim();
-        u.telegramUsername = cleanTg ? (cleanTg.startsWith('@') ? cleanTg : `@${cleanTg}`) : null;
+        u.telegramUsername = cleanTg
+          ? cleanTg.startsWith('@')
+            ? cleanTg
+            : `@${cleanTg}`
+          : null;
       }
-      if (typeof body.referenceBankrollRub === 'number' && body.referenceBankrollRub >= 1000) {
+      if (
+        typeof body.referenceBankrollRub === 'number' &&
+        body.referenceBankrollRub >= 1000
+      ) {
         u.referenceBankrollRub = Math.round(body.referenceBankrollRub);
-      }
-      if (body.cancelAutoRenew) {
-        u.autoRenew = false;
       }
       if (body.newPassword) {
         if (!body.currentPassword || !verifyPassword(body.currentPassword, u.passwordHash)) {

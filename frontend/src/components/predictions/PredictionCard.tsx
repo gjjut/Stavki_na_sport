@@ -2,17 +2,15 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowUpRight,
   CheckCircle2,
   Clock,
-  Crown,
   Flame,
   Lock,
   RefreshCw,
   ShieldCheck,
-  TrendingUp,
+  Sparkles,
   Unlock,
   XCircle,
   Zap,
@@ -21,44 +19,46 @@ import type { PublicPredictionDto, ResultStatus, SportType } from '@/server/type
 
 export interface PredictionCardProps {
   prediction: PublicPredictionDto;
+  variant?: 'grid' | 'detail';
   userReferenceBankrollRub?: number;
   defaultSinglePriceRub?: number;
-  showDetailLink?: boolean;
   onBuySingle?: (prediction: PublicPredictionDto) => void;
-  onOpenVipPlans?: () => void;
   onVerifyHash?: (predictionId: string) => void;
 }
 
-export const SPORT_LABELS: Record<SportType, { label: string; icon: string; badge: string }> = {
+export const SPORT_LABELS: Record<
+  SportType,
+  { label: string; icon: string; badge: string }
+> = {
   FOOTBALL: {
     label: 'Футбол',
     icon: '⚽',
-    badge: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25',
+    badge: 'bg-blue-50 text-blue-700 border-blue-200/80',
   },
   HOCKEY: {
     label: 'Хоккей',
     icon: '🏒',
-    badge: 'bg-sky-500/10 text-sky-300 border-sky-500/25',
+    badge: 'bg-sky-50 text-sky-700 border-sky-200/80',
   },
   TENNIS: {
     label: 'Теннис',
     icon: '🎾',
-    badge: 'bg-lime-500/10 text-lime-300 border-lime-500/25',
+    badge: 'bg-emerald-50 text-emerald-700 border-emerald-200/80',
   },
   ESPORTS: {
     label: 'Киберспорт',
     icon: '🎮',
-    badge: 'bg-violet-500/10 text-violet-300 border-violet-500/25',
+    badge: 'bg-indigo-50 text-indigo-700 border-indigo-200/80',
   },
   BASKETBALL: {
     label: 'Баскетбол',
     icon: '🏀',
-    badge: 'bg-orange-500/10 text-orange-300 border-orange-500/25',
+    badge: 'bg-orange-50 text-orange-700 border-orange-200/80',
   },
   MMA: {
-    label: 'Единоборства',
+    label: 'ММА',
     icon: '🥊',
-    badge: 'bg-rose-500/10 text-rose-300 border-rose-500/25',
+    badge: 'bg-rose-50 text-rose-700 border-rose-200/80',
   },
 };
 
@@ -68,27 +68,27 @@ const RESULT_BADGES: Record<
 > = {
   WIN: {
     label: 'Выигрыш',
-    style: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/35',
+    style: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     Icon: CheckCircle2,
   },
   LOSS: {
-    label: 'Проигрыш',
-    style: 'bg-rose-500/12 text-rose-300 border-rose-500/30',
+    label: 'Минус',
+    style: 'bg-rose-50 text-rose-600 border-rose-200',
     Icon: XCircle,
   },
   PUSH: {
     label: 'Возврат',
-    style: 'bg-amber-500/12 text-amber-300 border-amber-500/30',
+    style: 'bg-amber-50 text-amber-700 border-amber-200',
     Icon: RefreshCw,
   },
   CASHOUT: {
     label: 'Cashout',
-    style: 'bg-cyan-500/15 text-cyan-300 border-cyan-400/35',
+    style: 'bg-sky-50 text-sky-700 border-sky-200',
     Icon: Zap,
   },
 };
 
-function useCountdown(targetIso: string, active: boolean) {
+export function useCountdown(targetIso: string, active: boolean) {
   const [ms, setMs] = useState<number | null>(null);
 
   useEffect(() => {
@@ -113,7 +113,7 @@ function useCountdown(targetIso: string, active: boolean) {
     const pad = (n: number) => String(n).padStart(2, '0');
     const text =
       totalSec === 0
-        ? 'Скоро начало'
+        ? 'Скоро старт'
         : d > 0
           ? `${d}д ${pad(h)}:${pad(m)}:${pad(s)}`
           : `${pad(h)}:${pad(m)}:${pad(s)}`;
@@ -123,14 +123,12 @@ function useCountdown(targetIso: string, active: boolean) {
 
 export const PredictionCard: React.FC<PredictionCardProps> = ({
   prediction,
+  variant = 'grid',
   userReferenceBankrollRub,
   defaultSinglePriceRub = 790,
-  showDetailLink = true,
   onBuySingle,
-  onOpenVipPlans,
   onVerifyHash,
 }) => {
-  const [expanded, setExpanded] = useState(!showDetailLink);
   const sportMeta = SPORT_LABELS[prediction.sport];
   const isUpcoming = prediction.matchStatus === 'UPCOMING';
   const isLive = prediction.matchStatus === 'LIVE';
@@ -157,222 +155,327 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
 
   const displayPrice = prediction.singlePriceRub ?? defaultSinglePriceRub;
 
-  return (
-    <article className="rounded-2xl border border-slate-800/90 bg-slate-900/75 p-5 transition-colors hover:border-slate-700/90 sm:p-6">
-      {/* Шапка карточки: Спорт + Лига | Статус / Таймер */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${sportMeta.badge}`}
-          >
-            <span>{sportMeta.icon}</span>
-            <span>{sportMeta.label}</span>
-          </span>
-          <span className="text-xs font-medium text-slate-400">{prediction.leagueName}</span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {isUpcoming && (
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold tabular-nums ${
-                countdown.urgent
-                  ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
-                  : 'border-slate-800 bg-slate-950 text-slate-300'
-              }`}
-            >
-              {countdown.urgent ? (
-                <Flame className="h-3.5 w-3.5 text-amber-400" />
-              ) : (
-                <Clock className="h-3.5 w-3.5 text-slate-400" />
-              )}
-              <span>Старт через {countdown.text}</span>
-            </span>
-          )}
-
-          {isLive && (
-            <span className="inline-flex items-center gap-2 rounded-full border border-rose-500/40 bg-rose-500/15 px-3 py-1 text-xs font-bold text-rose-300">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-rose-400" />
-              <span>В игре · LIVE</span>
-            </span>
-          )}
-
-          {resultBadge && (
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold ${resultBadge.style}`}
-            >
-              <resultBadge.Icon className="h-3.5 w-3.5" />
-              <span>{resultBadge.label}</span>
-              {prediction.profitUnits !== null && (
-                <span className="font-mono">
-                  ({prediction.profitUnits > 0 ? '+' : ''}
-                  {prediction.profitUnits.toFixed(2)} u)
-                </span>
-              )}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Команды и размер ставки по системе Флэт */}
-      <div className="mt-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+  // =========================================================================
+  // РЕЖИМ 1: КОМПАКТНАЯ КАРТОЧКА МАРКЕТПЛЕЙСА (ДЛЯ СЕТКИ 3 В РЯД)
+  // =========================================================================
+  if (variant === 'grid') {
+    return (
+      <article className="group flex h-full flex-col justify-between rounded-2xl border border-slate-200/90 bg-white p-5 shadow-[0_2px_10px_rgba(15,23,42,0.03)] transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-[0_14px_32px_rgba(37,99,235,0.08)]">
         <div>
-          <div className="flex flex-wrap items-center gap-2.5">
-            {showDetailLink ? (
-              <Link
-                href={`/predictions/${prediction.slug}`}
-                className="text-lg font-bold text-white transition hover:text-emerald-400 sm:text-xl"
+          {/* Верхняя плашка: Спорт + статус / таймер */}
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${sportMeta.badge}`}
+            >
+              <span>{sportMeta.icon}</span>
+              <span>{sportMeta.label}</span>
+            </span>
+
+            {isUpcoming && (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tabular-nums ${
+                  countdown.urgent
+                    ? 'border-amber-200 bg-amber-50 text-amber-700'
+                    : 'border-slate-200 bg-slate-50 text-slate-600'
+                }`}
               >
-                {prediction.homeTeam}{' '}
-                <span className="mx-1 font-normal text-slate-500">—</span>{' '}
-                {prediction.awayTeam}
-              </Link>
-            ) : (
-              <h1 className="text-xl font-extrabold text-white sm:text-2xl">
-                {prediction.homeTeam}{' '}
-                <span className="mx-1 font-normal text-slate-500">—</span>{' '}
-                {prediction.awayTeam}
-              </h1>
+                {countdown.urgent ? (
+                  <Flame className="h-3 w-3 text-amber-500" />
+                ) : (
+                  <Clock className="h-3 w-3 text-slate-400" />
+                )}
+                <span>{countdown.text}</span>
+              </span>
             )}
 
-            {prediction.finalScore && (
-              <span className="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-0.5 font-mono text-sm font-bold text-slate-200">
-                {prediction.finalScore}
+            {isLive && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[11px] font-bold text-rose-600">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-500" />
+                <span>LIVE</span>
+              </span>
+            )}
+
+            {resultBadge && (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${resultBadge.style}`}
+              >
+                <resultBadge.Icon className="h-3 w-3" />
+                <span>{resultBadge.label}</span>
+                {prediction.profitUnits !== null && (
+                  <span className="font-mono">
+                    {prediction.profitUnits > 0 ? '+' : ''}
+                    {prediction.profitUnits.toFixed(2)}u
+                  </span>
+                )}
               </span>
             )}
           </div>
-          <p className="mt-1 text-xs text-slate-400">
-            Начало матча: <span className="text-slate-300">{kickoffStr}</span> · Линия:{' '}
-            <span className="text-slate-300">{prediction.bookmakerSource}</span>
+
+          {/* Турнир и команды */}
+          <div className="mt-3.5">
+            <div className="truncate text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+              {prediction.leagueName}
+            </div>
+
+            <Link
+              href={`/predictions/${prediction.slug}`}
+              className="mt-1 block text-lg font-extrabold leading-snug text-slate-950 transition group-hover:text-blue-600"
+            >
+              {prediction.homeTeam} — {prediction.awayTeam}
+            </Link>
+
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+              <span>{kickoffStr}</span>
+              <span className="text-slate-300">•</span>
+              <span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-bold text-slate-700">
+                Флэт {prediction.stakeUnits.toFixed(1)}%
+              </span>
+              {personalStakeRub !== null && (
+                <span className="text-[11px] text-slate-400">
+                  (≈ {personalStakeRub.toLocaleString('ru-RU')} ₽)
+                </span>
+              )}
+              {prediction.finalScore && (
+                <span className="rounded-md bg-slate-900 px-2 py-0.5 font-mono text-[11px] font-bold text-white">
+                  {prediction.finalScore}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Краткий анонс */}
+          <p className="mt-3 line-clamp-3 text-xs leading-relaxed text-slate-600">
+            {prediction.analysisTeaser}
           </p>
         </div>
 
-        <div className="flex shrink-0 flex-col items-start rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2 sm:items-end">
-          <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-400">
-            <TrendingUp className="h-3.5 w-3.5 text-emerald-400" />
-            <span>Рекомендуемый флэт</span>
-          </div>
-          <div className="font-mono text-sm font-bold text-emerald-400">
-            {prediction.stakePercent.toFixed(1)}% банка ({prediction.stakeUnits.toFixed(2)} u)
-          </div>
-          {personalStakeRub !== null && (
-            <div className="text-[11px] text-slate-500">
-              ≈ {personalStakeRub.toLocaleString('ru-RU')} ₽ от вашего банка
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Краткая аналитическая вводная */}
-      {prediction.analysisTeaser && (
-        <p className="mt-3.5 text-sm leading-relaxed text-slate-300">
-          {prediction.analysisTeaser}
-        </p>
-      )}
-
-      {/* Закрытый блок (Blur) ИЛИ Открытый исход */}
-      <div className="mt-4">
-        {prediction.isLocked ? (
-          <div className="relative grid overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
-            <div
-              aria-hidden="true"
-              className="pointer-events-none col-start-1 row-start-1 select-none p-4 opacity-35 blur-[7px] sm:p-5"
-            >
-              <div className="grid grid-cols-3 gap-3">
-                <div className="rounded-lg bg-slate-900 p-3">
-                  <div className="text-[11px] text-slate-400">Исход</div>
-                  <div className="mt-1 font-bold text-white">Фора 1 (-1.5)</div>
-                </div>
-                <div className="rounded-lg bg-slate-900 p-3">
-                  <div className="text-[11px] text-slate-400">Коэффициент</div>
-                  <div className="mt-1 font-mono text-lg font-bold text-emerald-400">2.04</div>
-                </div>
-                <div className="rounded-lg bg-slate-900 p-3">
-                  <div className="text-[11px] text-slate-400">Потенциал</div>
-                  <div className="mt-1 font-mono font-bold text-emerald-300">+2.08 u</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="z-10 col-start-1 row-start-1 flex flex-col items-center justify-center bg-slate-950/75 px-4 py-5 text-center backdrop-blur-[2px]">
-              <div className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-300">
-                <Lock className="h-3.5 w-3.5 text-emerald-400" />
-                <span>
-                  {prediction.accessTier === 'VIP_ONLY'
-                    ? 'Эксклюзивный прогноз для участников VIP-клуба'
-                    : 'Точный исход, зафиксированный коэффициент и полный разбор закрыты'}
+        {/* Нижний блок карточки: Закрытый ценник ИЛИ открытый исход */}
+        <div className="mt-5 border-t border-slate-100 pt-4">
+          {prediction.isLocked ? (
+            <div>
+              <div className="mb-3 flex items-center justify-between rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-3 py-2 text-[11px] text-slate-500">
+                <span className="inline-flex items-center gap-1.5 font-medium">
+                  <Lock className="h-3.5 w-3.5 text-blue-600" />
+                  <span>Точный исход + кэф + разбор</span>
                 </span>
+                <span className="font-mono text-[10px] text-slate-400">SHA-256</span>
               </div>
 
-              <div className="mt-3.5 flex w-full max-w-md flex-col gap-2.5 sm:flex-row">
-                {prediction.accessTier === 'PAID_SINGLE' && (
-                  <button
-                    type="button"
-                    onClick={() => onBuySingle?.(prediction)}
-                    className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-emerald-400"
-                  >
-                    <Unlock className="h-4 w-4" />
-                    <span>Открыть за {displayPrice.toLocaleString('ru-RU')} ₽</span>
-                  </button>
-                )}
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Разовый доступ
+                  </div>
+                  <div className="font-mono text-xl font-black text-slate-950">
+                    {displayPrice.toLocaleString('ru-RU')} ₽
+                  </div>
+                </div>
 
                 <button
                   type="button"
-                  onClick={onOpenVipPlans}
-                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-amber-400/35 bg-amber-400/10 px-4 py-2.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-400/20"
+                  onClick={() => onBuySingle?.(prediction)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-sm shadow-blue-600/25 transition hover:bg-blue-700"
                 >
-                  <Crown className="h-4 w-4 text-amber-300" />
-                  <span>Все прогнозы в VIP</span>
+                  <Unlock className="h-3.5 w-3.5" />
+                  <span>Купить прогноз</span>
                 </button>
               </div>
             </div>
+          ) : (
+            <div>
+              <div className="flex items-center justify-between gap-2 rounded-xl border border-blue-100 bg-blue-50/60 px-3.5 py-2.5">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-blue-600">
+                    {prediction.isPurchased
+                      ? 'Купленный прогноз'
+                      : prediction.accessTier === 'FREE'
+                        ? 'Бесплатный разбор'
+                        : 'Открытый архив'}
+                  </div>
+                  <div className="truncate text-xs font-extrabold text-slate-900">
+                    {prediction.selectionTitle}
+                  </div>
+                </div>
+
+                <div className="shrink-0 rounded-lg bg-white px-2.5 py-1 font-mono text-sm font-black text-blue-700 shadow-sm">
+                  {prediction.fixedOdds?.toFixed(2)}
+                </div>
+              </div>
+
+              <div className="mt-3 flex items-center justify-between text-xs">
+                {onVerifyHash ? (
+                  <button
+                    type="button"
+                    onClick={() => onVerifyHash(prediction.id)}
+                    className="inline-flex items-center gap-1 font-medium text-slate-500 hover:text-blue-600"
+                  >
+                    <ShieldCheck className="h-3.5 w-3.5 text-blue-600" />
+                    <span>Проверить SHA-256</span>
+                  </button>
+                ) : (
+                  <span />
+                )}
+
+                <Link
+                  href={`/predictions/${prediction.slug}`}
+                  className="inline-flex items-center gap-1 font-bold text-blue-600 hover:text-blue-700"
+                >
+                  <span>Полный разбор</span>
+                  <ArrowUpRight className="h-3.5 w-3.5" />
+                </Link>
+              </div>
+            </div>
+          )}
+        </div>
+      </article>
+    );
+  }
+
+  // =========================================================================
+  // РЕЖИМ 2: ДЕТАЛЬНЫЙ РАЗБОР НА ОТДЕЛЬНОЙ СТРАНИЦЕ СОБЫТИЯ (/predictions/[slug])
+  // =========================================================================
+  return (
+    <div className="overflow-hidden rounded-3xl border border-slate-200/90 bg-white shadow-sm">
+      {/* Контрастная темная шапка матча */}
+      <div className="bg-[#0B0F19] p-6 text-white sm:p-8">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-bold text-white">
+              {sportMeta.icon} {sportMeta.label}
+            </span>
+            <span className="text-xs font-medium text-slate-300">
+              {prediction.leagueName}
+            </span>
+          </div>
+
+          {isUpcoming && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3.5 py-1 text-xs font-semibold tabular-nums text-slate-200">
+              <Clock className="h-3.5 w-3.5 text-blue-400" />
+              <span>До начала: {countdown.text}</span>
+            </span>
+          )}
+          {isLive && (
+            <span className="inline-flex items-center gap-2 rounded-full bg-rose-500/20 px-3.5 py-1 text-xs font-bold text-rose-300">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-rose-400" />
+              <span>Матч идет (LIVE)</span>
+            </span>
+          )}
+          {resultBadge && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-white px-3.5 py-1 text-xs font-bold text-slate-900">
+              <resultBadge.Icon className="h-3.5 w-3.5 text-blue-600" />
+              <span>{resultBadge.label}</span>
+            </span>
+          )}
+        </div>
+
+        <div className="mt-5 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+          <div>
+            <h1 className="text-2xl font-black tracking-tight text-white sm:text-3xl">
+              {prediction.homeTeam}{' '}
+              <span className="font-normal text-slate-500">—</span>{' '}
+              {prediction.awayTeam}
+            </h1>
+            <p className="mt-2 text-xs text-slate-400">
+              Начало события: <span className="text-slate-200">{kickoffStr}</span> · Линия:{' '}
+              <span className="text-slate-200">{prediction.bookmakerSource}</span>
+              {prediction.finalScore && (
+                <span className="ml-2 rounded bg-white/15 px-2 py-0.5 font-mono text-white">
+                  Счет: {prediction.finalScore}
+                </span>
+              )}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 sm:text-right">
+            <div className="text-[11px] text-slate-400">Рекомендуемый размер ставки</div>
+            <div className="font-mono text-lg font-black text-blue-400">
+              {prediction.stakePercent.toFixed(1)}% от банка ({prediction.stakeUnits.toFixed(2)} u)
+            </div>
+            {personalStakeRub !== null && (
+              <div className="text-[11px] text-slate-300">
+                ≈ {personalStakeRub.toLocaleString('ru-RU')} ₽ для вашего банка
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Светлая содержательная часть */}
+      <div className="p-6 sm:p-8">
+        <div className="rounded-2xl bg-slate-50 p-4 text-sm leading-relaxed text-slate-700">
+          {prediction.analysisTeaser}
+        </div>
+
+        {prediction.isLocked ? (
+          <div className="mt-6 rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50/70 via-white to-slate-50 p-6 text-center sm:p-8">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-600 text-white shadow-md shadow-blue-600/20">
+              <Lock className="h-5 w-5" />
+            </div>
+            <h2 className="mt-4 text-xl font-extrabold text-slate-950">
+              Полный разбор и точный исход закрыты
+            </h2>
+            <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
+              После разовой оплаты вы мгновенно получаете точный маркет для ставки, зафиксированный коэффициент, минимально допустимый порог входа и подробную аргументацию.
+            </p>
+
+            <div className="mt-6 inline-flex flex-col items-center gap-3 sm:flex-row">
+              <button
+                type="button"
+                onClick={() => onBuySingle?.(prediction)}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-7 py-3.5 text-sm font-bold text-white shadow-lg shadow-blue-600/25 transition hover:bg-blue-700"
+              >
+                <Unlock className="h-4 w-4" />
+                <span>Купить доступ за {displayPrice.toLocaleString('ru-RU')} ₽</span>
+              </button>
+            </div>
           </div>
         ) : (
-          <div className="rounded-xl border border-emerald-500/25 bg-slate-950 p-4">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className="rounded-lg border border-slate-800/90 bg-slate-900/70 p-3">
-                <div className="text-[11px] font-medium text-slate-400">Исход матча</div>
-                <div className="mt-1 text-base font-bold text-white">
+          <div className="mt-6 space-y-6">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div className="rounded-2xl border border-blue-200 bg-blue-50/50 p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-blue-600">
+                  Рекомендуемый исход
+                </div>
+                <div className="mt-1 text-base font-black text-slate-950">
                   {prediction.selectionTitle}
                 </div>
               </div>
 
-              <div className="rounded-lg border border-slate-800/90 bg-slate-900/70 p-3">
-                <div className="text-[11px] font-medium text-slate-400">
-                  Зафиксированный коэффициент
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Коэффициент публикации
                 </div>
                 <div className="mt-1 flex items-baseline gap-2">
-                  <span className="font-mono text-xl font-extrabold text-emerald-400">
+                  <span className="font-mono text-2xl font-black text-blue-600">
                     {prediction.fixedOdds?.toFixed(2)}
                   </span>
                   {prediction.minAcceptableOdds && (
-                    <span className="text-xs text-slate-400">
-                      (актуально от {prediction.minAcceptableOdds.toFixed(2)})
+                    <span className="text-xs text-slate-500">
+                      (брать от {prediction.minAcceptableOdds.toFixed(2)})
                     </span>
                   )}
                 </div>
               </div>
 
-              <div className="rounded-lg border border-slate-800/90 bg-slate-900/70 p-3">
-                <div className="text-[11px] font-medium text-slate-400">
-                  {prediction.profitUnits !== null ? 'Результат' : 'Ожидаемая прибыль'}
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  {prediction.profitUnits !== null ? 'Итог расчета' : 'Расчетный профит'}
                 </div>
                 <div
-                  className={`mt-1 font-mono text-base font-bold ${
+                  className={`mt-1 font-mono text-xl font-black ${
                     prediction.profitUnits !== null
                       ? prediction.profitUnits > 0
-                        ? 'text-emerald-400'
+                        ? 'text-emerald-600'
                         : prediction.profitUnits < 0
-                          ? 'text-rose-400'
-                          : 'text-amber-300'
-                      : 'text-emerald-300'
+                          ? 'text-rose-600'
+                          : 'text-amber-600'
+                      : 'text-slate-900'
                   }`}
                 >
                   {prediction.profitUnits !== null
                     ? `${prediction.profitUnits > 0 ? '+' : ''}${prediction.profitUnits.toFixed(
                         2,
-                      )} u (${prediction.profitUnits > 0 ? '+' : ''}${prediction.profitUnits.toFixed(
-                        2,
-                      )}%)`
+                      )} u`
                     : prediction.fixedOdds
                       ? `+${(prediction.stakeUnits * (prediction.fixedOdds - 1)).toFixed(2)} u`
                       : '—'}
@@ -381,75 +484,43 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
             </div>
 
             {prediction.analysisFull && (
-              <div className="mt-3 border-t border-slate-800/80 pt-3">
-                {showDetailLink ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setExpanded((v) => !v)}
-                      className="text-xs font-semibold text-emerald-400 hover:text-emerald-300"
-                    >
-                      {expanded ? 'Свернуть обоснование ▲' : 'Показать подробный разбор ▼'}
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {expanded && (
-                        <motion.p
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          className="mt-2.5 overflow-hidden whitespace-pre-line text-sm leading-relaxed text-slate-300"
-                        >
-                          {prediction.analysisFull}
-                        </motion.p>
-                      )}
-                    </AnimatePresence>
-                  </>
-                ) : (
-                  <p className="whitespace-pre-line text-sm leading-relaxed text-slate-300">
-                    {prediction.analysisFull}
-                  </p>
-                )}
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
+                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-600">
+                  <Sparkles className="h-4 w-4" />
+                  <span>Аналитическое обоснование</span>
+                </div>
+                <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-700">
+                  {prediction.analysisFull}
+                </p>
               </div>
             )}
           </div>
         )}
-      </div>
 
-      {/* Нижняя строка: проверка честности и ссылка на страницу события */}
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/70 pt-3 text-xs text-slate-500">
-        <div className="flex items-center gap-1.5">
-          <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-          <span>
-            Подпись до матча:{' '}
-            <code className="font-mono text-slate-400">
-              {prediction.verificationHash.slice(0, 12)}…
-            </code>
-          </span>
-        </div>
+        {/* Подпись SHA-256 */}
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4 text-xs text-slate-400">
+          <div className="flex items-center gap-1.5">
+            <ShieldCheck className="h-4 w-4 text-blue-600" />
+            <span>
+              Цифровая подпись до начала матча:{' '}
+              <code className="font-mono text-slate-600">
+                {prediction.verificationHash.slice(0, 18)}…
+              </code>
+            </span>
+          </div>
 
-        <div className="flex items-center gap-4">
           {!prediction.isLocked && onVerifyHash && (
             <button
               type="button"
               onClick={() => onVerifyHash(prediction.id)}
-              className="font-medium text-emerald-400 hover:text-emerald-300"
+              className="font-bold text-blue-600 hover:text-blue-700"
             >
-              Проверить подлинность
+              Проверить неизменность коэффициента →
             </button>
-          )}
-
-          {showDetailLink && (
-            <Link
-              href={`/predictions/${prediction.slug}`}
-              className="inline-flex items-center gap-1 font-medium text-slate-300 hover:text-white"
-            >
-              <span>Страница матча</span>
-              <ArrowUpRight className="h-3.5 w-3.5" />
-            </Link>
           )}
         </div>
       </div>
-    </article>
+    </div>
   );
 };
 

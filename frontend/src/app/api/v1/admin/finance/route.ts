@@ -1,16 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mutateState, refundOrderTransaction } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
-import type { PlanCode } from '@/server/types';
 
 export async function PATCH(req: NextRequest) {
   try {
     await requireAdminAccount();
     const body = (await req.json()) as
       | {
-          action: 'SAVE_TARIFFS';
+          action: 'SAVE_DEFAULT_PRICE';
           defaultSinglePriceRub: number;
-          tariffs: Array<{ code: PlanCode; priceRub: number; oldPriceRub: number }>;
+          applyToPending?: boolean;
         }
       | { action: 'REFUND_ORDER'; orderId: string }
       | {
@@ -19,19 +18,17 @@ export async function PATCH(req: NextRequest) {
           decision: 'PAID' | 'REJECTED';
         };
 
-    if (body.action === 'SAVE_TARIFFS') {
+    if (body.action === 'SAVE_DEFAULT_PRICE') {
       await mutateState((state) => {
-        state.settings.defaultSinglePriceRub = Math.max(0, Math.round(body.defaultSinglePriceRub));
-        for (const p of state.predictions) {
-          if (p.accessTier === 'PAID_SINGLE' && p.resultStatus === 'PENDING') {
-            p.singlePriceRub = state.settings.defaultSinglePriceRub;
-          }
-        }
-        for (const t of body.tariffs) {
-          const found = state.tariffs.find((row) => row.code === t.code);
-          if (found && t.priceRub > 0) {
-            found.priceRub = Math.round(t.priceRub);
-            found.oldPriceRub = Math.max(found.priceRub, Math.round(t.oldPriceRub));
+        state.settings.defaultSinglePriceRub = Math.max(
+          50,
+          Math.round(body.defaultSinglePriceRub),
+        );
+        if (body.applyToPending) {
+          for (const p of state.predictions) {
+            if (p.accessTier === 'PAID_SINGLE' && p.resultStatus === 'PENDING') {
+              p.singlePriceRub = state.settings.defaultSinglePriceRub;
+            }
           }
         }
       });
@@ -50,7 +47,6 @@ export async function PATCH(req: NextRequest) {
         payout.status = body.decision;
         payout.processedAt = new Date().toISOString();
 
-        // При отклонении возвращаем сумму на партнерский баланс пользователя
         if (body.decision === 'REJECTED') {
           const partner = state.users.find((u) => u.id === payout.userId);
           if (partner) {

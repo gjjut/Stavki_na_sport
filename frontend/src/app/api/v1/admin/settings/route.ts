@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { hashPassword } from '@/server/auth';
 import { mutateState, readState } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
-import { sendTelegramVipChannelMessage } from '@/server/integrations';
+import { sendTelegramChannelAnnouncement } from '@/server/integrations';
 import type { PlatformSettings } from '@/server/types';
 
 export async function PATCH(req: NextRequest) {
@@ -46,9 +46,9 @@ export async function POST() {
   try {
     await requireAdminAccount();
     const state = await readState();
-    const res = await sendTelegramVipChannelMessage(
+    const res = await sendTelegramChannelAnnouncement(
       state.settings,
-      `✅ <b>${state.settings.brandName}</b>: связь с закрытым VIP-каналом успешно проверена! Автопуши прогнозов готовы к работе.`,
+      `✅ <b>${state.settings.brandName}</b>: подключение Telegram-бота для публикации анонсов успешно проверено!`,
     );
     if (!res.sent) {
       return NextResponse.json(

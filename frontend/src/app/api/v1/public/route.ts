@@ -35,7 +35,6 @@ export async function GET(req: NextRequest) {
     },
     viewer: viewer ? toSafeSessionUser(viewer) : null,
     predictions,
-    tariffs: state.tariffs,
     statsByPeriod: analytics.statsByPeriod,
     equityCurve: analytics.equityCurve,
     sportBreakdown: analytics.sportBreakdown,

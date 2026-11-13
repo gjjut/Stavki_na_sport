@@ -55,24 +55,24 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ points }) =>
       : coords[coords.length - 1];
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5 sm:p-6">
+    <div className="rounded-3xl border border-slate-200/90 bg-white p-6 shadow-[0_2px_12px_rgba(15,23,42,0.03)]">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
+          <div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-blue-600">
             <TrendingUp className="h-3.5 w-3.5" />
-            <span>Динамика банка (Equity Curve)</span>
+            <span>График роста банка (Equity Curve)</span>
           </div>
-          <h3 className="mt-1 text-base font-bold text-white sm:text-lg">
-            Прирост начального банка (100%) по рассчитанным прогнозам
+          <h3 className="mt-1 text-lg font-extrabold text-slate-950">
+            Накопительная доходность по всем рассчитанным событиям
           </h3>
         </div>
 
         {activePoint && (
-          <div className="rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2 text-right">
-            <div className="text-[11px] text-slate-400">
-              {activePoint.point.label} · матчей: {activePoint.point.betsCount}
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-right">
+            <div className="text-[11px] font-medium text-slate-500">
+              {activePoint.point.label} · событий: {activePoint.point.betsCount}
             </div>
-            <div className="font-mono text-sm font-bold text-emerald-400">
+            <div className="font-mono text-sm font-black text-blue-600">
               Банк: {activePoint.point.cumulativeBankPct.toFixed(2)}% (
               {activePoint.point.profitUnits >= 0 ? '+' : ''}
               {activePoint.point.profitUnits.toFixed(2)} u)
@@ -81,15 +81,15 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ points }) =>
         )}
       </div>
 
-      <div className="mt-4 overflow-x-auto">
+      <div className="mt-5 overflow-x-auto">
         <svg
           viewBox={`0 0 ${width} ${height}`}
           className="h-56 w-full min-w-[520px] select-none overflow-visible"
         >
           <defs>
-            <linearGradient id="equityFillV2" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#10b981" stopOpacity="0.30" />
-              <stop offset="100%" stopColor="#10b981" stopOpacity="0.01" />
+            <linearGradient id="equityFillCobalt" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#2563EB" stopOpacity="0.20" />
+              <stop offset="100%" stopColor="#2563EB" stopOpacity="0.0" />
             </linearGradient>
           </defs>
 
@@ -103,13 +103,13 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ points }) =>
                   y1={y}
                   x2={width - padX}
                   y2={y}
-                  stroke="#1e293b"
+                  stroke="#E2E8F0"
                   strokeDasharray="4 4"
                 />
                 <text
                   x={4}
                   y={y + 4}
-                  fill="#64748b"
+                  fill="#64748B"
                   fontSize="11"
                   fontFamily="monospace"
                 >
@@ -119,13 +119,13 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ points }) =>
             );
           })}
 
-          {areaD && <path d={areaD} fill="url(#equityFillV2)" />}
+          {areaD && <path d={areaD} fill="url(#equityFillCobalt)" />}
           {pathD && (
             <path
               d={pathD}
               fill="none"
-              stroke="#10b981"
-              strokeWidth="2.75"
+              stroke="#2563EB"
+              strokeWidth="2.8"
               strokeLinecap="round"
               strokeLinejoin="round"
             />
@@ -145,17 +145,17 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ points }) =>
                 <circle
                   cx={c.x}
                   cy={c.y}
-                  r={isActive ? 6 : 4}
-                  fill={isWin ? '#10b981' : '#f43f5e'}
-                  stroke="#020617"
-                  strokeWidth="2"
+                  r={isActive ? 6.5 : 4.5}
+                  fill={isWin ? '#2563EB' : '#E11D48'}
+                  stroke="#FFFFFF"
+                  strokeWidth="2.5"
                 />
                 <text
                   x={c.x}
-                  y={height - 5}
+                  y={height - 4}
                   textAnchor="middle"
-                  fill="#64748b"
-                  fontSize="10"
+                  fill="#64748B"
+                  fontSize="10.5"
                 >
                   {c.point.label}
                 </text>

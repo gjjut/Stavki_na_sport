@@ -1,50 +1,65 @@
 import type { PlatformSettings } from './types';
 
-export interface YooKassaCreateResult {
-  externalPaymentId: string;
-  confirmationUrl: string;
-  status: string;
-}
-
-export async function createYooKassaLivePayment(params: {
+export interface YooKassaCreatePaymentArgs {
   settings: PlatformSettings;
   idempotenceKey: string;
   amountRub: number;
   title: string;
   receiptEmail: string;
   returnUrl: string;
-  savePaymentMethod: boolean;
   metadata: Record<string, string>;
-}): Promise<YooKassaCreateResult> {
-  const shopId = params.settings.yookassaShopId || process.env.YOOKASSA_SHOP_ID || '';
-  const secretKey = params.settings.yookassaSecretKey || process.env.YOOKASSA_SECRET_KEY || '';
+}
 
-  if (!shopId || !secretKey) {
+export interface YooKassaCreatedPayment {
+  externalPaymentId: string;
+  confirmationUrl: string;
+  status: string;
+}
+
+export async function createYooKassaLivePayment(
+  args: YooKassaCreatePaymentArgs,
+): Promise<YooKassaCreatedPayment> {
+  const shopId = (args.settings.yookassaShopId || process.env.YOOKASSA_SHOP_ID || '').trim();
+  const secretKey = (
+    args.settings.yookassaSecretKey ||
+    process.env.YOOKASSA_SECRET_KEY ||
+    ''
+  ).trim();
+
+  if (!shopId || !secretKey || secretKey.includes('replace_with')) {
     throw new Error(
-      'Не заполнены ключи ЮKassa (Shop ID и Secret Key). Укажите их в Настройках админ-панели.',
+      'Боевые ключи ЮKassa еще не указаны. Заполните Shop ID и Секретный ключ в настройках админ-панели или включите Тестовый режим.',
     );
   }
 
+  const amountStr = args.amountRub.toFixed(2);
   const auth = Buffer.from(`${shopId}:${secretKey}`).toString('base64');
-  const valueStr = params.amountRub.toFixed(2);
 
-  const body: Record<string, unknown> = {
-    amount: { value: valueStr, currency: 'RUB' },
+  const payload = {
+    amount: {
+      value: amountStr,
+      currency: 'RUB',
+    },
     capture: true,
     confirmation: {
       type: 'redirect',
-      return_url: params.returnUrl,
+      return_url: args.returnUrl,
     },
-    description: params.title.slice(0, 128),
-    metadata: params.metadata,
+    description: args.title.slice(0, 128),
+    metadata: args.metadata,
     receipt: {
-      customer: { email: params.receiptEmail },
+      customer: {
+        email: args.receiptEmail,
+      },
       items: [
         {
-          description: `Доступ к аналитическому материалу: ${params.title}`.slice(0, 128),
+          description: args.title.slice(0, 128),
           quantity: '1.00',
-          amount: { value: valueStr, currency: 'RUB' },
-          vat_code: params.settings.yookassaVatCode || 1,
+          amount: {
+            value: amountStr,
+            currency: 'RUB',
+          },
+          vat_code: args.settings.yookassaVatCode || 1,
           payment_mode: 'full_payment',
           payment_subject: 'service',
         },
@@ -52,23 +67,19 @@ export async function createYooKassaLivePayment(params: {
     },
   };
 
-  if (params.savePaymentMethod) {
-    body.save_payment_method = true;
-  }
-
   const res = await fetch('https://api.yookassa.ru/v3/payments', {
     method: 'POST',
     headers: {
       Authorization: `Basic ${auth}`,
-      'Idempotence-Key': params.idempotenceKey,
+      'Idempotence-Key': args.idempotenceKey,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`ЮKassa вернула ошибку (${res.status}): ${errText.slice(0, 180)}`);
+    throw new Error(`Ошибка ЮKassa (${res.status}): ${errText.slice(0, 220)}`);
   }
 
   const data = (await res.json()) as {
@@ -92,8 +103,12 @@ export async function verifyYooKassaLivePayment(
   settings: PlatformSettings,
   externalPaymentId: string,
 ): Promise<{ status: string; paid: boolean; amountValue: string }> {
-  const shopId = settings.yookassaShopId || process.env.YOOKASSA_SHOP_ID || '';
-  const secretKey = settings.yookassaSecretKey || process.env.YOOKASSA_SECRET_KEY || '';
+  const shopId = (settings.yookassaShopId || process.env.YOOKASSA_SHOP_ID || '').trim();
+  const secretKey = (
+    settings.yookassaSecretKey ||
+    process.env.YOOKASSA_SECRET_KEY ||
+    ''
+  ).trim();
 
   if (!shopId || !secretKey) {
     throw new Error('Ключи ЮKassa не настроены');
@@ -125,12 +140,16 @@ export async function verifyYooKassaLivePayment(
   };
 }
 
-export async function sendTelegramVipChannelMessage(
+export async function sendTelegramChannelAnnouncement(
   settings: PlatformSettings,
   htmlText: string,
 ): Promise<{ sent: boolean; error?: string }> {
   const token = (settings.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '').trim();
-  const chatId = (settings.telegramVipChannelId || process.env.TELEGRAM_VIP_CHANNEL_ID || '').trim();
+  const chatId = (
+    settings.telegramChannelId ||
+    process.env.TELEGRAM_VIP_CHANNEL_ID ||
+    ''
+  ).trim();
 
   if (!token || !chatId || token.includes('replace_with')) {
     return { sent: false, error: 'Токен бота или ID канала не указаны' };
@@ -152,39 +171,9 @@ export async function sendTelegramVipChannelMessage(
     }
     return { sent: true };
   } catch (err) {
-    return { sent: false, error: err instanceof Error ? err.message : 'Сетевая ошибка Telegram' };
-  }
-}
-
-export async function generateTelegramOneTimeInvite(
-  settings: PlatformSettings,
-  label: string,
-): Promise<string | null> {
-  const token = (settings.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '').trim();
-  const chatId = (settings.telegramVipChannelId || process.env.TELEGRAM_VIP_CHANNEL_ID || '').trim();
-
-  if (!token || !chatId || token.includes('replace_with')) {
-    return settings.freeTelegramUrl || null;
-  }
-
-  try {
-    const expireUnix = Math.floor(Date.now() / 1000) + 7 * 86400;
-    const res = await fetch(`https://api.telegram.org/bot${token}/createChatInviteLink`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        name: label.slice(0, 32),
-        expire_date: expireUnix,
-        member_limit: 1,
-      }),
-    });
-    const data = (await res.json()) as { ok: boolean; result?: { invite_link: string } };
-    if (data.ok && data.result?.invite_link) {
-      return data.result.invite_link;
-    }
-    return settings.freeTelegramUrl || null;
-  } catch {
-    return settings.freeTelegramUrl || null;
+    return {
+      sent: false,
+      error: err instanceof Error ? err.message : 'Сетевая ошибка Telegram',
+    };
   }
 }

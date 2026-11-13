@@ -9,14 +9,12 @@ import type {
   SafeSessionUser,
   SportBreakdownItem,
   StatsSummary,
-  TariffPlan,
 } from '@/server/types';
 
 export interface PublicPlatformPayload {
   brand: PublicBrandInfo;
   viewer: SafeSessionUser | null;
   predictions: PublicPredictionDto[];
-  tariffs: TariffPlan[];
   statsByPeriod: Record<'WEEK' | 'MONTH' | 'ALL_TIME', StatsSummary>;
   equityCurve: EquityPoint[];
   sportBreakdown: SportBreakdownItem[];

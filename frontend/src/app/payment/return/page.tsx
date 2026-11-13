@@ -3,7 +3,7 @@
 import React, { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { CheckCircle2, ExternalLink, Loader2, XCircle } from 'lucide-react';
+import { CheckCircle2, Loader2, XCircle } from 'lucide-react';
 import type { OrderTransaction } from '@/server/types';
 
 function PaymentReturnInner() {
@@ -49,25 +49,29 @@ function PaymentReturnInner() {
 
   if (loading) {
     return (
-      <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center">
-        <Loader2 className="mx-auto h-8 w-8 animate-spin text-emerald-400" />
-        <h1 className="mt-4 text-lg font-bold text-white">Проверяем оплату в ЮKassa...</h1>
-        <p className="mt-1 text-xs text-slate-400">Пожалуйста, подождите пару секунд.</p>
+      <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-xl">
+        <Loader2 className="mx-auto h-8 w-8 animate-spin text-blue-600" />
+        <h1 className="mt-4 text-lg font-extrabold text-slate-950">
+          Проверяем оплату в ЮKassa...
+        </h1>
+        <p className="mt-1 text-xs text-slate-500">Подождите пару секунд.</p>
       </div>
     );
   }
 
   if (error || !order) {
     return (
-      <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center">
-        <XCircle className="mx-auto h-10 w-10 text-rose-400" />
-        <h1 className="mt-4 text-lg font-bold text-white">Не удалось подтвердить заказ</h1>
-        <p className="mt-2 text-xs text-slate-400">{error}</p>
+      <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-xl">
+        <XCircle className="mx-auto h-10 w-10 text-rose-500" />
+        <h1 className="mt-4 text-lg font-extrabold text-slate-950">
+          Не удалось подтвердить заказ
+        </h1>
+        <p className="mt-2 text-xs text-slate-500">{error}</p>
         <Link
           href="/cabinet"
-          className="mt-6 inline-block rounded-xl bg-slate-800 px-5 py-2.5 text-sm font-semibold text-white"
+          className="mt-6 inline-block rounded-xl bg-slate-900 px-6 py-3 text-xs font-bold text-white"
         >
-          В личный кабинет
+          Перейти в мои покупки
         </Link>
       </div>
     );
@@ -76,46 +80,34 @@ function PaymentReturnInner() {
   const isPaid = order.status === 'SUCCEEDED';
 
   return (
-    <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center shadow-2xl">
+    <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-xl">
       {isPaid ? (
         <>
-          <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-400" />
-          <h1 className="mt-4 text-xl font-extrabold text-white">Оплата принята</h1>
-          <p className="mt-1 text-xs text-slate-400">
+          <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-600" />
+          <h1 className="mt-4 text-xl font-black text-slate-950">Оплата подтверждена!</h1>
+          <p className="mt-1 text-xs text-slate-500">
             {order.title} · {order.amountRub.toLocaleString('ru-RU')} ₽
           </p>
 
-          {order.vipInviteLink && (
-            <a
-              href={order.vipInviteLink}
-              target="_blank"
-              rel="noreferrer"
-              className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-500 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-sky-400"
-            >
-              <span>Перейти в закрытый VIP-канал Telegram</span>
-              <ExternalLink className="h-4 w-4" />
-            </a>
-          )}
-
           <Link
             href="/cabinet"
-            className="mt-3 inline-block w-full rounded-xl bg-emerald-500 py-3 text-sm font-bold text-slate-950 hover:bg-emerald-400"
+            className="mt-6 inline-block w-full rounded-xl bg-blue-600 py-3.5 text-sm font-bold text-white shadow-md shadow-blue-600/25 hover:bg-blue-700"
           >
-            Открыть в личном кабинете
+            Открыть прогноз в кабинете
           </Link>
         </>
       ) : (
         <>
-          <XCircle className="mx-auto h-12 w-12 text-amber-400" />
-          <h1 className="mt-4 text-xl font-bold text-white">
-            Статус заказа: {order.status === 'CANCELED' ? 'Отменен' : 'Ожидает подтверждения'}
+          <XCircle className="mx-auto h-12 w-12 text-amber-500" />
+          <h1 className="mt-4 text-xl font-extrabold text-slate-950">
+            Статус: {order.status === 'CANCELED' ? 'Платеж отменен' : 'Ожидает подтверждения'}
           </h1>
-          <p className="mt-2 text-xs text-slate-400">
-            Если средства были списаны, доступ активируется автоматически в течение минуты.
+          <p className="mt-2 text-xs text-slate-500">
+            Если оплата прошла, событие появится в разделе «Мои покупки» в течение минуты.
           </p>
           <Link
             href="/cabinet"
-            className="mt-5 inline-block w-full rounded-xl bg-slate-800 py-3 text-sm font-semibold text-white"
+            className="mt-6 inline-block w-full rounded-xl bg-slate-900 py-3 text-xs font-bold text-white"
           >
             Перейти в личный кабинет
           </Link>
@@ -127,10 +119,12 @@ function PaymentReturnInner() {
 
 export default function PaymentReturnPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
+    <div className="flex min-h-screen items-center justify-center bg-[#F4F6FA] px-4">
       <Suspense
         fallback={
-          <div className="text-sm text-slate-400">Проверка результата платежа...</div>
+          <div className="text-sm font-medium text-slate-500">
+            Проверка результата платежа...
+          </div>
         }
       >
         <PaymentReturnInner />

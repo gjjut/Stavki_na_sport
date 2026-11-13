@@ -12,7 +12,6 @@ export async function GET() {
 
     return NextResponse.json({
       settings: state.settings,
-      tariffs: state.tariffs,
       predictions: state.predictions,
       users: state.users.map((u) => ({
         ...toSafeSessionUser(u),

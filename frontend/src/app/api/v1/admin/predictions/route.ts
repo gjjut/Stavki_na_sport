@@ -30,16 +30,44 @@ export async function PATCH(req: NextRequest) {
     await requireAdminAccount();
     const body = (await req.json()) as {
       predictionId: string;
+      setFeatured?: boolean;
+      singlePriceRub?: number;
       resultStatus?: ResultStatus;
       matchStatus?: MatchStatus;
       finalScore?: string | null;
       cashoutMultiplier?: number | null;
     };
 
+    if (body.setFeatured) {
+      const updated = await mutateState((state) => {
+        for (const p of state.predictions) {
+          p.isFeatured = p.id === body.predictionId;
+        }
+        return state.predictions.find((p) => p.id === body.predictionId);
+      });
+      return NextResponse.json({ prediction: updated });
+    }
+
+    if (typeof body.singlePriceRub === 'number' && !body.resultStatus) {
+      const updated = await mutateState((state) => {
+        const pred = state.predictions.find((p) => p.id === body.predictionId);
+        if (!pred) throw new Error('Событие не найдено');
+        if (body.singlePriceRub! <= 0) {
+          pred.accessTier = 'FREE';
+          pred.singlePriceRub = null;
+        } else {
+          pred.accessTier = 'PAID_SINGLE';
+          pred.singlePriceRub = Math.round(body.singlePriceRub!);
+        }
+        return pred;
+      });
+      return NextResponse.json({ prediction: updated });
+    }
+
     if (body.matchStatus && !body.resultStatus) {
       const updated = await mutateState((state) => {
         const pred = state.predictions.find((p) => p.id === body.predictionId);
-        if (!pred) throw new Error('Прогноз не найден');
+        if (!pred) throw new Error('Событие не найдено');
         pred.matchStatus = body.matchStatus!;
         if (body.finalScore !== undefined) pred.finalScore = body.finalScore;
         return pred;
@@ -67,7 +95,7 @@ export async function DELETE(req: NextRequest) {
     await requireAdminAccount();
     const id = req.nextUrl.searchParams.get('id');
     if (!id) {
-      return NextResponse.json({ error: 'Не указан ID прогноза' }, { status: 400 });
+      return NextResponse.json({ error: 'Не указан ID события' }, { status: 400 });
     }
     await mutateState((state) => {
       state.predictions = state.predictions.filter((p) => p.id !== id);
@@ -75,7 +103,7 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Ошибка удаления прогноза' },
+      { error: err instanceof Error ? err.message : 'Ошибка удаления события' },
       { status: 400 },
     );
   }

@@ -5,8 +5,7 @@ import { Pool } from 'pg';
 import { hashPassword, verifyPassword } from './auth';
 import {
   createYooKassaLivePayment,
-  generateTelegramOneTimeInvite,
-  sendTelegramVipChannelMessage,
+  sendTelegramChannelAnnouncement,
   verifyYooKassaLivePayment,
 } from './integrations';
 import type {
@@ -16,21 +15,20 @@ import type {
   MatchStatus,
   OrderTransaction,
   PayoutRequestRecord,
-  PlanCode,
   PlatformSettings,
   PredictionRecord,
   PublicPredictionDto,
+  RecentWinFeedItem,
   ResultStatus,
   SafeSessionUser,
+  SportBreakdownItem,
   SportType,
   StatsSummary,
-  TariffPlan,
   UserAccount,
 } from './types';
 
-interface PersistentState {
+export interface PersistentState {
   settings: PlatformSettings;
-  tariffs: TariffPlan[];
   users: UserAccount[];
   predictions: PredictionRecord[];
   transactions: OrderTransaction[];
@@ -48,41 +46,56 @@ export function computeCanonicalSha256(params: {
   fixedOdds: number;
   stakeUnits: number;
 }): { canonical: string; sha256: string } {
-  const canonical = [
-    params.matchStartsAt,
-    params.selectionTitle.trim(),
-    params.fixedOdds.toFixed(3),
-    params.stakeUnits.toFixed(2),
-  ].join('|');
+  const canonical = `${params.matchStartsAt}|${params.selectionTitle.trim()}|${params.fixedOdds.toFixed(
+    3,
+  )}|${params.stakeUnits.toFixed(2)}`;
   const sha256 = createHash('sha256').update(canonical, 'utf8').digest('hex');
   return { canonical, sha256 };
 }
 
+const CYR_MAP: Record<string, string> = {
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z',
+  и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r',
+  с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch',
+  ы: 'y', э: 'e', ю: 'yu', я: 'ya',
+};
+
 function slugifyMatch(home: string, away: string, suffix: string): string {
-  const translitMap: Record<string, string> = {
-    а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z',
-    и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r',
-    с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch',
-    ы: 'y', э: 'e', ю: 'yu', я: 'ya',
-  };
-  const norm = `${home}-${away}`
+  const raw = `${home}-${away}`
     .toLowerCase()
     .split('')
-    .map((ch) => translitMap[ch] ?? ch)
+    .map((ch) => CYR_MAP[ch] ?? ch)
     .join('')
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return `${norm || 'match'}-${suffix}`;
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return `${raw || 'match'}-${suffix}`;
 }
 
 function createInitialState(): PersistentState {
   const now = Date.now();
-  const adminEmail = process.env.ADMIN_EMAIL || 'admin@valuex.pro';
+  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@valuex.pro').trim().toLowerCase();
   const adminPassword = process.env.ADMIN_PASSWORD || 'Admin2026!';
+
+  const settings: PlatformSettings = {
+    brandName: 'VALUEX',
+    supportTelegram: 'https://t.me/valuex_support',
+    freeTelegramUrl: 'https://t.me/valuex_analytics',
+    legalSellerName: 'Самозанятый / ИП (укажите реквизиты в Админ-панели)',
+    legalInn: 'ИНН 000000000000',
+    supportEmail: 'support@valuex.pro',
+    paymentMode: 'TEST_INSTANT',
+    yookassaShopId: process.env.YOOKASSA_SHOP_ID || '',
+    yookassaSecretKey: process.env.YOOKASSA_SECRET_KEY || '',
+    yookassaVatCode: Number(process.env.YOOKASSA_VAT_CODE || 1),
+    defaultSinglePriceRub: 790,
+    telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
+    telegramChannelId: process.env.TELEGRAM_VIP_CHANNEL_ID || '',
+  };
 
   const adminUser: UserAccount = {
     id: 'usr_admin_root',
-    email: adminEmail.toLowerCase(),
+    email: adminEmail,
     passwordHash: hashPassword(adminPassword),
     displayName: 'Главный аналитик',
     city: 'Москва',
@@ -90,90 +103,18 @@ function createInitialState(): PersistentState {
     status: 'ACTIVE',
     balanceRub: 0,
     referenceBankrollRub: 100_000,
-    telegramUsername: '@valuex_support',
-    vipExpiresAt: 'LIFETIME',
-    vipPlanName: 'Администратор',
-    autoRenew: false,
-    vipInviteLink: null,
+    telegramUsername: '@valuex_admin',
     purchasedPredictionIds: [],
     referralCode: 'valuex_official',
     referredByUserId: null,
     referredByCode: null,
-    revsharePercent: 40,
+    revsharePercent: 30,
     affiliateBalanceRub: 0,
     affiliateTotalEarnedRub: 0,
     createdAt: new Date(now - 90 * 86400 * 1000).toISOString(),
     lastLoginAt: new Date(now).toISOString(),
   };
 
-  const settings: PlatformSettings = {
-    brandName: 'VALUEX',
-    supportTelegram: 'https://t.me/valuex_support',
-    freeTelegramUrl: 'https://t.me/valuex_free',
-    legalSellerName: 'Администрация аналитического сервиса VALUEX',
-    legalInn: 'Укажите ИНН в Настройках админки',
-    supportEmail: 'support@valuex.pro',
-    paymentMode:
-      process.env.YOOKASSA_SHOP_ID && process.env.YOOKASSA_SECRET_KEY
-        ? 'YOOKASSA_LIVE'
-        : 'TEST_INSTANT',
-    yookassaShopId: process.env.YOOKASSA_SHOP_ID || '',
-    yookassaSecretKey: process.env.YOOKASSA_SECRET_KEY || '',
-    yookassaVatCode: Number(process.env.YOOKASSA_VAT_CODE || 1),
-    defaultSinglePriceRub: 790,
-    telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
-    telegramVipChannelId: process.env.TELEGRAM_VIP_CHANNEL_ID || '',
-  };
-
-  const tariffs: TariffPlan[] = [
-    {
-      code: 'VIP_7D',
-      name: 'VIP на 7 дней',
-      subtitle: 'Проверка дистанции на неделю',
-      durationDays: 7,
-      priceRub: 1_990,
-      oldPriceRub: 2_900,
-      supportsAutoRenew: true,
-      popular: false,
-      features: [
-        'Полный доступ ко всем прогнозам на сайте (15–20 событий)',
-        'Вход в закрытый VIP Telegram-канал с мгновенными пушами',
-        'Точные рекомендации по размеру ставки (% от банка)',
-      ],
-    },
-    {
-      code: 'VIP_30D',
-      name: 'VIP на 30 дней',
-      subtitle: 'Основной рабочий тариф',
-      durationDays: 30,
-      priceRub: 4_990,
-      oldPriceRub: 9_900,
-      supportsAutoRenew: true,
-      popular: true,
-      features: [
-        'Все прогнозы по ранней линии до просадки коэффициентов',
-        'Закрытый VIP Telegram-канал + сопровождение в Live (Cashout)',
-        'Экономия более 80% по сравнению с покупкой отдельных матчей',
-      ],
-    },
-    {
-      code: 'VIP_LIFETIME',
-      name: 'VIP Навсегда',
-      subtitle: 'Единоразовый платеж без продлений',
-      durationDays: null,
-      priceRub: 24_900,
-      oldPriceRub: 44_900,
-      supportsAutoRenew: false,
-      popular: false,
-      features: [
-        'Бессрочный доступ ко всем материалам и прогнозам платформы',
-        'Пожизненное участие в закрытом VIP Telegram-сообществе',
-        'Приоритетная поддержка по распределению игрового банка',
-      ],
-    },
-  ];
-
-  // Набор стартовых прогнозов (актуальные + рассчитанный архив за последние месяцы для графика)
   const makeSeed = (
     idx: number,
     opts: {
@@ -193,6 +134,7 @@ function createInitialState(): PersistentState {
       price: number | null;
       result: ResultStatus;
       score: string | null;
+      featured?: boolean;
       cashoutMult?: number;
     },
   ): PredictionRecord => {
@@ -207,8 +149,9 @@ function createInitialState(): PersistentState {
     if (opts.result === 'WIN') profit = Number((opts.stake * (opts.odds - 1)).toFixed(2));
     else if (opts.result === 'LOSS') profit = -opts.stake;
     else if (opts.result === 'PUSH') profit = 0;
-    else if (opts.result === 'CASHOUT')
+    else if (opts.result === 'CASHOUT') {
       profit = Number((opts.stake * ((opts.cashoutMult ?? 1.5) - 1)).toFixed(2));
+    }
 
     const { sha256 } = computeCanonicalSha256({
       matchStartsAt: startsIso,
@@ -230,6 +173,7 @@ function createInitialState(): PersistentState {
       stakeUnits: opts.stake,
       bookmakerSource: 'Pinnacle / Фонбет',
       analysisTeaser: opts.teaser,
+      isFeatured: Boolean(opts.featured),
       selectionTitle: opts.selection,
       fixedOdds: opts.odds,
       minAcceptableOdds: opts.minOdds,
@@ -250,226 +194,229 @@ function createInitialState(): PersistentState {
   };
 
   const predictions: PredictionRecord[] = [
-    // Актуальные предстоящие и Live матчи
+    // Актуальная витрина событий (6 карточек для сетки 3x2)
     makeSeed(1, {
+      sport: 'FOOTBALL',
+      league: 'Лига Чемпионов · Плей-офф',
+      home: 'Реал Мадрид',
+      away: 'Бавария',
+      offsetHours: 2.4,
+      matchStatus: 'UPCOMING',
+      stake: 2.5,
+      odds: 2.08,
+      minOdds: 1.94,
+      selection: 'Азиатская фора 1 (-0.75)',
+      teaser:
+        'Кадровая потеря левого фланга обороны гостей и +0.62 xG перевес хозяев в домашних вечерних матчах плей-офф.',
+      full: '1. У «Баварии» пропускает игру основной опорник-разрушитель, что резко повышает нагрузку на центр обороны.\n2. По модели ожидаемых моментов справедливый коэффициент на хозяев — 1.84, в линии держится 2.08.\n3. Рекомендуемый вход: от 1.94 и выше.',
+      tier: 'PAID_SINGLE',
+      price: 990,
+      result: 'PENDING',
+      score: null,
+      featured: true,
+    }),
+    makeSeed(2, {
       sport: 'HOCKEY',
       league: 'КХЛ · Регулярный чемпионат',
       home: 'Локомотив',
       away: 'СКА',
-      offsetHours: 0.8,
+      offsetHours: 1.3,
       matchStatus: 'UPCOMING',
       stake: 2.0,
       odds: 1.98,
       minOdds: 1.86,
       selection: 'Индивидуальный тотал 1-й больше (2.5)',
       teaser:
-        'У гостей подтвержден второй вратарь на выездную серию. По моментам в большинстве перевес хозяев +9% к текущей линии.',
-      full: '1. Спецбригада большинства «Локомотива» дома реализует 25.8% попыток.\n2. У соперника третий выездной матч за 5 суток — заметная просадка движения в третьем периоде.\n3. Рабочий диапазон коэффициента: от 1.86 и выше.',
+        'Третий выездной матч подряд для гостей за 5 суток при подтвержденном втором номере в воротах.',
+      full: '1. Спецбригада большинства ярославцев дома реализует 25.8% попыток.\n2. Соперник заметно проседает по скорости возврата в оборону во втором и третьем периодах выездной серии.',
       tier: 'PAID_SINGLE',
       price: 790,
       result: 'PENDING',
       score: null,
     }),
-    makeSeed(2, {
+    makeSeed(3, {
       sport: 'ESPORTS',
       league: 'CS2 · Major Playoffs',
       home: 'Team Spirit',
       away: 'MOUZ',
-      offsetHours: 3.5,
+      offsetHours: 4.0,
       matchStatus: 'UPCOMING',
       stake: 2.5,
       odds: 2.06,
       minOdds: 1.92,
       selection: 'Фора по картам: Team Spirit (-1.5)',
       teaser:
-        'Структура банов карт в BO3 вынуждает соперника отдать пик с 84% побед у Spirit за последние 3 месяца.',
-      full: 'MOUZ перманентно убирают Anubis в первой стадии вето, оставляя открытыми Nuke и Mirage. На дистанции последних 18 карт против топ-10 рейтинг атаки Spirit выше на 0.14 пункта.',
+        'Структура вето карт в BO3 вынуждает соперника оставить открытыми Nuke и Mirage с 84% винрейта у Spirit.',
+      full: 'Перманентный бан Anubis со стороны MOUZ лишает их главного контр-пика. По огневой мощи на пистолетных и оружейных раундах перевес Spirit превышает 11%.',
       tier: 'PAID_SINGLE',
       price: 890,
       result: 'PENDING',
       score: null,
     }),
-    makeSeed(3, {
-      sport: 'FOOTBALL',
-      league: 'Лига Чемпионов УЕФА',
-      home: 'Арсенал',
-      away: 'Интер',
-      offsetHours: -0.6,
-      matchStatus: 'LIVE',
-      stake: 2.0,
-      odds: 1.92,
-      minOdds: 1.82,
-      selection: 'Азиатская фора 1 (-1.0)',
-      teaser:
-        'Ставка выдана подписчикам по утренней линии за 6 часов до стартового свистка (до просадки кэфа до 1.74).',
-      full: 'Высокий прессинг хозяев и отсутствие основного опорника у гостей дают устойчивый перевес по создаваемым моментам внутри штрафной.',
-      tier: 'VIP_ONLY',
-      price: null,
-      result: 'PENDING',
-      score: "1:0 (38')",
-    }),
-
-    // Рассчитанная история по месяцам (для честной статистики и графика Equity Curve)
     makeSeed(4, {
       sport: 'TENNIS',
-      league: 'ATP Finals · Хард в помещении',
+      league: 'ATP Masters · Хард',
+      home: 'Карлос Алькарас',
+      away: 'Алекс де Минаур',
+      offsetHours: 5.5,
+      matchStatus: 'UPCOMING',
+      stake: 2.0,
+      odds: 1.91,
+      minOdds: 1.82,
+      selection: 'Тотал геймов меньше (22.5)',
+      teaser:
+        'Медленный отскок корта нивелирует контратаки австралийца на приеме второй подачи.',
+      full: 'В очных встречах на медленном харде процент удержания подачи у испанца выше на 14 пунктов. Ожидаем закрытие встречи в двух рабочих партиях.',
+      tier: 'PAID_SINGLE',
+      price: 690,
+      result: 'PENDING',
+      score: null,
+    }),
+    makeSeed(5, {
+      sport: 'BASKETBALL',
+      league: 'Евролига · Мужчины',
+      home: 'Панатинаикос',
+      away: 'Монако',
+      offsetHours: 6.8,
+      matchStatus: 'UPCOMING',
+      stake: 1.5,
+      odds: 1.89,
+      minOdds: 1.80,
+      selection: 'Фора 1 (-4.5) с ОТ',
+      teaser:
+        'Открытый бесплатный разбор дня: домашний темп греков и 42% реализации трехочковых из углов.',
+      full: 'Открытая демонстрация аналитического подхода: «Монако» проводит вторую игру сдвоенной недели на выезде с усеченной ротацией больших игроков.',
+      tier: 'FREE',
+      price: null,
+      result: 'PENDING',
+      score: null,
+    }),
+    makeSeed(6, {
+      sport: 'FOOTBALL',
+      league: 'Англия · Премьер-лига',
+      home: 'Арсенал',
+      away: 'Ньюкасл',
+      offsetHours: -0.5,
+      matchStatus: 'LIVE',
+      stake: 2.0,
+      odds: 1.94,
+      minOdds: 1.84,
+      selection: 'Индивидуальный тотал 1-й больше (2.0)',
+      teaser:
+        'Матч уже идет: котировка зафиксирована за 5 часов до стартового свистка до просадки линии.',
+      full: 'Интенсивный прессинг хозяев в первой трети поля и стандарты у ворот ослабленной защиты гостей.',
+      tier: 'PAID_SINGLE',
+      price: 790,
+      result: 'PENDING',
+      score: "1:0 (34')",
+    }),
+
+    // Рассчитанный архив по месяцам (для честного расчета Yield и графика Equity Curve)
+    makeSeed(7, {
+      sport: 'TENNIS',
+      league: 'ATP Finals · Хард',
       home: 'Янник Синнер',
       away: 'Даниил Медведев',
-      offsetHours: -22,
+      offsetHours: -24,
       matchStatus: 'FINISHED',
       stake: 2.5,
       odds: 2.04,
       minOdds: 1.92,
       selection: 'Фора 1 по геймам (-3.5)',
-      teaser: 'Быстрое закрытое покрытие дает решающий перевес на первой подаче (83% выигранных розыгрышей).',
-      full: 'Забрали 2.04 по ранней линии (к началу матча коэффициент опустился до 1.85). Уверенная победа в двух сетах.',
+      teaser: 'Закрытое покрытие дало решающий перевес на первой подаче (83% выигранных мячей).',
+      full: 'Забрали 2.04 по ранней линии (к началу матча коэффициент опустился до 1.85). Победа в двух сетах.',
       tier: 'PAID_SINGLE',
       price: 790,
       result: 'WIN',
-      score: '2:0 (6:3, 6:4)',
+      score: '6:3, 6:4',
     }),
-    makeSeed(5, {
+    makeSeed(8, {
       sport: 'HOCKEY',
       league: 'КХЛ · Регулярный чемпионат',
       home: 'Авангард',
       away: 'Металлург Мг',
-      offsetHours: -50,
+      offsetHours: -54,
       matchStatus: 'FINISHED',
       stake: 2.0,
       odds: 1.96,
       minOdds: 1.85,
-      selection: 'Тотал больше (5.0)',
-      teaser: 'Обе команды проводят отрезок с высокой результативностью первых звеньев.',
-      full: 'Средний xG очных встреч за сезон — 6.1 шайбы. Тотал уверенно пробит к середине третьего периода.',
+      selection: 'Тотал матча больше (5.0)',
+      teaser: 'Высокий темп бросков в створ в первых двух периодах обеспечил пробитие тотала.',
+      full: 'Обе спецбригады большинства отличились дважды уже к 45-й минуте встречи.',
       tier: 'PAID_SINGLE',
       price: 790,
       result: 'WIN',
       score: '4:2',
     }),
-    makeSeed(6, {
+    makeSeed(9, {
       sport: 'FOOTBALL',
-      league: 'АПЛ',
-      home: 'Ньюкасл',
-      away: 'Челси',
-      offsetHours: -96,
+      league: 'Серия А · Италия',
+      home: 'Аталанта',
+      away: 'Наполи',
+      offsetHours: -110,
       matchStatus: 'FINISHED',
       stake: 2.0,
       odds: 2.02,
       minOdds: 1.9,
-      selection: 'Фора 1 (0)',
-      teaser: 'Досрочная фиксация прибыли по сигналу в VIP-канале после удаления на 74-й минуте.',
-      full: 'При счете 1:0 хозяева остались в меньшинстве — зафиксировали прибыль через Cashout с коэффициентом 1.55 (итоговый счет 1:1).',
-      tier: 'VIP_ONLY',
-      price: null,
-      result: 'CASHOUT',
-      cashoutMult: 1.55,
-      score: '1:1 (Cashout при 1:0)',
-    }),
-    makeSeed(7, {
-      sport: 'ESPORTS',
-      league: 'Dota 2 · DreamLeague',
-      home: 'Team Falcons',
-      away: 'BetBoom Team',
-      offsetHours: -140,
-      matchStatus: 'FINISHED',
-      stake: 2.5,
-      odds: 1.95,
-      minOdds: 1.85,
-      selection: 'Победа в серии: Team Falcons',
-      teaser: 'Сильнейший драфт меты патча и 78% побед на решающих картах.',
-      full: 'Полный контроль темпа на обеих картах, чистый заход.',
-      tier: 'PAID_SINGLE',
-      price: 790,
-      result: 'WIN',
-      score: '2:0',
-    }),
-    makeSeed(8, {
-      sport: 'HOCKEY',
-      league: 'НХЛ',
-      home: 'Рейнджерс',
-      away: 'Виннипег',
-      offsetHours: -290,
-      matchStatus: 'FINISHED',
-      stake: 1.5,
-      odds: 1.94,
-      minOdds: 1.85,
-      selection: 'Тотал меньше (5.5)',
-      teaser: 'Открытый архив без удаления минусов: две шайбы в пустые ворота на 59-й минуте.',
-      full: 'По ходу встречи счет держался 2:2 до последних 3 минут, но концовка с пустыми воротами качнула тотал вверх. Контролируемый риск 1.5% банка.',
+      selection: 'Обе забьют и ТБ (2.5)',
+      teaser: 'Гости закрылись после раннего гола — открытый учет минуса в архиве без правок.',
+      full: 'При 2.48 суммарных xG команды ограничились двумя мячами. Честная фиксация минуса в статистике.',
       tier: 'PAID_SINGLE',
       price: 790,
       result: 'LOSS',
-      score: '3:4',
-    }),
-    makeSeed(9, {
-      sport: 'FOOTBALL',
-      league: 'Серия А',
-      home: 'Аталанта',
-      away: 'Милан',
-      offsetHours: -480,
-      matchStatus: 'FINISHED',
-      stake: 3.0,
-      odds: 2.05,
-      minOdds: 1.92,
-      selection: 'Индивидуальный тотал 1-й больше (1.5)',
-      teaser: 'Высокая плотность ударов из пределов вратарской у хозяев.',
-      full: 'Два мяча забиты уже к 58-й минуте.',
-      tier: 'VIP_ONLY',
-      price: null,
-      result: 'WIN',
-      score: '2:1',
+      score: '1:1',
     }),
     makeSeed(10, {
-      sport: 'TENNIS',
-      league: 'ATP 1000 · Шанхай',
-      home: 'Карлос Алькарас',
-      away: 'Томми Пол',
-      offsetHours: -860,
+      sport: 'MMA',
+      league: 'UFC · Номерной турнир',
+      home: 'Ислам Махачев',
+      away: 'Арман Царукян',
+      offsetHours: -420,
       matchStatus: 'FINISHED',
       stake: 3.0,
-      odds: 1.92,
-      minOdds: 1.83,
-      selection: 'Победа 1 со счетом 2:0',
-      teaser: 'Комфортный матчап на приеме второй подачи.',
-      full: 'Без единого отданного гейма на своей подаче.',
+      odds: 1.95,
+      minOdds: 1.85,
+      selection: 'Тотал раундов больше (2.5)',
+      teaser: 'Взаимная нейтрализация партера перевела поединок в чемпионские отрезки.',
+      full: 'Как и закладывалось в модели темпа боя, первые два раунда прошли в тактической работе с минимальным риском.',
       tier: 'PAID_SINGLE',
-      price: 790,
+      price: 990,
       result: 'WIN',
-      score: '2:0 (6:4, 6:2)',
+      score: '5 раундов',
     }),
     makeSeed(11, {
-      sport: 'HOCKEY',
-      league: 'КХЛ',
-      home: 'Трактор',
-      away: 'Ак Барс',
-      offsetHours: -1500,
+      sport: 'BASKETBALL',
+      league: 'НБА · Регулярный сезон',
+      home: 'Денвер Наггетс',
+      away: 'Бостон Селтикс',
+      offsetHours: -980,
       matchStatus: 'FINISHED',
       stake: 2.5,
-      odds: 2.1,
-      minOdds: 1.95,
-      selection: 'Победа 1 в основное время',
-      teaser: 'Домашняя серия челябинцев против уставшего на выезде соперника.',
-      full: 'Полное доминирование по броскам в створ (39 против 21).',
+      odds: 1.97,
+      minOdds: 1.87,
+      selection: 'Победа 1 с учетом ОТ',
+      teaser: 'Фактор среднегорья Денвера против гостевого турне соперника.',
+      full: 'Контроль щита во второй половине (51 против 38 подборов) решил исход концовки.',
       tier: 'PAID_SINGLE',
       price: 790,
       result: 'WIN',
-      score: '3:1',
+      score: '115:109',
     }),
     makeSeed(12, {
       sport: 'FOOTBALL',
-      league: 'Ла Лига',
+      league: 'Ла Лига · Испания',
       home: 'Реал Сосьедад',
       away: 'Атлетико Мадрид',
-      offsetHours: -2200,
+      offsetHours: -1750,
       matchStatus: 'FINISHED',
       stake: 2.0,
       odds: 1.98,
       minOdds: 1.88,
       selection: 'Фора 2 (0)',
-      teaser: 'Равная игра завершилась ничьей — расчет возвратом без потерь для банка.',
-      full: 'Азиатская нулевая фора застраховала ставку при ничейном счете.',
-      tier: 'VIP_ONLY',
-      price: null,
+      teaser: 'Ничейный исход при нулевой форе рассчитан расходным возвратом без потерь.',
+      full: 'Страховка нулевой форой полностью сохранила флэт при счете 1:1.',
+      tier: 'PAID_SINGLE',
+      price: 790,
       result: 'PUSH',
       score: '1:1',
     }),
@@ -478,16 +425,16 @@ function createInitialState(): PersistentState {
       league: 'CS2 · IEM Cologne',
       home: 'NAVI',
       away: 'G2 Esports',
-      offsetHours: -2900,
+      offsetHours: -2500,
       matchStatus: 'FINISHED',
       stake: 3.0,
       odds: 2.02,
       minOdds: 1.9,
-      selection: 'Победа в матче: NAVI',
-      teaser: 'Системная подготовка анти-стратегий на решающем Mirage.',
-      full: 'Победа в серии 2:1 с уверенным закрытием решающей карты 13:7.',
+      selection: 'Победа в серии: NAVI',
+      teaser: 'Подготовленные анти-раунды на решающем Mirage закрыли серию в пользу фаворита модели.',
+      full: 'Победа 2:1 по картам с доминирующей стороной защиты на третьей карте (13:7).',
       tier: 'PAID_SINGLE',
-      price: 790,
+      price: 890,
       result: 'WIN',
       score: '2:1',
     }),
@@ -495,7 +442,6 @@ function createInitialState(): PersistentState {
 
   return {
     settings,
-    tariffs,
     users: [adminUser],
     predictions,
     transactions: [],
@@ -505,7 +451,7 @@ function createInitialState(): PersistentState {
         userId: adminUser.id,
         userEmail: adminUser.email,
         code: 'valuex_official',
-        label: 'Основной Telegram-канал',
+        label: 'Основной канал проекта',
         clicks: 0,
         registrations: 0,
         buyers: 0,
@@ -518,8 +464,77 @@ function createInitialState(): PersistentState {
   };
 }
 
+// Автоматическая миграция старых записей БД (без подписок и VIP_ONLY)
+function normalizeLoadedState(raw: Partial<PersistentState> & Record<string, unknown>): PersistentState {
+  const fallback = createInitialState();
+  const rawSettings = (raw.settings || {}) as Partial<PlatformSettings> & {
+    telegramVipChannelId?: string;
+  };
+
+  const settings: PlatformSettings = {
+    ...fallback.settings,
+    ...rawSettings,
+    telegramChannelId:
+      rawSettings.telegramChannelId ??
+      rawSettings.telegramVipChannelId ??
+      fallback.settings.telegramChannelId,
+  };
+
+  const predictions = (raw.predictions || fallback.predictions).map((p, idx) => {
+    const legacyTier = p.accessTier as string;
+    const normalizedTier: AccessTier = legacyTier === 'FREE' ? 'FREE' : 'PAID_SINGLE';
+    return {
+      ...p,
+      isFeatured: p.isFeatured ?? idx === 0,
+      accessTier: normalizedTier,
+      singlePriceRub:
+        normalizedTier === 'PAID_SINGLE'
+          ? p.singlePriceRub ?? settings.defaultSinglePriceRub
+          : null,
+    };
+  });
+
+  const transactions = (raw.transactions || []).filter(
+    (t) => t.kind === 'SINGLE_PREDICTION' || t.kind === 'BALANCE_TOPUP',
+  );
+
+  const users = (raw.users || fallback.users).map((u) => ({
+    id: u.id,
+    email: u.email,
+    passwordHash: u.passwordHash,
+    displayName: u.displayName,
+    city: u.city || '',
+    role: u.role,
+    status: u.status,
+    balanceRub: u.balanceRub || 0,
+    referenceBankrollRub: u.referenceBankrollRub || 50_000,
+    telegramUsername: u.telegramUsername ?? null,
+    purchasedPredictionIds: Array.isArray(u.purchasedPredictionIds)
+      ? u.purchasedPredictionIds
+      : [],
+    referralCode: u.referralCode,
+    referredByUserId: u.referredByUserId ?? null,
+    referredByCode: u.referredByCode ?? null,
+    revsharePercent: u.revsharePercent ?? 30,
+    affiliateBalanceRub: u.affiliateBalanceRub || 0,
+    affiliateTotalEarnedRub: u.affiliateTotalEarnedRub || 0,
+    createdAt: u.createdAt,
+    lastLoginAt: u.lastLoginAt,
+  }));
+
+  return {
+    settings,
+    users,
+    predictions,
+    transactions,
+    affiliateLinks: raw.affiliateLinks || fallback.affiliateLinks,
+    payouts: raw.payouts || [],
+    processedWebhooks: raw.processedWebhooks || [],
+  };
+}
+
 // =============================================================================
-// ДРАЙВЕР ХРАНЕНИЯ: POSTGRESQL (НА СЕРВЕРЕ) + ФАЙЛОВЫЙ РЕЗЕРВ (В ПЕСОЧНИЦЕ)
+// ДРАЙВЕР ХРАНЕНИЯ: POSTGRESQL (НА СЕРВЕРЕ) + ЛОКАЛЬНЫЙ ФАЙЛ (ДЛЯ ПРЕВЬЮ)
 // =============================================================================
 
 let pgPool: Pool | null = null;
@@ -562,7 +577,9 @@ function readLocalFileState(): PersistentState {
   if (memoryFallback) return memoryFallback;
   try {
     if (fs.existsSync(LOCAL_DB_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(LOCAL_DB_FILE, 'utf8')) as PersistentState;
+      const parsed = normalizeLoadedState(
+        JSON.parse(fs.readFileSync(LOCAL_DB_FILE, 'utf8')),
+      );
       memoryFallback = parsed;
       return parsed;
     }
@@ -598,7 +615,7 @@ export async function readState(): Promise<PersistentState> {
     `SELECT payload FROM valuex_app_storage WHERE store_key = 'main'`,
   );
   if (res.rows.length > 0) {
-    return res.rows[0].payload;
+    return normalizeLoadedState(res.rows[0].payload as unknown as Record<string, unknown>);
   }
 
   const seeded = createInitialState();
@@ -617,8 +634,9 @@ export async function mutateState<T>(
   const pool = await getPostgresPool();
   if (!pool) {
     const state = readLocalFileState();
-    const result = await mutator(state);
-    writeLocalFileState(state);
+    const cloned = structuredClone(state);
+    const result = await mutator(cloned);
+    writeLocalFileState(cloned);
     return result;
   }
 
@@ -628,28 +646,24 @@ export async function mutateState<T>(
     let res = await client.query<{ payload: PersistentState }>(
       `SELECT payload FROM valuex_app_storage WHERE store_key = 'main' FOR UPDATE`,
     );
-
-    let state: PersistentState;
     if (res.rows.length === 0) {
-      state = createInitialState();
+      const seeded = createInitialState();
       await client.query(
         `INSERT INTO valuex_app_storage (store_key, payload, updated_at)
          VALUES ('main', $1::jsonb, NOW())`,
-        [JSON.stringify(state)],
+        [JSON.stringify(seeded)],
       );
-      res = await client.query<{ payload: PersistentState }>(
-        `SELECT payload FROM valuex_app_storage WHERE store_key = 'main' FOR UPDATE`,
-      );
-      state = res.rows[0].payload;
-    } else {
-      state = res.rows[0].payload;
+      res = { rows: [{ payload: seeded }] } as typeof res;
     }
 
-    const result = await mutator(state);
+    const draft = normalizeLoadedState(
+      structuredClone(res.rows[0].payload) as unknown as Record<string, unknown>,
+    );
+    const result = await mutator(draft);
 
     await client.query(
       `UPDATE valuex_app_storage SET payload = $1::jsonb, updated_at = NOW() WHERE store_key = 'main'`,
-      [JSON.stringify(state)],
+      [JSON.stringify(draft)],
     );
     await client.query('COMMIT');
     return result;
@@ -659,18 +673,6 @@ export async function mutateState<T>(
   } finally {
     client.release();
   }
-}
-
-// =============================================================================
-// СЕРИАЛИЗАЦИЯ ПОЛЬЗОВАТЕЛЕЙ И ЗАЩИТА ПЛАТНЫХ ПРОГНОЗОВ
-// =============================================================================
-
-export function isUserVipActive(user: UserAccount | null | undefined): boolean {
-  if (!user || user.status !== 'ACTIVE') return false;
-  if (user.role === 'ADMIN') return true;
-  if (!user.vipExpiresAt) return false;
-  if (user.vipExpiresAt === 'LIFETIME') return true;
-  return new Date(user.vipExpiresAt).getTime() > Date.now();
 }
 
 export function toSafeSessionUser(user: UserAccount): SafeSessionUser {
@@ -684,11 +686,6 @@ export function toSafeSessionUser(user: UserAccount): SafeSessionUser {
     balanceRub: user.balanceRub,
     referenceBankrollRub: user.referenceBankrollRub,
     telegramUsername: user.telegramUsername,
-    hasActiveVip: isUserVipActive(user),
-    vipExpiresAt: user.vipExpiresAt,
-    vipPlanName: user.vipPlanName,
-    autoRenew: user.autoRenew,
-    vipInviteLink: user.vipInviteLink,
     purchasedPredictionIds: user.purchasedPredictionIds,
     referralCode: user.referralCode,
     revsharePercent: user.revsharePercent,
@@ -707,13 +704,13 @@ export function toPublicPredictionDto(
     record.matchStatus === 'FINISHED' &&
     record.resultStatus !== 'PENDING';
   const isBought = Boolean(viewer?.purchasedPredictionIds.includes(record.id));
-  const vipActive = isUserVipActive(viewer);
+  const isAdmin = viewer?.role === 'ADMIN';
 
   const unlocked =
     isFree ||
     isSettledPublic ||
-    vipActive ||
-    (viewer?.status === 'ACTIVE' && record.accessTier === 'PAID_SINGLE' && isBought);
+    isAdmin ||
+    (viewer?.status === 'ACTIVE' && isBought);
 
   return {
     id: record.id,
@@ -728,7 +725,9 @@ export function toPublicPredictionDto(
     stakeUnits: record.stakeUnits,
     bookmakerSource: record.bookmakerSource,
     analysisTeaser: record.analysisTeaser,
+    isFeatured: Boolean(record.isFeatured),
     isLocked: !unlocked,
+    isPurchased: isBought,
     accessTier: record.accessTier,
     singlePriceRub: record.singlePriceRub,
     selectionTitle: unlocked ? record.selectionTitle : null,
@@ -746,7 +745,7 @@ export function toPublicPredictionDto(
 }
 
 // =============================================================================
-// ЧЕСТНЫЙ МАТЕМАТИЧЕСКИЙ РАСЧЕТ СТАТИСТИКИ И ГРАФИКА БАНКА ИЗ БД
+// МАТЕМАТИЧЕСКИЙ РАСЧЕТ ВЕРИФИЦИРОВАННОЙ СТАТИСТИКИ
 // =============================================================================
 
 const MONTH_SHORT_RU = [
@@ -757,21 +756,8 @@ const MONTH_SHORT_RU = [
 export function computePlatformAnalytics(predictions: PredictionRecord[]): {
   statsByPeriod: Record<'WEEK' | 'MONTH' | 'ALL_TIME', StatsSummary>;
   equityCurve: EquityPoint[];
-  sportBreakdown: Array<{
-    sport: SportType;
-    bets: number;
-    winRatePct: number;
-    profitUnits: number;
-    yieldPct: number;
-  }>;
-  recentWinsFeed: Array<{
-    id: string;
-    name: string;
-    city: string;
-    sport: SportType;
-    wonRub: number;
-    matchTitle: string;
-  }>;
+  sportBreakdown: SportBreakdownItem[];
+  recentWinsFeed: RecentWinFeedItem[];
 } {
   const settledChrono = predictions
     .filter((p) => p.resultStatus !== 'PENDING' && p.profitUnits !== null)
@@ -849,7 +835,6 @@ export function computePlatformAnalytics(predictions: PredictionRecord[]): {
     (r) => nowMs - new Date(r.settledAt || r.matchStartsAt).getTime() <= 30 * 86400 * 1000,
   );
 
-  // Группировка Equity Curve по месяцам
   const buckets = new Map<
     string,
     { profit: number; turnover: number; count: number; monthIdx: number; yearShort: string }
@@ -884,9 +869,10 @@ export function computePlatformAnalytics(predictions: PredictionRecord[]): {
 
   for (const [ym, b] of Array.from(buckets.entries()).sort(([a], [z]) => a.localeCompare(z))) {
     cumulativeBank += b.profit;
+    const lbl = `${MONTH_SHORT_RU[b.monthIdx]} '${b.yearShort}`;
     equityCurve.push({
       month: ym,
-      label: `${MONTH_SHORT_RU[b.monthIdx]} '${b.yearShort}`,
+      label: lbl,
       profitUnits: Number(b.profit.toFixed(2)),
       cumulativeBankPct: Number(cumulativeBank.toFixed(2)),
       betsCount: b.count,
@@ -894,9 +880,15 @@ export function computePlatformAnalytics(predictions: PredictionRecord[]): {
     });
   }
 
-  // Разбивка по видам спорта
-  const sportsOrder: SportType[] = ['HOCKEY', 'FOOTBALL', 'TENNIS', 'ESPORTS', 'BASKETBALL', 'MMA'];
-  const sportBreakdown = sportsOrder
+  const allSports: SportType[] = [
+    'FOOTBALL',
+    'HOCKEY',
+    'TENNIS',
+    'ESPORTS',
+    'BASKETBALL',
+    'MMA',
+  ];
+  const sportBreakdown = allSports
     .map((sp) => {
       const spRows = settledChrono.filter((r) => r.sport === sp);
       const st = calcForSubset('ALL_TIME', spRows);
@@ -910,7 +902,6 @@ export function computePlatformAnalytics(predictions: PredictionRecord[]): {
     })
     .filter((item) => item.bets > 0);
 
-  // Лента последних реальных побед для ненавязчивого социального доказательства
   const sampleBuyers = [
     { name: 'Иван', city: 'Москва', bank: 150_000 },
     { name: 'Алексей', city: 'Красноярск', bank: 100_000 },
@@ -948,7 +939,7 @@ export function computePlatformAnalytics(predictions: PredictionRecord[]): {
 }
 
 // =============================================================================
-// БИЗНЕС-ОПЕРАЦИИ (АВТОРИЗАЦИЯ, ОПЛАТЫ, ЮKASSA, ПРОГНОЗЫ, АДМИНКА)
+// БИЗНЕС-ОПЕРАЦИИ (АВТОРИЗАЦИЯ, РАЗОВЫЕ ОПЛАТЫ СОБЫТИЙ, ПРОГНОЗЫ, АДМИНКА)
 // =============================================================================
 
 export async function registerUserAccount(params: {
@@ -960,7 +951,9 @@ export async function registerUserAccount(params: {
 }): Promise<UserAccount> {
   const cleanEmail = params.email.trim().toLowerCase();
   if (!cleanEmail.includes('@')) throw new Error('Введите корректный E-mail');
-  if (params.password.length < 6) throw new Error('Пароль должен содержать минимум 6 символов');
+  if (params.password.length < 6) {
+    throw new Error('Пароль должен содержать минимум 6 символов');
+  }
 
   return mutateState((state) => {
     if (state.users.some((u) => u.email === cleanEmail)) {
@@ -978,7 +971,9 @@ export async function registerUserAccount(params: {
         referredByCode = link.code;
         link.registrations += 1;
       } else {
-        const refOwner = state.users.find((u) => u.referralCode.toLowerCase() === cleanRef);
+        const refOwner = state.users.find(
+          (u) => u.referralCode.toLowerCase() === cleanRef,
+        );
         if (refOwner) {
           referredByUserId = refOwner.id;
           referredByCode = refOwner.referralCode;
@@ -989,25 +984,20 @@ export async function registerUserAccount(params: {
     const baseCode = cleanEmail
       .split('@')[0]
       .replace(/[^a-z0-9]/g, '')
-      .slice(0, 10);
-    const referralCode = `${baseCode || 'partner'}_${Math.random().toString(36).slice(2, 6)}`;
-    const nowIso = new Date().toISOString();
+      .slice(0, 12);
+    const referralCode = `${baseCode || 'partner'}_${randomUUID().slice(0, 4)}`;
 
     const newUser: UserAccount = {
       id: `usr_${randomUUID().slice(0, 12)}`,
       email: cleanEmail,
       passwordHash: hashPassword(params.password),
       displayName: params.displayName.trim() || cleanEmail.split('@')[0],
-      city: params.city?.trim() || 'Москва',
+      city: params.city?.trim() || '',
       role: 'USER',
       status: 'ACTIVE',
       balanceRub: 0,
       referenceBankrollRub: 50_000,
       telegramUsername: null,
-      vipExpiresAt: null,
-      vipPlanName: null,
-      autoRenew: false,
-      vipInviteLink: null,
       purchasedPredictionIds: [],
       referralCode,
       referredByUserId,
@@ -1015,8 +1005,8 @@ export async function registerUserAccount(params: {
       revsharePercent: 30,
       affiliateBalanceRub: 0,
       affiliateTotalEarnedRub: 0,
-      createdAt: nowIso,
-      lastLoginAt: nowIso,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
     };
 
     state.users.unshift(newUser);
@@ -1025,19 +1015,22 @@ export async function registerUserAccount(params: {
       userId: newUser.id,
       userEmail: newUser.email,
       code: referralCode,
-      label: 'Основная партнерская ссылка',
+      label: 'Личная реферальная ссылка',
       clicks: 0,
       registrations: 0,
       buyers: 0,
       revenueRub: 0,
-      createdAt: nowIso,
+      createdAt: new Date().toISOString(),
     });
 
     return newUser;
   });
 }
 
-export async function loginUserAccount(email: string, password: string): Promise<UserAccount> {
+export async function loginUserAccount(
+  email: string,
+  password: string,
+): Promise<UserAccount> {
   const cleanEmail = email.trim().toLowerCase();
   return mutateState((state) => {
     const user = state.users.find((u) => u.email === cleanEmail);
@@ -1045,80 +1038,70 @@ export async function loginUserAccount(email: string, password: string): Promise
       throw new Error('Неверный E-mail или пароль');
     }
     if (user.status === 'BLOCKED') {
-      throw new Error('Ваш аккаунт заблокирован службой поддержки');
+      throw new Error('Учетная запись заблокирована администратором');
     }
     user.lastLoginAt = new Date().toISOString();
     return user;
   });
 }
 
-export async function recordReferralClick(code: string): Promise<void> {
-  const clean = code.trim().toLowerCase();
+export async function recordReferralClick(refCode: string): Promise<void> {
+  const clean = refCode.trim().toLowerCase();
   if (!clean) return;
   await mutateState((state) => {
     const link = state.affiliateLinks.find((l) => l.code.toLowerCase() === clean);
-    if (link) {
-      link.clicks += 1;
-    }
+    if (link) link.clicks += 1;
   });
 }
 
 export async function initiateOrderCheckout(params: {
   userId: string;
-  kind: 'SINGLE_PREDICTION' | 'VIP_SUBSCRIPTION' | 'BALANCE_TOPUP';
+  kind: 'SINGLE_PREDICTION' | 'BALANCE_TOPUP';
   predictionId?: string;
-  planCode?: PlanCode;
   topupAmountRub?: number;
   paymentMethod: 'yookassa' | 'internal_balance';
-  autoRenew: boolean;
   originUrl: string;
 }): Promise<{ order: OrderTransaction; paidImmediately: boolean }> {
   const stateSnap = await readState();
   const userSnap = stateSnap.users.find((u) => u.id === params.userId);
-  if (!userSnap) throw new Error('Необходима авторизация');
-  if (userSnap.status === 'BLOCKED') throw new Error('Аккаунт ограничен');
+  if (!userSnap || userSnap.status === 'BLOCKED') {
+    throw new Error('Авторизуйтесь для совершения покупки');
+  }
 
   let amountRub = 0;
   let title = '';
 
   if (params.kind === 'SINGLE_PREDICTION') {
     const pred = stateSnap.predictions.find((p) => p.id === params.predictionId);
-    if (!pred) throw new Error('Прогноз не найден');
-    if (userSnap.purchasedPredictionIds.includes(pred.id) || isUserVipActive(userSnap)) {
-      throw new Error('Этот прогноз уже открыт для вашего аккаунта');
+    if (!pred) throw new Error('Событие не найдено');
+    if (userSnap.purchasedPredictionIds.includes(pred.id)) {
+      throw new Error('Этот прогноз уже куплен и открыт в вашем кабинете');
     }
     amountRub = pred.singlePriceRub ?? stateSnap.settings.defaultSinglePriceRub;
-    title = `Прогноз: ${pred.homeTeam} — ${pred.awayTeam}`;
-  } else if (params.kind === 'VIP_SUBSCRIPTION') {
-    const plan = stateSnap.tariffs.find((t) => t.code === params.planCode);
-    if (!plan) throw new Error('Тариф не найден');
-    amountRub = plan.priceRub;
-    title = plan.name;
+    title = `Аналитический прогноз: ${pred.homeTeam} — ${pred.awayTeam}`;
   } else {
     amountRub = Math.max(100, Math.round(params.topupAmountRub || 1000));
-    title = `Пополнение баланса аккаунта (${userSnap.email})`;
+    title = `Пополнение кошелька кабинета (${userSnap.email})`;
   }
 
-  if (params.paymentMethod === 'internal_balance') {
-    if (params.kind === 'BALANCE_TOPUP') {
-      throw new Error('Пополнение баланса выполняется через платежный шлюз');
-    }
-    if (userSnap.balanceRub < amountRub) {
-      throw new Error('Недостаточно средств на балансе личного кабинета');
-    }
+  if (params.paymentMethod === 'internal_balance' && userSnap.balanceRub < amountRub) {
+    throw new Error(
+      `Недостаточно средств на балансе кабинета (${userSnap.balanceRub} ₽ из ${amountRub} ₽)`,
+    );
   }
 
   const orderId = `ord_${randomUUID().slice(0, 12)}`;
   const idempotenceKey = randomUUID();
-  let externalPaymentId = `test_${randomUUID().slice(0, 16)}`;
+  let externalPaymentId = `yk_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
   let confirmationUrl: string | null = null;
 
-  // Если включен боевой режим ЮKassa и оплата идет через кассу — создаем реальный платеж в API ЮKassa
   if (
     params.paymentMethod === 'yookassa' &&
     stateSnap.settings.paymentMode === 'YOOKASSA_LIVE'
   ) {
-    const returnUrl = `${params.originUrl}/payment/return?orderId=${encodeURIComponent(orderId)}`;
+    const returnUrl = `${params.originUrl}/payment/return?orderId=${encodeURIComponent(
+      orderId,
+    )}`;
     const liveResult = await createYooKassaLivePayment({
       settings: stateSnap.settings,
       idempotenceKey,
@@ -1126,7 +1109,6 @@ export async function initiateOrderCheckout(params: {
       title,
       receiptEmail: userSnap.email,
       returnUrl,
-      savePaymentMethod: params.kind === 'VIP_SUBSCRIPTION' && params.autoRenew,
       metadata: {
         orderId,
         userId: userSnap.id,
@@ -1146,15 +1128,12 @@ export async function initiateOrderCheckout(params: {
       userEmail: userSnap.email,
       kind: params.kind,
       predictionId: params.predictionId ?? null,
-      planCode: params.planCode ?? null,
       title,
       amountRub,
       paymentMethod: params.paymentMethod,
       status: 'PENDING',
       receiptEmail: userSnap.email,
-      autoRenew: params.autoRenew,
       confirmationUrl,
-      vipInviteLink: null,
       affiliateUserId: userSnap.referredByUserId,
       affiliateCommissionRub: 0,
       createdAt: new Date().toISOString(),
@@ -1164,7 +1143,6 @@ export async function initiateOrderCheckout(params: {
     return order;
   });
 
-  // Списание с внутреннего депозита ИЛИ мгновенный тестовый режим (пока владелец не ввел ключи ЮKassa)
   if (
     params.paymentMethod === 'internal_balance' ||
     stateSnap.settings.paymentMode === 'TEST_INSTANT'
@@ -1176,25 +1154,13 @@ export async function initiateOrderCheckout(params: {
   return { order: createdOrder, paidImmediately: false };
 }
 
-export async function fulfillOrderPayment(orderIdOrExternalId: string): Promise<OrderTransaction> {
-  const preState = await readState();
-  const targetTx = preState.transactions.find(
-    (t) => t.id === orderIdOrExternalId || t.externalPaymentId === orderIdOrExternalId,
-  );
-  if (!targetTx) throw new Error('Заказ не найден');
-  if (targetTx.status === 'SUCCEEDED') return targetTx;
-
-  // Подготавливаем одноразовую инвайт-ссылку в закрытый VIP Telegram, если куплена подписка
-  let generatedInvite: string | null = null;
-  if (targetTx.kind === 'VIP_SUBSCRIPTION') {
-    generatedInvite = await generateTelegramOneTimeInvite(
-      preState.settings,
-      `vip_${targetTx.userEmail}`,
-    );
-  }
-
+export async function fulfillOrderPayment(
+  orderIdOrExternalId: string,
+): Promise<OrderTransaction> {
   return mutateState((state) => {
-    const tx = state.transactions.find((t) => t.id === targetTx.id);
+    const tx = state.transactions.find(
+      (t) => t.id === orderIdOrExternalId || t.externalPaymentId === orderIdOrExternalId,
+    );
     if (!tx) throw new Error('Заказ не найден');
     if (tx.status === 'SUCCEEDED') return tx;
 
@@ -1215,32 +1181,11 @@ export async function fulfillOrderPayment(orderIdOrExternalId: string): Promise<
       if (!buyer.purchasedPredictionIds.includes(tx.predictionId)) {
         buyer.purchasedPredictionIds.push(tx.predictionId);
       }
-    } else if (tx.kind === 'VIP_SUBSCRIPTION' && tx.planCode) {
-      const plan = state.tariffs.find((p) => p.code === tx.planCode);
-      buyer.vipPlanName = plan?.name ?? 'VIP Подписка';
-      buyer.autoRenew = tx.autoRenew;
-
-      if (!plan || plan.durationDays === null) {
-        buyer.vipExpiresAt = 'LIFETIME';
-      } else {
-        const currentExpMs =
-          buyer.vipExpiresAt && buyer.vipExpiresAt !== 'LIFETIME'
-            ? Math.max(Date.now(), new Date(buyer.vipExpiresAt).getTime())
-            : Date.now();
-        buyer.vipExpiresAt = new Date(
-          currentExpMs + plan.durationDays * 86400 * 1000,
-        ).toISOString();
-      }
-
-      if (generatedInvite) {
-        tx.vipInviteLink = generatedInvite;
-        buyer.vipInviteLink = generatedInvite;
-      }
     } else if (tx.kind === 'BALANCE_TOPUP') {
       buyer.balanceRub += tx.amountRub;
     }
 
-    // Начисление реферального вознаграждения партнеру (только за реальные оплаты через ЮKassa)
+    // Начисление реферального вознаграждения с разовой покупки / пополнения через ЮKassa
     if (tx.paymentMethod === 'yookassa' && buyer.referredByUserId) {
       const partner = state.users.find((u) => u.id === buyer.referredByUserId);
       if (partner) {
@@ -1264,57 +1209,55 @@ export async function fulfillOrderPayment(orderIdOrExternalId: string): Promise<
   });
 }
 
-export async function verifyAndSyncOrderFromReturn(orderId: string): Promise<OrderTransaction> {
+export async function verifyAndSyncOrderFromReturn(
+  orderId: string,
+): Promise<OrderTransaction> {
   const state = await readState();
   const tx = state.transactions.find((t) => t.id === orderId);
   if (!tx) throw new Error('Заказ не найден');
+
   if (tx.status === 'SUCCEEDED') return tx;
 
-  if (state.settings.paymentMode === 'YOOKASSA_LIVE' && tx.paymentMethod === 'yookassa') {
-    const remote = await verifyYooKassaLivePayment(state.settings, tx.externalPaymentId);
-    if (remote.status === 'succeeded' && remote.paid) {
+  if (
+    tx.paymentMethod === 'yookassa' &&
+    state.settings.paymentMode === 'YOOKASSA_LIVE'
+  ) {
+    const check = await verifyYooKassaLivePayment(state.settings, tx.externalPaymentId);
+    if (check.status === 'succeeded' && check.paid) {
       return fulfillOrderPayment(tx.id);
+    }
+    if (check.status === 'canceled') {
+      return mutateState((draft) => {
+        const found = draft.transactions.find((r) => r.id === tx.id);
+        if (!found) throw new Error('Заказ не найден');
+        found.status = 'CANCELED';
+        return found;
+      });
     }
   }
 
   return tx;
 }
 
-export async function refundOrderTransaction(orderIdOrExternalId: string): Promise<void> {
+export async function refundOrderTransaction(orderIdOrExternal: string): Promise<void> {
   await mutateState((state) => {
     const tx = state.transactions.find(
-      (t) => t.id === orderIdOrExternalId || t.externalPaymentId === orderIdOrExternalId,
+      (t) => t.id === orderIdOrExternal || t.externalPaymentId === orderIdOrExternal,
     );
-    if (!tx || tx.status !== 'SUCCEEDED') return;
-
+    if (!tx || tx.status === 'REFUNDED') return;
     tx.status = 'REFUNDED';
+
     const buyer = state.users.find((u) => u.id === tx.userId);
-    if (buyer) {
-      if (tx.kind === 'SINGLE_PREDICTION' && tx.predictionId) {
-        buyer.purchasedPredictionIds = buyer.purchasedPredictionIds.filter(
-          (id) => id !== tx.predictionId,
-        );
-      } else if (tx.kind === 'VIP_SUBSCRIPTION') {
-        buyer.vipExpiresAt = null;
-        buyer.vipPlanName = null;
-        buyer.autoRenew = false;
-        buyer.vipInviteLink = null;
-      }
+    if (!buyer) return;
+
+    if (tx.paymentMethod === 'internal_balance') {
+      buyer.balanceRub += tx.amountRub;
     }
 
-    if (tx.affiliateUserId && tx.affiliateCommissionRub > 0) {
-      const partner = state.users.find((u) => u.id === tx.affiliateUserId);
-      if (partner) {
-        partner.affiliateBalanceRub = Math.max(
-          0,
-          partner.affiliateBalanceRub - tx.affiliateCommissionRub,
-        );
-        partner.affiliateTotalEarnedRub = Math.max(
-          0,
-          partner.affiliateTotalEarnedRub - tx.affiliateCommissionRub,
-        );
-      }
-      tx.affiliateCommissionRub = 0;
+    if (tx.kind === 'SINGLE_PREDICTION' && tx.predictionId) {
+      buyer.purchasedPredictionIds = buyer.purchasedPredictionIds.filter(
+        (pid) => pid !== tx.predictionId,
+      );
     }
   });
 }
@@ -1325,92 +1268,100 @@ export async function createPredictionByAdmin(input: {
   homeTeam: string;
   awayTeam: string;
   matchStartsAt: string;
-  matchStatus: MatchStatus;
   selectionTitle: string;
   fixedOdds: number;
-  minAcceptableOdds: number | null;
-  bookmakerSource: string;
-  stakePercent: number;
+  minAcceptableOdds?: number | null;
+  stakeUnits: number;
+  bookmakerSource?: string;
   accessTier: AccessTier;
-  singlePriceRub: number | null;
+  singlePriceRub?: number | null;
+  isFeatured?: boolean;
   analysisTeaser: string;
   analysisFull: string;
-  sendTelegramPush: boolean;
+  pushToTelegram?: boolean;
 }): Promise<PredictionRecord> {
-  const nowIso = new Date().toISOString();
-  const { sha256 } = computeCanonicalSha256({
-    matchStartsAt: input.matchStartsAt,
-    selectionTitle: input.selectionTitle,
-    fixedOdds: input.fixedOdds,
-    stakeUnits: input.stakePercent,
-  });
-
-  const record: PredictionRecord = {
-    id: `pred_${randomUUID().slice(0, 10)}`,
-    slug: slugifyMatch(input.homeTeam, input.awayTeam, Date.now().toString().slice(-5)),
-    sport: input.sport,
-    leagueName: input.leagueName.trim(),
-    homeTeam: input.homeTeam.trim(),
-    awayTeam: input.awayTeam.trim(),
-    matchStartsAt: input.matchStartsAt,
-    matchStatus: input.matchStatus,
-    stakePercent: input.stakePercent,
-    stakeUnits: input.stakePercent,
-    bookmakerSource: input.bookmakerSource.trim() || 'Pinnacle',
-    analysisTeaser: input.analysisTeaser.trim(),
-    selectionTitle: input.selectionTitle.trim(),
-    fixedOdds: input.fixedOdds,
-    minAcceptableOdds: input.minAcceptableOdds,
-    analysisFull: input.analysisFull.trim(),
-    accessTier: input.accessTier,
-    singlePriceRub: input.accessTier === 'PAID_SINGLE' ? input.singlePriceRub : null,
-    revealAfterFinish: true,
-    resultStatus: 'PENDING',
-    cashoutMultiplier: null,
-    finalScore: null,
-    profitUnits: null,
-    profitPercent: null,
-    verificationHash: sha256,
-    oddsLockedAt: nowIso,
-    settledAt: null,
-    createdAt: nowIso,
-  };
-
-  let settingsSnap: PlatformSettings | null = null;
-  await mutateState((state) => {
-    state.predictions.unshift(record);
-    settingsSnap = state.settings;
-  });
-
-  if (input.sendTelegramPush && settingsSnap) {
-    const startStr = new Date(record.matchStartsAt).toLocaleString('ru-RU', {
-      day: '2-digit',
-      month: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    await sendTelegramVipChannelMessage(
-      settingsSnap,
-      [
-        `🔥 <b>VIP ПРОГНОЗ | ${record.leagueName}</b>`,
-        `🏟 <b>${record.homeTeam} — ${record.awayTeam}</b>`,
-        `🕒 Начало: ${startStr}`,
-        '',
-        `🎯 Исход: <b>${record.selectionTitle}</b>`,
-        `📈 Коэффициент: <b>${record.fixedOdds.toFixed(2)}</b>${
-          record.minAcceptableOdds ? ` (актуально от ${record.minAcceptableOdds.toFixed(2)})` : ''
-        }`,
-        `💼 Ставка: <b>${record.stakePercent.toFixed(1)}% от банка (${record.stakeUnits.toFixed(2)} u)</b>`,
-        '',
-        record.analysisFull ? `📊 ${record.analysisFull}\n` : '',
-        `🔐 <code>SHA-256: ${record.verificationHash.slice(0, 16)}...</code>`,
-      ]
-        .filter(Boolean)
-        .join('\n'),
-    );
+  const odds = Number(input.fixedOdds);
+  const stake = Number(input.stakeUnits);
+  if (odds < 1.05 || odds > 50) throw new Error('Укажите реальный коэффициент (1.05 – 50)');
+  if (stake < 0.25 || stake > 10) {
+    throw new Error('Размер флэта должен быть от 0.25 до 10% банка');
   }
 
-  return record;
+  const startsIso = new Date(input.matchStartsAt).toISOString();
+  const nowIso = new Date().toISOString();
+  const shortId = randomUUID().slice(0, 8);
+
+  const { sha256 } = computeCanonicalSha256({
+    matchStartsAt: startsIso,
+    selectionTitle: input.selectionTitle,
+    fixedOdds: odds,
+    stakeUnits: stake,
+  });
+
+  const created = await mutateState((state) => {
+    if (input.isFeatured) {
+      for (const existing of state.predictions) {
+        existing.isFeatured = false;
+      }
+    }
+
+    const pred: PredictionRecord = {
+      id: `pred_${shortId}`,
+      slug: slugifyMatch(input.homeTeam, input.awayTeam, shortId.slice(0, 4)),
+      sport: input.sport,
+      leagueName: input.leagueName.trim(),
+      homeTeam: input.homeTeam.trim(),
+      awayTeam: input.awayTeam.trim(),
+      matchStartsAt: startsIso,
+      matchStatus: 'UPCOMING',
+      stakePercent: stake,
+      stakeUnits: stake,
+      bookmakerSource: input.bookmakerSource?.trim() || 'Pinnacle / Фонбет',
+      analysisTeaser: input.analysisTeaser.trim(),
+      isFeatured: Boolean(input.isFeatured),
+      selectionTitle: input.selectionTitle.trim(),
+      fixedOdds: odds,
+      minAcceptableOdds: input.minAcceptableOdds ? Number(input.minAcceptableOdds) : null,
+      analysisFull: input.analysisFull.trim(),
+      accessTier: input.accessTier,
+      singlePriceRub:
+        input.accessTier === 'PAID_SINGLE'
+          ? Math.max(50, Number(input.singlePriceRub) || state.settings.defaultSinglePriceRub)
+          : null,
+      revealAfterFinish: true,
+      resultStatus: 'PENDING',
+      cashoutMultiplier: null,
+      finalScore: null,
+      profitUnits: null,
+      profitPercent: null,
+      verificationHash: sha256,
+      oddsLockedAt: nowIso,
+      settledAt: null,
+      createdAt: nowIso,
+    };
+
+    state.predictions.unshift(pred);
+    return { pred, settings: state.settings };
+  });
+
+  if (input.pushToTelegram) {
+    const priceLabel =
+      created.pred.accessTier === 'FREE'
+        ? 'Открытый бесплатный разбор'
+        : `Разовый доступ: ${created.pred.singlePriceRub} ₽`;
+    const msg = [
+      `📊 <b>Новый разбор на ${created.settings.brandName}</b>`,
+      `🏆 ${created.pred.leagueName}`,
+      `⚔️ <b>${created.pred.homeTeam} — ${created.pred.awayTeam}</b>`,
+      `💼 Флэт: <b>${created.pred.stakeUnits.toFixed(2)}% банка</b>`,
+      `🔓 ${priceLabel}`,
+      ``,
+      `${created.pred.analysisTeaser}`,
+    ].join('\n');
+    await sendTelegramChannelAnnouncement(created.settings, msg);
+  }
+
+  return created.pred;
 }
 
 export async function settlePredictionByAdmin(params: {
@@ -1421,15 +1372,23 @@ export async function settlePredictionByAdmin(params: {
 }): Promise<PredictionRecord> {
   return mutateState((state) => {
     const pred = state.predictions.find((p) => p.id === params.predictionId);
-    if (!pred) throw new Error('Прогноз не найден');
+    if (!pred) throw new Error('Событие не найдено');
+
+    pred.resultStatus = params.resultStatus;
+    if (params.finalScore !== undefined) {
+      pred.finalScore = params.finalScore?.trim() || null;
+    }
 
     if (params.resultStatus === 'PENDING') {
-      pred.resultStatus = 'PENDING';
+      pred.matchStatus = 'UPCOMING';
       pred.profitUnits = null;
       pred.profitPercent = null;
       pred.settledAt = null;
       return pred;
     }
+
+    pred.matchStatus = 'FINISHED';
+    pred.settledAt = new Date().toISOString();
 
     let profit = 0;
     if (params.resultStatus === 'WIN') {
@@ -1439,17 +1398,13 @@ export async function settlePredictionByAdmin(params: {
     } else if (params.resultStatus === 'PUSH') {
       profit = 0;
     } else if (params.resultStatus === 'CASHOUT') {
-      const mult = params.cashoutMultiplier ?? pred.cashoutMultiplier ?? 1.5;
+      const mult = Number(params.cashoutMultiplier || 1.4);
       pred.cashoutMultiplier = mult;
       profit = Number((pred.stakeUnits * (mult - 1)).toFixed(2));
     }
 
-    pred.matchStatus = 'FINISHED';
-    pred.resultStatus = params.resultStatus;
-    pred.finalScore = params.finalScore?.trim() || pred.finalScore || null;
     pred.profitUnits = profit;
     pred.profitPercent = profit;
-    pred.settledAt = new Date().toISOString();
     return pred;
   });
 }

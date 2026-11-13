@@ -2,9 +2,9 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'VALUEX PRO — Верифицированная платформа спортивной аналитики (+EV)',
+  title: 'VALUEX — Маркетплейс спортивной аналитики и прогнозов',
   description:
-    'Прозрачная спортивная аналитика с криптографической фиксацией коэффициентов (SHA-256), системой Флэт и верифицированным Yield.',
+    'Разовый доступ к аналитическим разборам матчей с фиксацией коэффициентов (SHA-256) и открытой верифицированной статистикой.',
 };
 
 export default function RootLayout({
@@ -13,8 +13,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ru" className="dark">
-      <body className="min-h-screen bg-slate-950 font-sans text-slate-100">{children}</body>
+    <html lang="ru">
+      <body className="min-h-screen bg-[#F4F6FA] font-sans text-slate-900">{children}</body>
     </html>
   );
 }

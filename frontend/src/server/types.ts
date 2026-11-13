@@ -1,11 +1,17 @@
 export type UserRole = 'USER' | 'ADMIN';
 export type UserStatus = 'ACTIVE' | 'BLOCKED';
 
-export type SportType = 'FOOTBALL' | 'HOCKEY' | 'TENNIS' | 'ESPORTS' | 'BASKETBALL' | 'MMA';
+export type SportType =
+  | 'FOOTBALL'
+  | 'HOCKEY'
+  | 'TENNIS'
+  | 'ESPORTS'
+  | 'BASKETBALL'
+  | 'MMA';
+
 export type MatchStatus = 'UPCOMING' | 'LIVE' | 'FINISHED';
 export type ResultStatus = 'PENDING' | 'WIN' | 'LOSS' | 'PUSH' | 'CASHOUT';
-export type AccessTier = 'FREE' | 'PAID_SINGLE' | 'VIP_ONLY';
-export type PlanCode = 'VIP_7D' | 'VIP_30D' | 'VIP_LIFETIME';
+export type AccessTier = 'FREE' | 'PAID_SINGLE';
 
 export interface UserAccount {
   id: string;
@@ -18,15 +24,9 @@ export interface UserAccount {
   balanceRub: number;
   referenceBankrollRub: number;
   telegramUsername: string | null;
-
-  // Подписка пользователя
-  vipExpiresAt: string | null; // ISO date или 'LIFETIME' или null
-  vipPlanName: string | null;
-  autoRenew: boolean;
-  vipInviteLink: string | null;
   purchasedPredictionIds: string[];
 
-  // Партнерская программа (каждый юзер может быть партнером, админ может менять %)
+  // Партнерская программа (реферальные отчисления с разовых покупок)
   referralCode: string;
   referredByUserId: string | null;
   referredByCode: string | null;
@@ -48,11 +48,6 @@ export interface SafeSessionUser {
   balanceRub: number;
   referenceBankrollRub: number;
   telegramUsername: string | null;
-  hasActiveVip: boolean;
-  vipExpiresAt: string | null;
-  vipPlanName: string | null;
-  autoRenew: boolean;
-  vipInviteLink: string | null;
   purchasedPredictionIds: string[];
   referralCode: string;
   revsharePercent: number;
@@ -73,8 +68,9 @@ export interface PredictionRecord {
   stakeUnits: number;
   bookmakerSource: string;
   analysisTeaser: string;
+  isFeatured?: boolean;
 
-  // Секретные поля прогноза (никогда не уходят на клиент до покупки/VIP или расчета)
+  // Секретные поля прогноза (никогда не уходят в JSON до покупки или завершения матча)
   selectionTitle: string;
   fixedOdds: number;
   minAcceptableOdds: number | null;
@@ -109,7 +105,9 @@ export interface PublicPredictionDto {
   stakeUnits: number;
   bookmakerSource: string;
   analysisTeaser: string;
+  isFeatured: boolean;
   isLocked: boolean;
+  isPurchased: boolean;
   accessTier: AccessTier;
   singlePriceRub: number | null;
   selectionTitle: string | null;
@@ -125,35 +123,20 @@ export interface PublicPredictionDto {
   settledAt: string | null;
 }
 
-export interface TariffPlan {
-  code: PlanCode;
-  name: string;
-  subtitle: string;
-  durationDays: number | null; // null = Навсегда
-  priceRub: number;
-  oldPriceRub: number;
-  supportsAutoRenew: boolean;
-  popular: boolean;
-  features: string[];
-}
-
 export interface OrderTransaction {
   id: string;
   idempotenceKey: string;
   externalPaymentId: string;
   userId: string;
   userEmail: string;
-  kind: 'SINGLE_PREDICTION' | 'VIP_SUBSCRIPTION' | 'BALANCE_TOPUP';
+  kind: 'SINGLE_PREDICTION' | 'BALANCE_TOPUP';
   predictionId: string | null;
-  planCode: PlanCode | null;
   title: string;
   amountRub: number;
   paymentMethod: 'yookassa' | 'internal_balance';
   status: 'PENDING' | 'SUCCEEDED' | 'CANCELED' | 'REFUNDED';
   receiptEmail: string;
-  autoRenew: boolean;
   confirmationUrl: string | null;
-  vipInviteLink: string | null;
   affiliateUserId: string | null;
   affiliateCommissionRub: number;
   createdAt: string;
@@ -185,6 +168,8 @@ export interface PayoutRequestRecord {
   processedAt: string | null;
 }
 
+export type AffiliatePayoutRequest = PayoutRequestRecord;
+
 export interface PlatformSettings {
   brandName: string;
   supportTelegram: string;
@@ -200,7 +185,7 @@ export interface PlatformSettings {
   defaultSinglePriceRub: number;
 
   telegramBotToken: string;
-  telegramVipChannelId: string;
+  telegramChannelId: string;
 }
 
 export interface StatsSummary {
@@ -219,8 +204,6 @@ export interface StatsSummary {
   currentWinStreak: number;
   maxDrawdownPct: number;
 }
-
-export type AffiliatePayoutRequest = PayoutRequestRecord;
 
 export interface SportBreakdownItem {
   sport: SportType;

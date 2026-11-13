@@ -5,22 +5,19 @@ import Link from 'next/link';
 import {
   CheckCircle2,
   CreditCard,
-  ExternalLink,
   Loader2,
   ShieldCheck,
   Wallet,
   X,
 } from 'lucide-react';
-import type { OrderTransaction, PlanCode, SafeSessionUser } from '@/server/types';
+import type { OrderTransaction, SafeSessionUser } from '@/server/types';
 
 export interface CheckoutModalTarget {
-  kind: 'SINGLE_PREDICTION' | 'VIP_SUBSCRIPTION' | 'BALANCE_TOPUP';
+  kind: 'SINGLE_PREDICTION' | 'BALANCE_TOPUP';
   title: string;
   subtitle: string;
   priceRub: number;
   predictionId?: string;
-  planCode?: PlanCode;
-  supportsAutoRenew?: boolean;
 }
 
 interface YooKassaCheckoutModalProps {
@@ -37,7 +34,6 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
   onSuccess,
 }) => {
   const [method, setMethod] = useState<'yookassa' | 'internal_balance'>('yookassa');
-  const [autoRenew, setAutoRenew] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [paidOrder, setPaidOrder] = useState<OrderTransaction | null>(null);
@@ -59,10 +55,8 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
         body: JSON.stringify({
           kind: target.kind,
           predictionId: target.predictionId,
-          planCode: target.planCode,
           topupAmountRub: target.kind === 'BALANCE_TOPUP' ? target.priceRub : undefined,
           paymentMethod: method,
-          autoRenew: target.supportsAutoRenew ? autoRenew : false,
         }),
       });
       const json = (await res.json()) as {
@@ -92,12 +86,13 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
+        {/* Контрастная шапка модального окна */}
+        <div className="flex items-center justify-between bg-[#0B0F19] px-6 py-4 text-white">
           <div className="flex items-center gap-2">
-            <ShieldCheck className="h-5 w-5 text-emerald-400" />
-            <span className="text-sm font-bold text-white">Оформление заказа</span>
+            <ShieldCheck className="h-4 w-4 text-blue-400" />
+            <span className="text-sm font-bold">Разовая покупка события</span>
           </div>
           <button
             type="button"
@@ -106,63 +101,60 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
               setError(null);
               onClose();
             }}
-            className="rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+            className="rounded-lg p-1 text-slate-400 hover:bg-white/10 hover:text-white"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
         <div className="p-6">
-          {/* Сводка заказа */}
-          <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
-            <div className="text-xs text-slate-400">{target.subtitle}</div>
-            <div className="mt-0.5 text-base font-bold text-white">{target.title}</div>
-            <div className="mt-2 font-mono text-2xl font-extrabold text-emerald-400">
-              {target.priceRub.toLocaleString('ru-RU')} ₽
+          {/* Карточка выбранного события */}
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+              {target.subtitle}
+            </div>
+            <div className="mt-0.5 text-base font-extrabold text-slate-950">
+              {target.title}
+            </div>
+            <div className="mt-2 flex items-baseline justify-between">
+              <span className="text-xs text-slate-500">К оплате без подписок:</span>
+              <span className="font-mono text-2xl font-black text-blue-600">
+                {target.priceRub.toLocaleString('ru-RU')} ₽
+              </span>
             </div>
           </div>
 
           {!viewer ? (
-            <div className="mt-5 space-y-3">
-              <p className="text-sm leading-relaxed text-slate-300">
-                Чтобы доступ к прогнозу и ссылка в закрытый VIP-канал сохранились за вами навсегда, войдите в аккаунт или зарегистрируйтесь.
+            <div className="mt-5 space-y-3.5">
+              <p className="text-xs leading-relaxed text-slate-600">
+                Войдите или создайте аккаунт за 15 секунд — купленный прогноз откроется мгновенно и навсегда сохранится в разделе «Мои покупки».
               </p>
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <div className="grid grid-cols-2 gap-2.5">
                 <Link
                   href="/login"
-                  className="rounded-xl border border-slate-700 bg-slate-950 py-3 text-center text-sm font-semibold text-white transition hover:border-slate-600"
+                  className="rounded-xl border border-slate-200 bg-white py-3 text-center text-sm font-bold text-slate-800 transition hover:bg-slate-50"
                 >
                   Войти
                 </Link>
                 <Link
                   href="/register"
-                  className="rounded-xl bg-emerald-500 py-3 text-center text-sm font-bold text-slate-950 transition hover:bg-emerald-400"
+                  className="rounded-xl bg-blue-600 py-3 text-center text-sm font-bold text-white shadow-sm shadow-blue-600/25 transition hover:bg-blue-700"
                 >
-                  Создать аккаунт
+                  Регистрация
                 </Link>
               </div>
             </div>
           ) : paidOrder ? (
-            <div className="mt-5 text-center">
-              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
+            <div className="mt-6 text-center">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600">
                 <CheckCircle2 className="h-6 w-6" />
               </div>
-              <h4 className="mt-3 text-lg font-bold text-white">Оплата успешно подтверждена</h4>
-              <p className="mt-1 text-xs text-slate-400">
-                Доступ открыт мгновенно и сохранен в вашем личном кабинете.
+              <h4 className="mt-3 text-lg font-extrabold text-slate-950">
+                Доступ к событию открыт!
+              </h4>
+              <p className="mt-1 text-xs text-slate-500">
+                Исход, зафиксированный коэффициент и аналитический разбор уже разблокированы на карточке и в разделе «Мои покупки».
               </p>
-
-              {paidOrder.vipInviteLink && (
-                <a
-                  href={paidOrder.vipInviteLink}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-500 px-4 py-3 text-sm font-bold text-slate-950 transition hover:bg-sky-400"
-                >
-                  <span>Вступить в закрытый VIP-канал Telegram</span>
-                  <ExternalLink className="h-4 w-4" />
-                </a>
-              )}
 
               <button
                 type="button"
@@ -170,29 +162,29 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                   setPaidOrder(null);
                   onClose();
                 }}
-                className="mt-3 w-full rounded-xl bg-slate-800 py-2.5 text-sm font-semibold text-white hover:bg-slate-700"
+                className="mt-5 w-full rounded-xl bg-blue-600 py-3 text-sm font-bold text-white hover:bg-blue-700"
               >
-                Перейти к материалам
+                Смотреть открытый прогноз
               </button>
             </div>
           ) : (
             <div className="mt-5 space-y-4">
-              <div className="grid grid-cols-1 gap-2">
+              <div className="space-y-2">
                 <button
                   type="button"
                   onClick={() => setMethod('yookassa')}
-                  className={`flex items-center gap-3 rounded-xl border p-3.5 text-left transition ${
+                  className={`flex w-full items-center gap-3 rounded-2xl border p-3.5 text-left transition ${
                     method === 'yookassa'
-                      ? 'border-emerald-500/60 bg-emerald-500/10'
-                      : 'border-slate-800 bg-slate-950 hover:border-slate-700'
+                      ? 'border-blue-600 bg-blue-50/50 ring-1 ring-blue-600'
+                      : 'border-slate-200 bg-white hover:border-slate-300'
                   }`}
                 >
-                  <CreditCard className="h-5 w-5 text-emerald-400" />
+                  <CreditCard className="h-5 w-5 shrink-0 text-blue-600" />
                   <div>
-                    <div className="text-sm font-semibold text-white">
-                      Банковская карта / СБП (ЮKassa)
+                    <div className="text-sm font-bold text-slate-900">
+                      Карта РФ / СБП (ЮKassa)
                     </div>
-                    <div className="text-xs text-slate-400">
+                    <div className="text-[11px] text-slate-500">
                       МИР, СБП QR, SberPay, T-Pay · Чек 54-ФЗ на {viewer.email}
                     </div>
                   </div>
@@ -203,20 +195,24 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                     type="button"
                     disabled={!canUseBalance}
                     onClick={() => setMethod('internal_balance')}
-                    className={`flex items-center justify-between rounded-xl border p-3.5 text-left transition ${
+                    className={`flex w-full items-center justify-between rounded-2xl border p-3.5 text-left transition ${
                       method === 'internal_balance'
-                        ? 'border-emerald-500/60 bg-emerald-500/10'
-                        : 'border-slate-800 bg-slate-950'
-                    } ${!canUseBalance ? 'cursor-not-allowed opacity-50' : 'hover:border-slate-700'}`}
+                        ? 'border-blue-600 bg-blue-50/50 ring-1 ring-blue-600'
+                        : 'border-slate-200 bg-white'
+                    } ${
+                      !canUseBalance
+                        ? 'cursor-not-allowed opacity-50'
+                        : 'hover:border-slate-300'
+                    }`}
                   >
                     <div className="flex items-center gap-3">
-                      <Wallet className="h-5 w-5 text-amber-400" />
+                      <Wallet className="h-5 w-5 shrink-0 text-slate-700" />
                       <div>
-                        <div className="text-sm font-semibold text-white">
-                          Списать с баланса кабинета
+                        <div className="text-sm font-bold text-slate-900">
+                          Списать с кошелька кабинета
                         </div>
-                        <div className="text-xs text-slate-400">
-                          Доступно: {viewer.balanceRub.toLocaleString('ru-RU')} ₽
+                        <div className="text-[11px] text-slate-500">
+                          На балансе: {viewer.balanceRub.toLocaleString('ru-RU')} ₽
                         </div>
                       </div>
                     </div>
@@ -224,22 +220,8 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                 )}
               </div>
 
-              {target.supportsAutoRenew && method === 'yookassa' && (
-                <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-xs text-slate-300">
-                  <input
-                    type="checkbox"
-                    checked={autoRenew}
-                    onChange={(e) => setAutoRenew(e.target.checked)}
-                    className="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-900 text-emerald-500"
-                  />
-                  <span>
-                    Автоматически продлевать подписку (отменить можно в любой момент в личном кабинете).
-                  </span>
-                </label>
-              )}
-
               {error && (
-                <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-medium text-rose-600">
                   {error}
                 </div>
               )}
@@ -248,19 +230,19 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                 type="button"
                 disabled={loading}
                 onClick={handlePay}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 py-3.5 text-sm font-bold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-60"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3.5 text-sm font-bold text-white shadow-md shadow-blue-600/25 transition hover:bg-blue-700 disabled:opacity-60"
               >
                 {loading && <Loader2 className="h-4 w-4 animate-spin" />}
                 <span>
                   {loading
-                    ? 'Подготовка оплаты...'
+                    ? 'Переход к оплате...'
                     : `Оплатить ${target.priceRub.toLocaleString('ru-RU')} ₽`}
                 </span>
               </button>
 
-              <p className="text-center text-[11px] text-slate-500">
-                Нажимая кнопку оплаты, вы соглашаетесь с условиями{' '}
-                <Link href="/legal/offer" className="underline hover:text-slate-300">
+              <p className="text-center text-[11px] text-slate-400">
+                Разовый платеж без автосписаний. Условия{' '}
+                <Link href="/legal/offer" className="underline hover:text-slate-600">
                   публичной оферты
                 </Link>
                 .

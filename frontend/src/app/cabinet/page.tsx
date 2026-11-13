@@ -4,12 +4,11 @@ import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
+  ArrowRight,
   Copy,
-  Crown,
-  ExternalLink,
   Plus,
-  Send,
   Share2,
+  ShoppingBag,
   User,
   Wallet,
 } from 'lucide-react';
@@ -30,7 +29,7 @@ import type {
 
 interface CabinetData {
   user: SafeSessionUser;
-  unlockedPredictions: PublicPredictionDto[];
+  purchasedPredictions: PublicPredictionDto[];
   orders: OrderTransaction[];
   affiliateLinks: AffiliateLinkRecord[];
   payouts: AffiliatePayoutRequest[];
@@ -41,24 +40,24 @@ export default function CabinetPage() {
   const { data: pubData, reload: reloadPub } = usePublicPlatform();
   const [cabinet, setCabinet] = useState<CabinetData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<'ACCESS' | 'ORDERS' | 'PARTNER' | 'PROFILE'>('ACCESS');
+  const [tab, setTab] = useState<'PURCHASES' | 'ORDERS' | 'PARTNER' | 'PROFILE'>(
+    'PURCHASES',
+  );
   const [checkoutTarget, setCheckoutTarget] = useState<CheckoutModalTarget | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
-  // Профиль
   const [bankrollInput, setBankrollInput] = useState('');
   const [tgInput, setTgInput] = useState('');
   const [curPass, setCurPass] = useState('');
   const [newPass, setNewPass] = useState('');
-
-  // Пополнение
   const [topupRub, setTopupRub] = useState('1500');
 
-  // Партнерка
   const [newCode, setNewCode] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [withdrawRub, setWithdrawRub] = useState('1000');
-  const [withdrawMethod, setWithdrawMethod] = useState<'SBP' | 'CARD' | 'USDT_TRC20'>('SBP');
+  const [withdrawMethod, setWithdrawMethod] = useState<'SBP' | 'CARD' | 'USDT_TRC20'>(
+    'SBP',
+  );
   const [withdrawReq, setWithdrawReq] = useState('');
 
   const showNotice = (msg: string) => {
@@ -87,7 +86,7 @@ export default function CabinetPage() {
 
   if (loading || !pubData || !cabinet) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-sm text-slate-400">
+      <div className="flex min-h-screen items-center justify-center bg-[#F4F6FA] text-sm font-medium text-slate-500">
         Загрузка личного кабинета...
       </div>
     );
@@ -95,18 +94,6 @@ export default function CabinetPage() {
 
   const u = cabinet.user;
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
-
-  const handleCancelAutoRenew = async () => {
-    const res = await fetch('/api/v1/cabinet', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cancelAutoRenew: true }),
-    });
-    if (res.ok) {
-      showNotice('Автоматическое продление подписки отключено');
-      await loadCabinet();
-    }
-  };
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -175,10 +162,6 @@ export default function CabinetPage() {
     await loadCabinet();
   };
 
-  const upcomingUnlocked = cabinet.unlockedPredictions.filter(
-    (p) => p.matchStatus !== 'FINISHED',
-  );
-
   return (
     <SiteShell
       brand={pubData.brand}
@@ -198,85 +181,71 @@ export default function CabinetPage() {
       />
 
       {toast && (
-        <div className="fixed bottom-5 right-5 z-50 rounded-xl border border-emerald-500/40 bg-slate-900 px-4 py-3 text-xs font-semibold text-emerald-300 shadow-2xl">
+        <div className="fixed bottom-5 right-5 z-50 rounded-2xl border border-slate-200 bg-[#0B0F19] px-4 py-3 text-xs font-bold text-white shadow-xl">
           {toast}
         </div>
       )}
 
-      <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-        {/* Шапка кабинета */}
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
-            <div className="flex items-center gap-2.5 text-xs text-slate-400">
-              <User className="h-4 w-4 text-emerald-400" />
-              <span>Аккаунт клиента</span>
+      {/* Контрастная темная шапка личного кабинета */}
+      <div className="bg-[#0B0F19] py-10 text-white">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <User className="h-4 w-4 text-blue-400" />
+                <span>Профиль покупателя</span>
+              </div>
+              <div className="mt-2 text-lg font-black text-white">{u.displayName}</div>
+              <div className="text-xs text-slate-400">{u.email}</div>
             </div>
-            <div className="mt-2 text-lg font-bold text-white">{u.displayName}</div>
-            <div className="text-xs text-slate-400">{u.email}</div>
-          </div>
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span className="inline-flex items-center gap-1.5">
-                <Crown className="h-4 w-4 text-amber-400" />
-                <span>Статус VIP-подписки</span>
-              </span>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <ShoppingBag className="h-4 w-4 text-blue-400" />
+                <span>Приобретенные прогнозы</span>
+              </div>
+              <div className="mt-2 font-mono text-2xl font-black text-white">
+                {cabinet.purchasedPredictions.length}
+              </div>
+              <div className="text-xs text-slate-400">
+                Бессрочно доступны в вашем кабинете
+              </div>
             </div>
-            {u.hasActiveVip ? (
-              <>
-                <div className="mt-2 text-lg font-bold text-amber-300">
-                  {u.vipPlanName || 'VIP активен'}
-                </div>
-                <div className="mt-0.5 text-xs text-slate-400">
-                  {u.vipExpiresAt === 'LIFETIME'
-                    ? 'Бессрочный доступ'
-                    : `Действует до ${new Date(u.vipExpiresAt!).toLocaleDateString('ru-RU')}`}
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="mt-2 text-base font-bold text-slate-300">Не подключена</div>
-                <Link
-                  href="/tariffs"
-                  className="mt-1 inline-block text-xs font-semibold text-emerald-400 hover:underline"
+
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span className="inline-flex items-center gap-1.5">
+                  <Wallet className="h-4 w-4 text-blue-400" />
+                  <span>Кошелек для покупок в 1 клик</span>
+                </span>
+                <span className="text-slate-400">
+                  Реф: {u.affiliateBalanceRub.toLocaleString('ru-RU')} ₽
+                </span>
+              </div>
+              <div className="mt-2 flex items-center justify-between">
+                <span className="font-mono text-2xl font-black text-white">
+                  {u.balanceRub.toLocaleString('ru-RU')} ₽
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setTab('ORDERS')}
+                  className="rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-blue-500"
                 >
-                  Выбрать тариф VIP →
-                </Link>
-              </>
-            )}
-          </div>
-
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span className="inline-flex items-center gap-1.5">
-                <Wallet className="h-4 w-4 text-emerald-400" />
-                <span>Баланс кабинета</span>
-              </span>
-              <span className="text-slate-500">
-                Партнерские: {u.affiliateBalanceRub.toLocaleString('ru-RU')} ₽
-              </span>
-            </div>
-            <div className="mt-2 flex items-center justify-between">
-              <span className="font-mono text-2xl font-extrabold text-white">
-                {u.balanceRub.toLocaleString('ru-RU')} ₽
-              </span>
-              <button
-                type="button"
-                onClick={() => setTab('ORDERS')}
-                className="rounded-lg bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/25"
-              >
-                Пополнить
-              </button>
+                  Пополнить
+                </button>
+              </div>
             </div>
           </div>
         </div>
+      </div>
 
-        {/* Навигация по вкладкам кабинета */}
-        <div className="mt-6 flex flex-wrap gap-1.5 border-b border-slate-800 pb-3">
+      {/* Вкладки и контент на светлом полотне */}
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <div className="flex flex-wrap gap-2">
           {(
             [
-              ['ACCESS', 'Мои прогнозы и VIP'],
-              ['ORDERS', 'Баланс и оплаты'],
+              ['PURCHASES', `Мои покупки (${cabinet.purchasedPredictions.length})`],
+              ['ORDERS', 'Кошелек и чеки'],
               ['PARTNER', `Партнерская программа (${u.revsharePercent}%)`],
               ['PROFILE', 'Калькулятор банка и профиль'],
             ] as const
@@ -285,10 +254,10 @@ export default function CabinetPage() {
               key={code}
               type="button"
               onClick={() => setTab(code)}
-              className={`rounded-xl px-4 py-2 text-xs font-bold transition ${
+              className={`rounded-full px-4 py-2 text-xs font-bold transition ${
                 tab === code
-                  ? 'bg-emerald-500 text-slate-950'
-                  : 'bg-slate-900 text-slate-400 hover:text-white'
+                  ? 'bg-[#0B0F19] text-white shadow-sm'
+                  : 'border border-slate-200 bg-white text-slate-600 hover:text-slate-900'
               }`}
             >
               {label}
@@ -296,78 +265,49 @@ export default function CabinetPage() {
           ))}
         </div>
 
-        {/* ВКЛАДКА 1: ДОСТУПЫ И ПРОГНОЗЫ */}
-        {tab === 'ACCESS' && (
-          <div className="mt-6 space-y-6">
-            {u.hasActiveVip && (
-              <div className="flex flex-col justify-between gap-4 rounded-2xl border border-amber-400/30 bg-amber-400/5 p-5 sm:flex-row sm:items-center">
-                <div>
-                  <div className="text-sm font-bold text-white">
-                    Закрытый Telegram-канал участников VIP-клуба
-                  </div>
-                  <p className="mt-1 text-xs text-slate-400">
-                    Все прогнозы приходят в канал моментально в момент публикации.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2.5">
-                  {u.vipInviteLink && (
-                    <a
-                      href={u.vipInviteLink}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-sky-500 px-4 py-2.5 text-xs font-bold text-slate-950 hover:bg-sky-400"
-                    >
-                      <Send className="h-3.5 w-3.5" />
-                      <span>Перейти в VIP Telegram</span>
-                      <ExternalLink className="h-3.5 w-3.5" />
-                    </a>
-                  )}
-                  {u.autoRenew && (
-                    <button
-                      type="button"
-                      onClick={handleCancelAutoRenew}
-                      className="rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2.5 text-xs font-semibold text-slate-300 hover:text-white"
-                    >
-                      Отключить автопродление
-                    </button>
-                  )}
-                </div>
+        {/* 1. МОИ КУПЛЕННЫЕ ПРОГНОЗЫ (СЕТКА 3 КАРТОЧКИ В РЯД) */}
+        {tab === 'PURCHASES' && (
+          <div className="mt-6">
+            {cabinet.purchasedPredictions.length > 0 ? (
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+                {cabinet.purchasedPredictions.map((pred) => (
+                  <PredictionCard
+                    key={pred.id}
+                    prediction={pred}
+                    variant="grid"
+                    userReferenceBankrollRub={u.referenceBankrollRub}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-3xl border border-slate-200 bg-white p-12 text-center">
+                <h2 className="text-lg font-extrabold text-slate-950">
+                  У вас пока нет купленных прогнозов
+                </h2>
+                <p className="mt-1.5 text-xs text-slate-500">
+                  Выберите интересующий вас матч на витрине событий — доступ откроется мгновенно.
+                </p>
+                <Link
+                  href="/predictions"
+                  className="mt-5 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-xs font-bold text-white hover:bg-blue-700"
+                >
+                  <span>Перейти к витрине событий</span>
+                  <ArrowRight className="h-4 w-4" />
+                </Link>
               </div>
             )}
-
-            <div>
-              <h2 className="text-lg font-bold text-white">
-                Доступные вам предстоящие прогнозы
-              </h2>
-              <div className="mt-4 space-y-4">
-                {upcomingUnlocked.length > 0 ? (
-                  upcomingUnlocked.map((pred) => (
-                    <PredictionCard
-                      key={pred.id}
-                      prediction={pred}
-                      userReferenceBankrollRub={u.referenceBankrollRub}
-                    />
-                  ))
-                ) : (
-                  <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8 text-center text-sm text-slate-400">
-                    У вас пока нет активных предстоящих прогнозов.{' '}
-                    <Link href="/predictions" className="text-emerald-400 underline">
-                      Перейти к ленте матчей
-                    </Link>
-                  </div>
-                )}
-              </div>
-            </div>
           </div>
         )}
 
-        {/* ВКЛАДКА 2: БАЛАНС И ИСТОРИЯ ОПЛАТ */}
+        {/* 2. КОШЕЛЕК И ИСТОРИЯ ОПЛАТ */}
         {tab === 'ORDERS' && (
           <div className="mt-6 space-y-6">
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
-              <h2 className="text-base font-bold text-white">Пополнение баланса кабинета</h2>
-              <p className="mt-1 text-xs text-slate-400">
-                С внутреннего баланса удобно оплачивать ординары в один клик без перехода на платежный шлюз.
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-base font-extrabold text-slate-950">
+                Пополнение кошелька кабинета
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Пополните баланс один раз и открывайте любые прогнозы в один клик без перехода на страницу банка.
               </p>
               <div className="mt-4 flex flex-wrap items-center gap-3">
                 <input
@@ -376,19 +316,19 @@ export default function CabinetPage() {
                   step={100}
                   value={topupRub}
                   onChange={(e) => setTopupRub(e.target.value)}
-                  className="w-40 rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 font-mono text-sm text-white"
+                  className="w-40 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 font-mono text-sm font-bold text-slate-900"
                 />
                 <button
                   type="button"
                   onClick={() =>
                     setCheckoutTarget({
                       kind: 'BALANCE_TOPUP',
-                      title: 'Пополнение баланса личного кабинета',
+                      title: 'Пополнение кошелька кабинета',
                       subtitle: u.email,
                       priceRub: Math.max(100, Number(topupRub) || 1000),
                     })
                   }
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-bold text-slate-950 hover:bg-emerald-400"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white shadow-sm shadow-blue-600/25 hover:bg-blue-700"
                 >
                   <Plus className="h-4 w-4" />
                   <span>Пополнить через ЮKassa</span>
@@ -396,39 +336,41 @@ export default function CabinetPage() {
               </div>
             </div>
 
-            <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/75">
+            <div className="overflow-x-auto rounded-3xl border border-slate-200 bg-white shadow-sm">
               <table className="w-full min-w-[600px] text-left text-xs">
-                <thead className="border-b border-slate-800 bg-slate-950/60 text-slate-400">
+                <thead className="border-b border-slate-100 bg-slate-50 text-slate-500">
                   <tr>
-                    <th className="px-4 py-3">Дата</th>
-                    <th className="px-4 py-3">Назначение</th>
-                    <th className="px-4 py-3">Сумма</th>
-                    <th className="px-4 py-3">Способ</th>
-                    <th className="px-4 py-3">Статус</th>
+                    <th className="px-5 py-3.5 font-bold">Дата</th>
+                    <th className="px-5 py-3.5 font-bold">Событие / Назначение</th>
+                    <th className="px-5 py-3.5 font-bold">Сумма</th>
+                    <th className="px-5 py-3.5 font-bold">Способ</th>
+                    <th className="px-5 py-3.5 font-bold">Статус</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800/80 text-slate-200">
+                <tbody className="divide-y divide-slate-100 text-slate-700">
                   {cabinet.orders.length > 0 ? (
                     cabinet.orders.map((ord) => (
                       <tr key={ord.id}>
-                        <td className="px-4 py-3 text-slate-400">
+                        <td className="px-5 py-3.5 text-slate-400">
                           {new Date(ord.createdAt).toLocaleString('ru-RU')}
                         </td>
-                        <td className="px-4 py-3 font-semibold text-white">{ord.title}</td>
-                        <td className="px-4 py-3 font-mono font-bold">
+                        <td className="px-5 py-3.5 font-bold text-slate-950">
+                          {ord.title}
+                        </td>
+                        <td className="px-5 py-3.5 font-mono font-black">
                           {ord.amountRub.toLocaleString('ru-RU')} ₽
                         </td>
-                        <td className="px-4 py-3 text-slate-400">
-                          {ord.paymentMethod === 'yookassa' ? 'ЮKassa' : 'Баланс'}
+                        <td className="px-5 py-3.5 text-slate-500">
+                          {ord.paymentMethod === 'yookassa' ? 'ЮKassa' : 'Кошелек'}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-5 py-3.5">
                           <span
                             className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
                               ord.status === 'SUCCEEDED'
-                                ? 'bg-emerald-500/15 text-emerald-300'
+                                ? 'bg-emerald-50 text-emerald-700'
                                 : ord.status === 'REFUNDED'
-                                  ? 'bg-rose-500/15 text-rose-300'
-                                  : 'bg-slate-800 text-slate-300'
+                                  ? 'bg-rose-50 text-rose-600'
+                                  : 'bg-slate-100 text-slate-600'
                             }`}
                           >
                             {ord.status === 'SUCCEEDED'
@@ -444,8 +386,8 @@ export default function CabinetPage() {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
-                        Заказов пока нет.
+                      <td colSpan={5} className="px-5 py-10 text-center text-slate-400">
+                        Операций пока нет.
                       </td>
                     </tr>
                   )}
@@ -455,172 +397,168 @@ export default function CabinetPage() {
           </div>
         )}
 
-        {/* ВКЛАДКА 3: ПАРТНЕРСКАЯ ПРОГРАММА */}
+        {/* 3. ПАРТНЕРСКАЯ ПРОГРАММА */}
         {tab === 'PARTNER' && (
-          <div className="mt-6 space-y-6">
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-              {/* Создание реферальной ссылки */}
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
-                <div className="flex items-center gap-2 text-sm font-bold text-white">
-                  <Share2 className="h-4 w-4 text-emerald-400" />
-                  <span>Ваши партнерские ссылки ({u.revsharePercent}% с каждой оплаты)</span>
-                </div>
-                <p className="mt-1 text-xs text-slate-400">
-                  Приглашенный пользователь закрепляется за вами на 30 дней по cookie и навсегда после регистрации.
-                </p>
-
-                <div className="mt-4 space-y-2.5">
-                  {cabinet.affiliateLinks.map((lnk) => {
-                    const fullUrl = `${origin}/?ref=${lnk.code}`;
-                    return (
-                      <div
-                        key={lnk.id}
-                        className="rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-semibold text-white">{lnk.label}</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              navigator.clipboard.writeText(fullUrl);
-                              showNotice('Ссылка скопирована');
-                            }}
-                            className="inline-flex items-center gap-1 text-emerald-400 hover:text-emerald-300"
-                          >
-                            <Copy className="h-3.5 w-3.5" />
-                            <span>Копировать</span>
-                          </button>
-                        </div>
-                        <div className="mt-1 truncate font-mono text-slate-400">{fullUrl}</div>
-                        <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-400">
-                          <span>Переходы: {lnk.clicks}</span>
-                          <span>Регистрации: {lnk.registrations}</span>
-                          <span>Оплаты: {lnk.buyers}</span>
-                          <span className="font-bold text-emerald-400">
-                            Доход: {lnk.revenueRub.toLocaleString('ru-RU')} ₽
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <form onSubmit={handleCreatePartnerLink} className="mt-4 flex flex-wrap gap-2">
-                  <input
-                    type="text"
-                    required
-                    value={newCode}
-                    onChange={(e) => setNewCode(e.target.value)}
-                    placeholder="Код (напр. tg_sport)"
-                    className="flex-1 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
-                  />
-                  <input
-                    type="text"
-                    value={newLabel}
-                    onChange={(e) => setNewLabel(e.target.value)}
-                    placeholder="Название источника"
-                    className="flex-1 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white"
-                  />
-                  <button
-                    type="submit"
-                    className="rounded-xl bg-slate-800 px-4 py-2 text-xs font-bold text-white hover:bg-slate-700"
-                  >
-                    + Добавить
-                  </button>
-                </form>
+          <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center gap-2 text-sm font-extrabold text-slate-950">
+                <Share2 className="h-4 w-4 text-blue-600" />
+                <span>Ваши партнерские ссылки ({u.revsharePercent}% с каждой покупки)</span>
               </div>
+              <p className="mt-1 text-xs text-slate-500">
+                Получайте вознаграждение с каждой разовой покупки приглашенных пользователей.
+              </p>
 
-              {/* Запрос выплаты */}
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/75 p-5">
-                <div className="text-sm font-bold text-white">
-                  Вывод партнерского вознаграждения
-                </div>
-                <div className="mt-1 text-xs text-slate-400">
-                  Доступно к выводу:{' '}
-                  <strong className="font-mono text-emerald-400">
-                    {u.affiliateBalanceRub.toLocaleString('ru-RU')} ₽
-                  </strong>{' '}
-                  (минимум 500 ₽)
-                </div>
-
-                <form onSubmit={handleRequestPayout} className="mt-4 space-y-3">
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <input
-                      type="number"
-                      min={500}
-                      value={withdrawRub}
-                      onChange={(e) => setWithdrawRub(e.target.value)}
-                      placeholder="Сумма ₽"
-                      className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 font-mono text-xs text-white"
-                    />
-                    <select
-                      value={withdrawMethod}
-                      onChange={(e) =>
-                        setWithdrawMethod(e.target.value as 'SBP' | 'CARD' | 'USDT_TRC20')
-                      }
-                      className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-white"
+              <div className="mt-4 space-y-2.5">
+                {cabinet.affiliateLinks.map((lnk) => {
+                  const fullUrl = `${origin}/?ref=${lnk.code}`;
+                  return (
+                    <div
+                      key={lnk.id}
+                      className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 text-xs"
                     >
-                      <option value="SBP">СБП (по номеру телефона)</option>
-                      <option value="CARD">Карта РФ</option>
-                      <option value="USDT_TRC20">USDT (TRC-20)</option>
-                    </select>
-                  </div>
-
-                  <input
-                    type="text"
-                    required
-                    value={withdrawReq}
-                    onChange={(e) => setWithdrawReq(e.target.value)}
-                    placeholder="Реквизиты (телефон и банк / номер карты / адрес кошелька)"
-                    className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2.5 text-xs text-white"
-                  />
-
-                  <button
-                    type="submit"
-                    className="w-full rounded-xl bg-emerald-500 py-2.5 text-xs font-bold text-slate-950 hover:bg-emerald-400"
-                  >
-                    Запросить выплату
-                  </button>
-                </form>
-
-                {cabinet.payouts.length > 0 && (
-                  <div className="mt-4 space-y-2 border-t border-slate-800 pt-3 text-xs">
-                    {cabinet.payouts.map((p) => (
-                      <div
-                        key={p.id}
-                        className="flex items-center justify-between rounded-lg bg-slate-950 px-3 py-2"
-                      >
-                        <span>
-                          {p.amountRub.toLocaleString('ru-RU')} ₽ ({p.method})
-                        </span>
-                        <span className="font-semibold text-slate-300">
-                          {p.status === 'PAID'
-                            ? 'Выплачено'
-                            : p.status === 'REJECTED'
-                              ? 'Отклонено'
-                              : 'В обработке'}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-slate-900">{lnk.label}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(fullUrl);
+                            showNotice('Ссылка скопирована');
+                          }}
+                          className="inline-flex items-center gap-1 font-bold text-blue-600 hover:text-blue-700"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                          <span>Копировать</span>
+                        </button>
+                      </div>
+                      <div className="mt-1 truncate font-mono text-slate-500">{fullUrl}</div>
+                      <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-500">
+                        <span>Переходы: {lnk.clicks}</span>
+                        <span>Регистрации: {lnk.registrations}</span>
+                        <span>Покупки: {lnk.buyers}</span>
+                        <span className="font-bold text-blue-600">
+                          Оборот: {lnk.revenueRub.toLocaleString('ru-RU')} ₽
                         </span>
                       </div>
-                    ))}
-                  </div>
-                )}
+                    </div>
+                  );
+                })}
               </div>
+
+              <form onSubmit={handleCreatePartnerLink} className="mt-4 flex flex-wrap gap-2">
+                <input
+                  type="text"
+                  required
+                  value={newCode}
+                  onChange={(e) => setNewCode(e.target.value)}
+                  placeholder="Код (напр. sport_tg)"
+                  className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900"
+                />
+                <input
+                  type="text"
+                  value={newLabel}
+                  onChange={(e) => setNewLabel(e.target.value)}
+                  placeholder="Источник"
+                  className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900"
+                />
+                <button
+                  type="submit"
+                  className="rounded-xl bg-[#0B0F19] px-4 py-2 text-xs font-bold text-white hover:bg-slate-800"
+                >
+                  + Создать
+                </button>
+              </form>
+            </div>
+
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="text-sm font-extrabold text-slate-950">
+                Вывод партнерских средств
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                Доступно к выводу:{' '}
+                <strong className="font-mono text-blue-600">
+                  {u.affiliateBalanceRub.toLocaleString('ru-RU')} ₽
+                </strong>{' '}
+                (от 500 ₽)
+              </div>
+
+              <form onSubmit={handleRequestPayout} className="mt-4 space-y-3">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <input
+                    type="number"
+                    min={500}
+                    value={withdrawRub}
+                    onChange={(e) => setWithdrawRub(e.target.value)}
+                    placeholder="Сумма ₽"
+                    className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-xs text-slate-900"
+                  />
+                  <select
+                    value={withdrawMethod}
+                    onChange={(e) =>
+                      setWithdrawMethod(e.target.value as 'SBP' | 'CARD' | 'USDT_TRC20')
+                    }
+                    className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-900"
+                  >
+                    <option value="SBP">СБП (по телефону)</option>
+                    <option value="CARD">Карта РФ</option>
+                    <option value="USDT_TRC20">USDT (TRC-20)</option>
+                  </select>
+                </div>
+
+                <input
+                  type="text"
+                  required
+                  value={withdrawReq}
+                  onChange={(e) => setWithdrawReq(e.target.value)}
+                  placeholder="Реквизиты (телефон и банк / карта / адрес USDT)"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
+                />
+
+                <button
+                  type="submit"
+                  className="w-full rounded-xl bg-blue-600 py-3 text-xs font-bold text-white hover:bg-blue-700"
+                >
+                  Отправить заявку на выплату
+                </button>
+              </form>
+
+              {cabinet.payouts.length > 0 && (
+                <div className="mt-4 space-y-2 border-t border-slate-100 pt-3 text-xs">
+                  {cabinet.payouts.map((p) => (
+                    <div
+                      key={p.id}
+                      className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2"
+                    >
+                      <span className="font-semibold text-slate-800">
+                        {p.amountRub.toLocaleString('ru-RU')} ₽ ({p.method})
+                      </span>
+                      <span className="font-bold text-slate-500">
+                        {p.status === 'PAID'
+                          ? 'Выплачено'
+                          : p.status === 'REJECTED'
+                            ? 'Отклонено'
+                            : 'В обработке'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* ВКЛАДКА 4: ПРОФИЛЬ И КАЛЬКУЛЯТОР БАНКА */}
+        {/* 4. ПРОФИЛЬ И КАЛЬКУЛЯТОР БАНКА */}
         {tab === 'PROFILE' && (
           <form
             onSubmit={handleSaveProfile}
-            className="mt-6 max-w-xl space-y-5 rounded-2xl border border-slate-800 bg-slate-900/75 p-6"
+            className="mt-6 max-w-xl space-y-5 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8"
           >
             <div>
-              <h2 className="text-base font-bold text-white">
-                Персональный калькулятор флэта
+              <h2 className="text-base font-extrabold text-slate-950">
+                Калькулятор флэта под ваш банк
               </h2>
-              <p className="mt-1 text-xs text-slate-400">
-                Укажите ваш рабочий банк — на всех карточках прогнозов автоматически будет рассчитываться точная сумма ставки в рублях под рекомендованный процент.
+              <p className="mt-1 text-xs text-slate-500">
+                Укажите ваш рабочий банк — на всех карточках событий автоматически будет показываться сумма ставки в рублях под рекомендованный процент.
               </p>
               <input
                 type="number"
@@ -628,12 +566,12 @@ export default function CabinetPage() {
                 step={1000}
                 value={bankrollInput}
                 onChange={(e) => setBankrollInput(e.target.value)}
-                className="mt-2.5 w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 font-mono text-sm text-white"
+                className="mt-2.5 w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 font-mono text-sm font-bold text-slate-900"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-300">
+              <label className="block text-xs font-bold text-slate-700">
                 Ваш Telegram (@username)
               </label>
               <input
@@ -641,35 +579,37 @@ export default function CabinetPage() {
                 value={tgInput}
                 onChange={(e) => setTgInput(e.target.value)}
                 placeholder="@username"
-                className="mt-1.5 w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-sm text-white"
+                className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900"
               />
             </div>
 
-            <div className="border-t border-slate-800 pt-4">
-              <div className="text-xs font-bold text-white">Смена пароля (необязательно)</div>
+            <div className="border-t border-slate-100 pt-4">
+              <div className="text-xs font-bold text-slate-900">
+                Смена пароля (необязательно)
+              </div>
               <div className="mt-2.5 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <input
                   type="password"
                   value={curPass}
                   onChange={(e) => setCurPass(e.target.value)}
                   placeholder="Текущий пароль"
-                  className="rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs text-white"
+                  className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-900"
                 />
                 <input
                   type="password"
                   value={newPass}
                   onChange={(e) => setNewPass(e.target.value)}
                   placeholder="Новый пароль"
-                  className="rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs text-white"
+                  className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-900"
                 />
               </div>
             </div>
 
             <button
               type="submit"
-              className="rounded-xl bg-emerald-500 px-6 py-3 text-sm font-bold text-slate-950 hover:bg-emerald-400"
+              className="rounded-xl bg-blue-600 px-6 py-3 text-xs font-bold text-white shadow-sm shadow-blue-600/25 hover:bg-blue-700"
             >
-              Сохранить настройки
+              Сохранить изменения
             </button>
           </form>
         )}

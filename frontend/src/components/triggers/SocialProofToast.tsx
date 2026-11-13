@@ -23,7 +23,7 @@ export const SocialProofToast: React.FC<SocialProofToastProps> = ({ items }) => 
         setIndex((i) => (i + 1) % items.length);
         setVisible(true);
       }, 600);
-    }, 20000);
+    }, 22000);
 
     return () => {
       window.clearTimeout(t1);
@@ -41,20 +41,20 @@ export const SocialProofToast: React.FC<SocialProofToastProps> = ({ items }) => 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 12 }}
-          className="fixed bottom-4 left-4 z-40 hidden max-w-xs rounded-2xl border border-slate-800 bg-slate-900/95 p-3.5 shadow-2xl backdrop-blur sm:block"
+          className="fixed bottom-5 left-5 z-40 hidden max-w-xs rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xl sm:block"
         >
           <div className="flex items-start gap-2.5">
-            <div className="mt-0.5 rounded-lg bg-emerald-500/15 p-1.5 text-emerald-400">
+            <div className="mt-0.5 rounded-lg bg-emerald-50 p-1.5 text-emerald-600">
               <CheckCircle2 className="h-4 w-4" />
             </div>
             <div className="flex-1 text-xs leading-snug">
-              <div className="font-semibold text-white">Зафиксирован плюсовой расчет</div>
-              <div className="mt-0.5 text-slate-300">{item.matchTitle}</div>
+              <div className="font-bold text-slate-900">Плюсовой расчет в архиве</div>
+              <div className="mt-0.5 text-slate-500">{item.matchTitle}</div>
             </div>
             <button
               type="button"
               onClick={() => setDismissed(true)}
-              className="text-slate-500 hover:text-slate-300"
+              className="text-slate-400 hover:text-slate-600"
             >
               <X className="h-3.5 w-3.5" />
             </button>

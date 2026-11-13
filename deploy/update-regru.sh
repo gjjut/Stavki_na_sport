@@ -43,6 +43,7 @@ sed -i 's/^YOOKASSA_SECRET_KEY=.*replace_with.*/YOOKASSA_SECRET_KEY=/' "${ENV_FI
 # 3. Установка новых пакетов (pg), чистая сборка и перезапуск PM2
 cd "${PROJECT_DIR}/frontend"
 npm install --no-audit --no-fund
+rm -rf .next
 NODE_OPTIONS="--max-old-space-size=1536" npm run build
 
 pm2 restart valuex-web || pm2 start npm --name "valuex-web" -- run start
