@@ -272,6 +272,7 @@ export interface EquityPoint {
 export type AiAutopilotMode = 'OFF' | 'MODERATION' | 'FULL_AUTOPILOT';
 
 export type AiLlmProvider =
+  | 'OLLAMA'
   | 'ORCAROUTER'
   | 'DEEPSEEK'
   | 'OPENROUTER'

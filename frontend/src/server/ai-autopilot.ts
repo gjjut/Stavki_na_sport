@@ -1422,11 +1422,10 @@ export function buildCandidateLlmBaseUrls(
 
   const pushUnique = (u: string) => {
     let norm = u.replace(/\/+$/, '');
-    // ВАЖНО: https://orcarouter.ai/v1 (без www) отдает 301-редирект на www.orcarouter.ai,
-    // из-за которого стандартный HTTP клиент превращает POST в GET /v1/chat/completions (HTTP 404)!
-    // Поэтому любой адрес orcarouter.ai жестко канонизируем в https://www.orcarouter.ai/v1!
     if (/^https?:\/\/(www\.|api\.)?orcarouter\.ai(\/|$)/i.test(norm)) {
       norm = 'https://www.orcarouter.ai/v1';
+    } else if (/^https?:\/\/(www\.)?ollama\.com\/?$/i.test(norm)) {
+      norm = 'https://ollama.com/v1';
     }
     if (norm && !candidates.includes(norm)) candidates.push(norm);
   };
@@ -1438,6 +1437,16 @@ export function buildCandidateLlmBaseUrls(
       );
       if (parsed.hostname.includes('orcarouter.ai')) {
         pushUnique('https://www.orcarouter.ai/v1');
+      } else if (parsed.hostname.includes('ollama.com')) {
+        if (parsed.pathname === '/' || parsed.pathname === '') {
+          pushUnique('https://ollama.com/v1');
+        } else if (parsed.pathname.endsWith('/chat/completions')) {
+          pushUnique(
+            `${parsed.origin}${parsed.pathname.replace(/\/chat\/completions$/, '')}`,
+          );
+        } else {
+          pushUnique(`${parsed.origin}${parsed.pathname}`);
+        }
       } else if (
         parsed.pathname.includes('/console') ||
         parsed.pathname === '/' ||
@@ -1456,12 +1465,14 @@ export function buildCandidateLlmBaseUrls(
     }
   }
 
-  if (provider === 'ORCAROUTER') {
+  if (provider === 'OLLAMA') {
+    pushUnique('https://ollama.com/v1');
+  } else if (provider === 'ORCAROUTER') {
     pushUnique('https://www.orcarouter.ai/v1');
   }
 
   if (candidates.length === 0) {
-    pushUnique('https://www.orcarouter.ai/v1');
+    pushUnique('https://ollama.com/v1');
   }
 
   return candidates;
@@ -1522,6 +1533,7 @@ export async function postLlmChatCompletion(params: {
   const primaryPayload: Record<string, unknown> = {
     model: params.model,
     messages: params.messages,
+    stream: false,
   };
   if (params.temperature !== undefined) {
     primaryPayload.temperature = params.temperature;
@@ -1535,6 +1547,8 @@ export async function postLlmChatCompletion(params: {
     choices?: Array<{
       message?: {
         content?: string | Array<{ text?: string }>;
+        reasoning?: string;
+        thinking?: string;
         reasoning_content?: string;
       };
     }>;
@@ -1547,8 +1561,14 @@ export async function postLlmChatCompletion(params: {
       rawText = msg!.content.map((part) => part?.text || '').join('');
     }
     const cleaned = stripReasoningThinkTags(rawText);
+    const fallbackReasoning = (
+      msg?.reasoning ||
+      msg?.thinking ||
+      msg?.reasoning_content ||
+      ''
+    ).trim();
     return {
-      text: cleaned || rawText.trim(),
+      text: cleaned || rawText.trim() || fallbackReasoning,
       returnedModel: json.model,
     };
   };
@@ -1655,7 +1675,7 @@ export async function testLlmConnectionAndModels(input: {
       availableModels: [],
       latencyMs: 0,
       message:
-        'Вставьте секретный ключ (начинается на sk-...) со страницы https://www.orcarouter.ai/console/token — нажмите кнопку «Copy / Копировать» рядом с вашим ключом.',
+        'Вставьте ваш API-ключ (например токен Ollama Cloud или ключ вида sk-...) и нажмите «Проверить и сохранить».',
     };
   }
 
@@ -1667,7 +1687,7 @@ export async function testLlmConnectionAndModels(input: {
       availableModels: [],
       latencyMs: 0,
       message:
-        'Вы вставили название ключа («google_306743 - initial token»), а нужен сам секретный токен! Откройте https://www.orcarouter.ai/console/token и нажмите иконку «Копировать» в строке с этим ключом — скопируется длинный код вида sk-...',
+        'В поле ключа указан текст с пробелами (название ключа), а нужен сам секретный токен без пробелов.',
     };
   }
 
@@ -1675,7 +1695,7 @@ export async function testLlmConnectionAndModels(input: {
   let resolvedBaseUrl = baseUrls[0];
   let availableModels: string[] = [];
 
-  // 1. Загружаем реальный список моделей токена (/v1/models) и ставим БЕСПЛАТНЫЕ (-free) модели ПЕРВЫМИ!
+  // 1. Загружаем список моделей (/v1/models или /api/tags)
   for (const base of baseUrls) {
     try {
       const res = await fetch(`${base}/models`, {
@@ -1692,38 +1712,46 @@ export async function testLlmConnectionAndModels(input: {
       if (res.ok) {
         const json = (await res.json()) as {
           data?: Array<{ id?: string }>;
+          models?: Array<{ name?: string; model?: string }>;
         };
-        if (Array.isArray(json?.data) && json.data.length > 0) {
+        const rawIds = [
+          ...(json.data || []).map((m) => (m.id || '').trim()),
+          ...(json.models || []).map((m) => (m.name || m.model || '').trim()),
+        ].filter(Boolean);
+
+        if (rawIds.length > 0) {
           resolvedBaseUrl = base;
-          const rawIds = json.data
-            .map((m) => (m.id || '').trim())
-            .filter(Boolean);
           availableModels = prioritizeModelsFreeFirst(rawIds);
           break;
         }
       }
     } catch {
-      // пробуем следующее зеркало
+      // пробуем следующий URL или переходим напрямую к POST /chat/completions
     }
   }
 
-  // 2. Формируем очередь проверки ВСЕХ моделей ключа:
-  // сначала бесплатные (-free), затем явно указанная пользователем (если это не закрытый orcarouter/auto), затем остальные!
+  // Для Ollama Cloud гарантируем наличие deepseek-v4.1-flash в начале списка
+  if (
+    (input.llmProvider === 'OLLAMA' || resolvedBaseUrl.includes('ollama.com')) &&
+    !availableModels.includes('deepseek-v4.1-flash')
+  ) {
+    availableModels = ['deepseek-v4.1-flash', ...availableModels];
+  }
+
+  // 2. Формируем очередь проверки моделей:
+  // ВСЕГДА первой проверяем явно выбранную пользователем модель (например deepseek-v4.1-flash),
+  // кроме закрытого роутера orcarouter/auto, а следом — бесплатные/остальные модели списка!
   const requestedModel = (input.llmModel || '').trim();
   const modelsToProbe: string[] = [];
+
+  if (requestedModel && requestedModel.toLowerCase() !== 'orcarouter/auto') {
+    modelsToProbe.push(requestedModel);
+  }
 
   if (availableModels.length > 0) {
     const freeOnes = availableModels.filter((m) =>
       m.toLowerCase().includes('free'),
     );
-    // Если пользователь сам выбрал конкретную модель из списка (кроме orcarouter/auto) — проверяем её первой, затем все бесплатные!
-    if (
-      requestedModel &&
-      availableModels.includes(requestedModel) &&
-      requestedModel.toLowerCase() !== 'orcarouter/auto'
-    ) {
-      modelsToProbe.push(requestedModel);
-    }
     for (const fm of freeOnes) {
       if (!modelsToProbe.includes(fm)) modelsToProbe.push(fm);
     }
@@ -1731,8 +1759,8 @@ export async function testLlmConnectionAndModels(input: {
       if (modelsToProbe.length >= 10) break;
       if (!modelsToProbe.includes(m)) modelsToProbe.push(m);
     }
-  } else {
-    modelsToProbe.push(requestedModel || 'deepseek/deepseek-v4.1-flash-free');
+  } else if (modelsToProbe.length === 0) {
+    modelsToProbe.push('deepseek-v4.1-flash');
   }
 
   const probeResults: ModelProbeResultItem[] = [];
@@ -1743,8 +1771,7 @@ export async function testLlmConnectionAndModels(input: {
       baseUrl: resolvedBaseUrl,
       apiKey: key,
       model: candidateModel,
-      maxTokens: 64,
-      timeoutMs: 16_000,
+      timeoutMs: 22_000,
       messages: [{ role: 'user', content: 'Ответь одним словом на русском: Готов' }],
     });
 

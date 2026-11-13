@@ -95,7 +95,14 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
   const handleApplyProviderPreset = (provider: AiLlmProvider) => {
     setLlmCheckStatus(null);
     setAvailableModels([]);
-    if (provider === 'ORCAROUTER') {
+    if (provider === 'OLLAMA') {
+      setDraftConfig({
+        ...draftConfig,
+        llmProvider: 'OLLAMA',
+        llmBaseUrl: 'https://ollama.com/v1',
+        llmModel: 'deepseek-v4.1-flash',
+      });
+    } else if (provider === 'ORCAROUTER') {
       setDraftConfig({
         ...draftConfig,
         llmProvider: 'ORCAROUTER',
@@ -766,7 +773,8 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {(
                 [
-                  ['ORCAROUTER', 'OrcaRouter.ai (Gemini / GPT / Claude / DeepSeek)'],
+                  ['OLLAMA', 'Ollama Cloud (deepseek-v4.1-flash)'],
+                  ['ORCAROUTER', 'OrcaRouter.ai'],
                   ['DEEPSEEK', 'DeepSeek API (РФ без VPN)'],
                   ['OPENROUTER', 'OpenRouter'],
                   ['RU_GATEWAY', 'ProxyAPI / AITunnel'],
@@ -792,6 +800,12 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
 
           {draftConfig.llmProvider !== 'BUILTIN_QUANT' && (
             <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/40 p-3.5">
+              {draftConfig.llmProvider === 'OLLAMA' && (
+                <p className="text-[11px] leading-relaxed text-slate-600">
+                  Шлюз <strong>Ollama Cloud</strong> (<code className="font-mono font-bold text-slate-900">https://ollama.com/v1</code>, модель <code className="font-mono font-bold text-slate-900">deepseek-v4.1-flash</code>). Вставьте ваш ключ <code className="font-mono font-bold">OLLAMA_API_KEY</code> ниже и нажмите <strong>«Проверить токен и загрузить модели»</strong> (либо задайте его в <code className="font-mono">frontend/.env.local</code>).
+                </p>
+              )}
+
               {draftConfig.llmProvider === 'ORCAROUTER' && (
                 <p className="text-[11px] leading-relaxed text-slate-600">
                   В кабинете{' '}
@@ -815,7 +829,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                     onChange={(e) =>
                       setDraftConfig({ ...draftConfig, llmBaseUrl: e.target.value })
                     }
-                    placeholder="https://www.orcarouter.ai/v1"
+                    placeholder="https://ollama.com/v1"
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs"
                   />
                 </div>
@@ -843,18 +857,18 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                       onChange={(e) =>
                         setDraftConfig({ ...draftConfig, llmModel: e.target.value })
                       }
-                      placeholder="gemini-2.5-flash"
+                      placeholder="deepseek-v4.1-flash"
                       className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs"
                     />
                   )}
                 </div>
                 <div>
                   <label className="text-[11px] font-bold text-slate-500">
-                    Секретный ключ (sk-...)
+                    API-ключ (Ollama или sk-...)
                   </label>
                   <input
                     type="password"
-                    placeholder="sk-..."
+                    placeholder="Токен Ollama или sk-..."
                     value={draftConfig.llmApiKey}
                     onChange={(e) =>
                       setDraftConfig({ ...draftConfig, llmApiKey: e.target.value })

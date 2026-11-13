@@ -97,26 +97,31 @@ export async function POST(req: NextRequest) {
         llmModel: body.llmModel,
       });
 
-      // Автосохранение ключа, канонического www-URL и приоритетной бесплатной (-free) модели при проверке!
+      // Автосохранение ключа, URL и проверенной модели при проверке!
       if (body.llmApiKey?.trim() && !/\s/.test(body.llmApiKey.trim())) {
-        const bestFreeOrFirst =
-          result.availableModels.find((m) => m.toLowerCase().includes('free')) ||
-          result.availableModels.find(
-            (m) => m.toLowerCase() !== 'orcarouter/auto',
-          ) ||
-          body.llmModel.trim();
+        const bestFallback =
+          body.llmModel?.trim() &&
+          body.llmModel.trim().toLowerCase() !== 'orcarouter/auto'
+            ? body.llmModel.trim()
+            : result.availableModels.find((m) =>
+                m.toLowerCase().includes('free'),
+              ) ||
+              result.availableModels.find(
+                (m) => m.toLowerCase() !== 'orcarouter/auto',
+              ) ||
+              'deepseek-v4.1-flash';
 
         await mutateState((state) => {
           state.aiAutopilot.llmProvider =
             body.llmProvider === 'BUILTIN_QUANT'
-              ? 'ORCAROUTER'
+              ? 'OLLAMA'
               : (body.llmProvider as AiAutopilotConfig['llmProvider']);
           state.aiAutopilot.llmBaseUrl =
             result.resolvedBaseUrl || body.llmBaseUrl.trim();
           state.aiAutopilot.llmApiKey = body.llmApiKey.trim();
           state.aiAutopilot.llmModel = result.ok
-            ? result.testedModel || bestFreeOrFirst
-            : bestFreeOrFirst;
+            ? result.testedModel || bestFallback
+            : bestFallback;
         });
       }
 

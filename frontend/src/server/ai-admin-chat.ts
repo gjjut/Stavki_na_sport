@@ -693,8 +693,7 @@ async function callConfiguredLlmWithDiagnostics(
   }
 
   const bases = buildCandidateLlmBaseUrls(cfg.llmBaseUrl, cfg.llmProvider);
-  const configuredModel =
-    cfg.llmModel.trim() || 'deepseek/deepseek-v4.1-flash-free';
+  const configuredModel = cfg.llmModel.trim() || 'deepseek-v4.1-flash';
 
   let lastStatus = 0;
   let lastUrl = bases[0] || cfg.llmBaseUrl;

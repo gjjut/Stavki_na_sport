@@ -43,6 +43,12 @@ const PROVIDER_PRESETS: Array<{
   defaultModel: string;
 }> = [
   {
+    id: 'OLLAMA',
+    label: 'Ollama Cloud (deepseek-v4.1-flash)',
+    baseUrl: 'https://ollama.com/v1',
+    defaultModel: 'deepseek-v4.1-flash',
+  },
+  {
     id: 'ORCAROUTER',
     label: 'OrcaRouter.ai',
     baseUrl: 'https://www.orcarouter.ai/v1',
@@ -92,16 +98,16 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
   // Встроенная прямо в чат быстрая настройка и диагностика API-ключа!
   const [setupOpen, setSetupOpen] = useState<boolean>(!hasApiKey);
   const [providerDraft, setProviderDraft] = useState<AiLlmProvider>(
-    llmProvider === 'BUILTIN_QUANT' ? 'ORCAROUTER' : llmProvider,
+    llmProvider === 'BUILTIN_QUANT' ? 'OLLAMA' : llmProvider,
   );
   const [baseUrlDraft, setBaseUrlDraft] = useState<string>(
     llmProvider === 'BUILTIN_QUANT'
-      ? 'https://www.orcarouter.ai/v1'
-      : llmBaseUrl || 'https://www.orcarouter.ai/v1',
+      ? 'https://ollama.com/v1'
+      : llmBaseUrl || 'https://ollama.com/v1',
   );
   const [apiKeyDraft, setApiKeyDraft] = useState<string>(llmApiKey || '');
   const [modelDraft, setModelDraft] = useState<string>(
-    llmModel || 'gemini-2.5-flash',
+    llmModel || 'deepseek-v4.1-flash',
   );
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [testingKey, setTestingKey] = useState(false);
@@ -376,20 +382,20 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
                 <input
                   value={baseUrlDraft}
                   onChange={(e) => setBaseUrlDraft(e.target.value)}
-                  placeholder="https://www.orcarouter.ai/v1"
+                  placeholder="https://ollama.com/v1"
                   className="mt-0.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-[11px]"
                 />
               </div>
 
               <div className="sm:col-span-5">
                 <label className="text-[10px] font-bold text-slate-600">
-                  Секретный API-ключ (начинается на sk-...)
+                  Секретный API-ключ (OLLAMA_API_KEY или sk-...)
                 </label>
                 <input
                   type="password"
                   value={apiKeyDraft}
                   onChange={(e) => setApiKeyDraft(e.target.value)}
-                  placeholder="sk-..."
+                  placeholder="Вставьте токен Ollama или sk-..."
                   className="mt-0.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-[11px]"
                 />
               </div>
@@ -416,7 +422,7 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
                   <input
                     value={modelDraft}
                     onChange={(e) => setModelDraft(e.target.value)}
-                    placeholder="gemini-2.5-flash"
+                    placeholder="deepseek-v4.1-flash"
                     className="mt-0.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-[11px]"
                   />
                 )}

@@ -487,12 +487,23 @@ function createInitialState(): PersistentState {
     },
   ];
 
+  const envOllamaKey = (process.env.OLLAMA_API_KEY || '').trim();
+  const envGenericKey = (process.env.AI_LLM_API_KEY || '').trim();
+
   const aiAutopilot: AiAutopilotConfig = {
     mode: 'MODERATION',
-    llmProvider: process.env.AI_LLM_API_KEY ? 'DEEPSEEK' : 'BUILTIN_QUANT',
-    llmBaseUrl: process.env.AI_LLM_BASE_URL || 'https://api.deepseek.com/v1',
-    llmApiKey: process.env.AI_LLM_API_KEY || '',
-    llmModel: process.env.AI_LLM_MODEL || 'deepseek-chat',
+    llmProvider: envOllamaKey
+      ? 'OLLAMA'
+      : envGenericKey
+        ? 'DEEPSEEK'
+        : 'BUILTIN_QUANT',
+    llmBaseUrl: envOllamaKey
+      ? process.env.OLLAMA_BASE_URL || 'https://ollama.com/v1'
+      : process.env.AI_LLM_BASE_URL || 'https://ollama.com/v1',
+    llmApiKey: envOllamaKey || envGenericKey || '',
+    llmModel: envOllamaKey
+      ? process.env.OLLAMA_MODEL || 'deepseek-v4.1-flash'
+      : process.env.AI_LLM_MODEL || 'deepseek-v4.1-flash',
     sportsEnabled: ['FOOTBALL', 'HOCKEY', 'TENNIS', 'BASKETBALL', 'ESPORTS', 'MMA'],
     morningHourMsk: 9,
     eveningHourMsk: 18,
@@ -641,26 +652,57 @@ function normalizeLoadedState(
   }));
 
   const rawAi = (raw.aiAutopilot || {}) as Partial<AiAutopilotConfig>;
-  const rawBaseUrl = (rawAi.llmBaseUrl || '').trim();
+  const envOllamaKey = (process.env.OLLAMA_API_KEY || '').trim();
+  const shouldAutoActivateEnvOllama =
+    Boolean(envOllamaKey) &&
+    (!rawAi.llmApiKey?.trim() ||
+      rawAi.llmProvider === 'BUILTIN_QUANT' ||
+      rawAi.llmProvider === 'ORCAROUTER');
+
+  const effectiveProvider: AiAutopilotConfig['llmProvider'] =
+    shouldAutoActivateEnvOllama
+      ? 'OLLAMA'
+      : rawAi.llmProvider || fallback.aiAutopilot.llmProvider;
+
+  const rawBaseUrl = shouldAutoActivateEnvOllama
+    ? process.env.OLLAMA_BASE_URL || 'https://ollama.com/v1'
+    : (rawAi.llmBaseUrl || '').trim();
+
   const isOrca =
-    rawAi.llmProvider === 'ORCAROUTER' ||
+    effectiveProvider === 'ORCAROUTER' ||
     rawBaseUrl.toLowerCase().includes('orcarouter.ai');
+  const isOllama =
+    effectiveProvider === 'OLLAMA' ||
+    rawBaseUrl.toLowerCase().includes('ollama.com');
+
   const healedBaseUrl = isOrca
     ? 'https://www.orcarouter.ai/v1'
-    : rawBaseUrl || fallback.aiAutopilot.llmBaseUrl;
-  const rawModel = (rawAi.llmModel || '').trim();
+    : isOllama
+      ? 'https://ollama.com/v1'
+      : rawBaseUrl || fallback.aiAutopilot.llmBaseUrl;
+
+  const rawModel = shouldAutoActivateEnvOllama
+    ? process.env.OLLAMA_MODEL || 'deepseek-v4.1-flash'
+    : (rawAi.llmModel || '').trim();
+
   const healedModel =
     isOrca &&
     (!rawModel ||
       rawModel.toLowerCase() === 'orcarouter/auto' ||
       rawModel === 'gemini-2.5-flash')
       ? 'deepseek/deepseek-v4.1-flash-free'
-      : rawModel || fallback.aiAutopilot.llmModel;
+      : isOllama && !rawModel
+        ? 'deepseek-v4.1-flash'
+        : rawModel || fallback.aiAutopilot.llmModel;
 
   const aiAutopilot: AiAutopilotConfig = {
     ...fallback.aiAutopilot,
     ...rawAi,
+    llmProvider: effectiveProvider,
     llmBaseUrl: healedBaseUrl,
+    llmApiKey: shouldAutoActivateEnvOllama
+      ? envOllamaKey
+      : rawAi.llmApiKey ?? fallback.aiAutopilot.llmApiKey,
     llmModel: healedModel,
     sportsEnabled:
       Array.isArray(rawAi.sportsEnabled) && rawAi.sportsEnabled.length > 0
