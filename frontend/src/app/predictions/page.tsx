@@ -1,209 +1,222 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { Search } from 'lucide-react';
-import {
-  CheckoutModalTarget,
-  YooKassaCheckoutModal,
-} from '@/components/billing/YooKassaCheckoutModal';
 import { SiteShell } from '@/components/layout/SiteShell';
+import { PredictionCard } from '@/components/predictions/PredictionCard';
+import { HashVerifyModal } from '@/components/predictions/HashVerifyModal';
+import { BundleCartBar } from '@/components/billing/BundleCartBar';
 import {
-  HashVerifyModal,
-  VerifiedHashPayload,
-} from '@/components/predictions/HashVerifyModal';
-import {
-  PredictionCard,
-  SPORT_LABELS,
-} from '@/components/predictions/PredictionCard';
+  YooKassaCheckoutModal,
+  type CheckoutModalTarget,
+} from '@/components/billing/YooKassaCheckoutModal';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
 import type { PublicPredictionDto, SportType } from '@/server/types';
 
-export default function PredictionsPage() {
-  const { data, loading, reload } = usePublicPlatform();
-  const [statusTab, setStatusTab] = useState<'ACTIVE' | 'ARCHIVE'>('ACTIVE');
-  const [sportFilter, setSportFilter] = useState<'ALL' | SportType>('ALL');
-  const [accessFilter, setAccessFilter] = useState<'ALL' | 'PAID_SINGLE' | 'FREE'>('ALL');
-  const [query, setQuery] = useState('');
+export default function PredictionsCatalogPage() {
+  const { data, reload } = usePublicPlatform();
+  const [mode, setMode] = useState<'ACTIVE' | 'INSURED' | 'FREE' | 'SETTLED'>('ACTIVE');
+  const [sport, setSport] = useState<SportType | 'ALL'>('ALL');
+  const [search, setSearch] = useState('');
+  const [selectedBundleIds, setSelectedBundleIds] = useState<string[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<CheckoutModalTarget | null>(null);
-  const [verifiedHash, setVerifiedHash] = useState<VerifiedHashPayload | null>(null);
+  const [hashModalItem, setHashModalItem] = useState<PublicPredictionDto | null>(null);
 
-  const filtered = useMemo(() => {
-    if (!data) return [];
-    return data.predictions.filter((p) => {
-      if (statusTab === 'ACTIVE' && p.matchStatus === 'FINISHED') return false;
-      if (statusTab === 'ARCHIVE' && p.matchStatus !== 'FINISHED') return false;
-      if (sportFilter !== 'ALL' && p.sport !== sportFilter) return false;
-      if (accessFilter !== 'ALL' && p.accessTier !== accessFilter) return false;
-      if (query.trim()) {
-        const q = query.trim().toLowerCase();
-        const hay = `${p.homeTeam} ${p.awayTeam} ${p.leagueName}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-  }, [data, statusTab, sportFilter, accessFilter, query]);
+  const defaultPrice = data?.brand.defaultSinglePriceRub ?? 890;
+  const bundle2Pct = data?.brand.bundle2DiscountPct ?? 15;
+  const bundle3Pct = data?.brand.bundle3DiscountPct ?? 25;
 
-  if (loading || !data) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-[#F4F6FA] text-sm font-medium text-slate-500">
-        Загрузка каталога событий...
-      </div>
-    );
-  }
+  const allPredictions = data?.predictions ?? [];
+  const activePredictions = allPredictions.filter((p) => p.resultStatus === 'PENDING');
+  const settledPredictions = allPredictions.filter((p) => p.resultStatus !== 'PENDING');
 
-  const handleBuySingle = (pred: PublicPredictionDto) => {
+  const openSingleCheckout = (prediction: PublicPredictionDto) => {
+    const price = prediction.singlePriceRub ?? defaultPrice;
     setCheckoutTarget({
       kind: 'SINGLE_PREDICTION',
-      title: `${pred.homeTeam} — ${pred.awayTeam}`,
-      subtitle: pred.leagueName,
-      priceRub: pred.singlePriceRub ?? data.brand.defaultSinglePriceRub,
-      predictionId: pred.id,
+      title: `${prediction.homeTeam} — ${prediction.awayTeam}`,
+      subtitle: `${prediction.leagueName} · Разовая покупка прогноза`,
+      priceRub: price,
+      predictionId: prediction.id,
+      predictionIds: [prediction.id],
     });
   };
 
-  const handleVerifyHash = async (predictionId: string) => {
-    const res = await fetch('/api/v1/predictions/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ predictionId }),
-    });
-    const json = await res.json();
-    if (res.ok) setVerifiedHash(json);
+  const toggleBundleItem = (prediction: PublicPredictionDto) => {
+    if (!prediction.isLocked || prediction.salesClosed) return;
+    setSelectedBundleIds((prev) =>
+      prev.includes(prediction.id)
+        ? prev.filter((id) => id !== prediction.id)
+        : [...prev, prediction.id],
+    );
   };
 
-  const sportsList: Array<'ALL' | SportType> = [
-    'ALL',
-    'FOOTBALL',
-    'HOCKEY',
-    'TENNIS',
-    'ESPORTS',
-    'BASKETBALL',
-    'MMA',
-  ];
+  const selectedBundleItems = activePredictions.filter(
+    (p) => selectedBundleIds.includes(p.id) && p.isLocked && !p.salesClosed,
+  );
+
+  const openBundleCheckout = () => {
+    if (selectedBundleItems.length === 0) return;
+    if (selectedBundleItems.length === 1) {
+      openSingleCheckout(selectedBundleItems[0]);
+      return;
+    }
+    const subtotal = selectedBundleItems.reduce(
+      (acc, p) => acc + (p.singlePriceRub ?? defaultPrice),
+      0,
+    );
+    const pct = selectedBundleItems.length >= 3 ? bundle3Pct : bundle2Pct;
+    const discounted = Math.max(50, Math.round((subtotal * (100 - pct)) / 100));
+
+    setCheckoutTarget({
+      kind: 'BUNDLE_PREDICTIONS',
+      title: `Пакет из ${selectedBundleItems.length} событий (−${pct}%)`,
+      subtitle: selectedBundleItems
+        .map((p) => `${p.homeTeam}—${p.awayTeam}`)
+        .join(' · '),
+      priceRub: discounted,
+      originalPriceRub: subtotal,
+      predictionIds: selectedBundleItems.map((p) => p.id),
+    });
+  };
+
+  const baseItems =
+    mode === 'SETTLED'
+      ? settledPredictions
+      : mode === 'FREE'
+        ? activePredictions.filter((p) => p.accessTier === 'FREE')
+        : mode === 'INSURED'
+          ? activePredictions.filter((p) => p.insuredOnLoss)
+          : activePredictions;
+
+  const filtered = baseItems.filter((item) => {
+    if (sport !== 'ALL' && item.sport !== sport) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      return (
+        item.homeTeam.toLowerCase().includes(q) ||
+        item.awayTeam.toLowerCase().includes(q) ||
+        item.leagueName.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
 
   return (
-    <SiteShell brand={data.brand} viewer={data.viewer} onViewerChange={() => reload()}>
-      <YooKassaCheckoutModal
-        target={checkoutTarget}
-        viewer={data.viewer}
-        onClose={() => setCheckoutTarget(null)}
-        onSuccess={reload}
-      />
-      <HashVerifyModal data={verifiedHash} onClose={() => setVerifiedHash(null)} />
-
-      {/* Контрастная темная шапка раздела */}
+    <SiteShell
+      viewer={data?.viewer ?? null}
+      brand={data?.brand ?? null}
+      onViewerChange={() => reload()}
+    >
       <div className="bg-[#0B0F19] py-10 text-white">
-        <div className="mx-auto flex max-w-7xl flex-col justify-between gap-4 px-4 sm:flex-row sm:items-end sm:px-6 lg:px-8">
-          <div>
-            <div className="text-xs font-bold uppercase tracking-wider text-blue-400">
-              Маркетплейс прогнозов
-            </div>
-            <h1 className="mt-1 text-3xl font-black tracking-tight text-white">
-              Витрина спортивных событий
-            </h1>
-            <p className="mt-1.5 text-xs text-slate-400 sm:text-sm">
-              Разовая покупка аналитических разборов без подписок и скрытых платежей
-            </p>
-          </div>
-
-          <div className="inline-flex rounded-xl border border-white/15 bg-white/5 p-1 text-xs font-bold">
-            <button
-              type="button"
-              onClick={() => setStatusTab('ACTIVE')}
-              className={`rounded-lg px-4 py-2 transition ${
-                statusTab === 'ACTIVE'
-                  ? 'bg-blue-600 text-white'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              Актуальные события
-            </button>
-            <button
-              type="button"
-              onClick={() => setStatusTab('ARCHIVE')}
-              className={`rounded-lg px-4 py-2 transition ${
-                statusTab === 'ARCHIVE'
-                  ? 'bg-blue-600 text-white'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              Архив расчетов
-            </button>
-          </div>
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <h1 className="text-3xl font-black tracking-tight">Витрина прогнозов</h1>
+          <p className="mt-1.5 text-sm text-slate-300">
+            Разовая покупка любого матча или сборка пакета со скидкой до −{bundle3Pct}% без подписок
+          </p>
         </div>
       </div>
 
-      {/* Панель фильтров и сетка карточек */}
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <div className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 lg:flex-row lg:items-center">
+        {/* Фильтры витрины */}
+        <div className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs lg:flex-row lg:items-center">
           <div className="flex flex-wrap gap-1.5">
-            {sportsList.map((sp) => (
+            {(
+              [
+                ['ACTIVE', 'Актуальная линия'],
+                ['INSURED', 'Со страховкой 100%'],
+                ['FREE', 'Бесплатные разборы'],
+                ['SETTLED', 'Архив результатов'],
+              ] as const
+            ).map(([key, label]) => (
               <button
-                key={sp}
+                key={key}
                 type="button"
-                onClick={() => setSportFilter(sp)}
-                className={`rounded-full px-3.5 py-1.5 text-xs font-bold transition ${
-                  sportFilter === sp
-                    ? 'bg-[#0B0F19] text-white'
+                onClick={() => setMode(key)}
+                className={`rounded-xl px-3.5 py-2 text-xs font-bold transition ${
+                  mode === key
+                    ? 'bg-blue-600 text-white'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
                 }`}
               >
-                {sp === 'ALL'
-                  ? 'Все виды спорта'
-                  : `${SPORT_LABELS[sp].icon} ${SPORT_LABELS[sp].label}`}
+                {label}
               </button>
             ))}
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            {statusTab === 'ACTIVE' && (
-              <select
-                value={accessFilter}
-                onChange={(e) =>
-                  setAccessFilter(e.target.value as 'ALL' | 'PAID_SINGLE' | 'FREE')
-                }
-                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 focus:border-blue-500 focus:outline-none"
-              >
-                <option value="ALL">Любой формат</option>
-                <option value="PAID_SINGLE">Платные прогнозы</option>
-                <option value="FREE">Бесплатные разборы</option>
-              </select>
-            )}
+            <select
+              value={sport}
+              onChange={(e) => setSport(e.target.value as SportType | 'ALL')}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 focus:border-blue-600 focus:outline-none"
+            >
+              <option value="ALL">Все виды спорта</option>
+              <option value="FOOTBALL">Футбол</option>
+              <option value="HOCKEY">Хоккей</option>
+              <option value="TENNIS">Теннис</option>
+              <option value="ESPORTS">Киберспорт</option>
+              <option value="BASKETBALL">Баскетбол</option>
+              <option value="MMA">ММА / Бокс</option>
+            </select>
 
-            <div className="relative flex-1 sm:w-60">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Поиск по команде или лиге..."
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Команда или турнир..."
+                className="rounded-xl border border-slate-200 bg-slate-50 py-2 pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none"
               />
             </div>
           </div>
         </div>
 
         {/* Сетка 3 карточки в ряд */}
-        <div className="mt-6 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-          {filtered.length > 0 ? (
-            filtered.map((pred) => (
-              <PredictionCard
-                key={pred.id}
-                prediction={pred}
-                variant="grid"
-                userReferenceBankrollRub={data.viewer?.referenceBankrollRub}
-                defaultSinglePriceRub={data.brand.defaultSinglePriceRub}
-                onBuySingle={handleBuySingle}
-                onVerifyHash={handleVerifyHash}
-              />
-            ))
-          ) : (
-            <div className="col-span-full rounded-3xl border border-slate-200 bg-white p-12 text-center text-sm text-slate-500">
-              По выбранным фильтрам событий не найдено.
-            </div>
-          )}
+        <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {filtered.map((prediction) => (
+            <PredictionCard
+              key={prediction.id}
+              prediction={prediction}
+              defaultSinglePriceRub={defaultPrice}
+              onBuySingle={openSingleCheckout}
+              onVerifyHash={setHashModalItem}
+              inBundle={selectedBundleIds.includes(prediction.id)}
+              onToggleBundle={toggleBundleItem}
+            />
+          ))}
         </div>
+
+        {filtered.length === 0 && (
+          <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-12 text-center text-sm text-slate-500">
+            По заданным фильтрам событий не найдено.
+          </div>
+        )}
       </div>
+
+      <BundleCartBar
+        selectedItems={selectedBundleItems}
+        defaultPriceRub={defaultPrice}
+        bundle2DiscountPct={bundle2Pct}
+        bundle3DiscountPct={bundle3Pct}
+        onClear={() => setSelectedBundleIds([])}
+        onCheckoutBundle={openBundleCheckout}
+      />
+
+      <YooKassaCheckoutModal
+        target={checkoutTarget}
+        viewer={data?.viewer ?? null}
+        onClose={() => setCheckoutTarget(null)}
+        onSuccess={async () => {
+          setSelectedBundleIds([]);
+          await reload();
+        }}
+      />
+
+      <HashVerifyModal
+        prediction={hashModalItem}
+        onClose={() => setHashModalItem(null)}
+      />
     </SiteShell>
   );
 }

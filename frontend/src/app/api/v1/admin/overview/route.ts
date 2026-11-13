@@ -13,6 +13,7 @@ export async function GET() {
     return NextResponse.json({
       settings: state.settings,
       predictions: state.predictions,
+      promoCodes: state.promoCodes,
       users: state.users.map((u) => ({
         ...toSafeSessionUser(u),
         referredByCode: u.referredByCode,

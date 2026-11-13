@@ -32,6 +32,8 @@ export async function GET(req: NextRequest) {
       supportEmail: state.settings.supportEmail,
       paymentMode: state.settings.paymentMode,
       defaultSinglePriceRub: state.settings.defaultSinglePriceRub,
+      bundle2DiscountPct: state.settings.bundle2DiscountPct,
+      bundle3DiscountPct: state.settings.bundle3DiscountPct,
     },
     viewer: viewer ? toSafeSessionUser(viewer) : null,
     predictions,

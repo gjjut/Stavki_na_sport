@@ -1,435 +1,472 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import Link from 'next/link';
 import {
   ArrowRight,
+  CheckCircle2,
   Clock,
+  Layers,
   Lock,
   Send,
   ShieldCheck,
   Sparkles,
+  Tag,
   TrendingUp,
-  Unlock,
 } from 'lucide-react';
-import {
-  CheckoutModalTarget,
-  YooKassaCheckoutModal,
-} from '@/components/billing/YooKassaCheckoutModal';
 import { SiteShell } from '@/components/layout/SiteShell';
+import { PredictionCard } from '@/components/predictions/PredictionCard';
+import { HashVerifyModal } from '@/components/predictions/HashVerifyModal';
 import {
-  HashVerifyModal,
-  VerifiedHashPayload,
-} from '@/components/predictions/HashVerifyModal';
-import {
-  PredictionCard,
-  SPORT_LABELS,
-  useCountdown,
-} from '@/components/predictions/PredictionCard';
+  YooKassaCheckoutModal,
+  type CheckoutModalTarget,
+} from '@/components/billing/YooKassaCheckoutModal';
+import { BundleCartBar } from '@/components/billing/BundleCartBar';
 import { EquityCurveChart } from '@/components/stats/EquityCurveChart';
-import { SocialProofToast } from '@/components/triggers/SocialProofToast';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
 import type { PublicPredictionDto, SportType } from '@/server/types';
 
-function FeaturedHeroMatchCard({
-  match,
-  defaultPrice,
-  onBuy,
-}: {
-  match: PublicPredictionDto;
-  defaultPrice: number;
-  onBuy: (p: PublicPredictionDto) => void;
-}) {
-  const countdown = useCountdown(match.matchStartsAt, match.matchStatus === 'UPCOMING');
-  const sportMeta = SPORT_LABELS[match.sport];
-  const price = match.singlePriceRub ?? defaultPrice;
-
-  return (
-    <div className="relative overflow-hidden rounded-3xl border border-white/12 bg-gradient-to-br from-white/[0.08] to-white/[0.03] p-6 backdrop-blur-md">
-      <div className="flex items-center justify-between gap-2">
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/20 px-3 py-1 text-[11px] font-bold text-blue-300">
-          <Sparkles className="h-3.5 w-3.5" />
-          <span>Главное событие дня</span>
-        </span>
-        {match.matchStatus === 'UPCOMING' ? (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/30 px-3 py-1 font-mono text-xs font-semibold text-slate-200">
-            <Clock className="h-3.5 w-3.5 text-blue-400" />
-            <span>{countdown.text}</span>
-          </span>
-        ) : (
-          <span className="rounded-full bg-rose-500/20 px-3 py-1 text-xs font-bold text-rose-300">
-            LIVE
-          </span>
-        )}
-      </div>
-
-      <div className="mt-4">
-        <div className="text-xs font-medium text-slate-400">
-          {sportMeta.icon} {match.leagueName}
-        </div>
-        <Link
-          href={`/predictions/${match.slug}`}
-          className="mt-1 block text-2xl font-black tracking-tight text-white hover:text-blue-300"
-        >
-          {match.homeTeam} — {match.awayTeam}
-        </Link>
-        <p className="mt-2.5 line-clamp-3 text-xs leading-relaxed text-slate-300">
-          {match.analysisTeaser}
-        </p>
-      </div>
-
-      <div className="mt-5 grid grid-cols-2 gap-2.5 rounded-2xl border border-white/10 bg-black/25 p-3.5 text-xs">
-        <div>
-          <div className="text-[11px] text-slate-400">Рекомендуемый флэт</div>
-          <div className="mt-0.5 font-mono text-sm font-black text-white">
-            {match.stakeUnits.toFixed(1)}% от банка
-          </div>
-        </div>
-        <div>
-          <div className="text-[11px] text-slate-400">Точный исход и кэф</div>
-          <div className="mt-0.5 font-bold text-blue-300">
-            {match.isLocked ? 'Закрыто до покупки' : `${match.selectionTitle} (${match.fixedOdds?.toFixed(2)})`}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-5 flex items-center justify-between gap-3">
-        {match.isLocked ? (
-          <>
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-slate-400">
-                Разовая покупка
-              </div>
-              <div className="font-mono text-2xl font-black text-white">
-                {price.toLocaleString('ru-RU')} ₽
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => onBuy(match)}
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-xs font-bold text-white shadow-lg shadow-blue-600/35 transition hover:bg-blue-500"
-            >
-              <Unlock className="h-4 w-4" />
-              <span>Купить прогноз</span>
-            </button>
-          </>
-        ) : (
-          <Link
-            href={`/predictions/${match.slug}`}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-white/15 py-3 text-xs font-bold text-white hover:bg-white/20"
-          >
-            <span>Открыть полный разбор матча</span>
-            <ArrowRight className="h-4 w-4" />
-          </Link>
-        )}
-      </div>
-    </div>
-  );
-}
+const SPORT_TABS: Array<{ id: SportType | 'ALL'; label: string }> = [
+  { id: 'ALL', label: 'Все виды' },
+  { id: 'FOOTBALL', label: 'Футбол' },
+  { id: 'HOCKEY', label: 'Хоккей' },
+  { id: 'TENNIS', label: 'Теннис' },
+  { id: 'ESPORTS', label: 'Киберспорт' },
+  { id: 'BASKETBALL', label: 'Баскетбол' },
+  { id: 'MMA', label: 'ММА' },
+];
 
 export default function HomePage() {
-  const { data, loading, reload } = usePublicPlatform();
-  const [sportFilter, setSportFilter] = useState<'ALL' | SportType>('ALL');
+  const { data, reload } = usePublicPlatform();
+  const [sportFilter, setSportFilter] = useState<SportType | 'ALL'>('ALL');
+  const [selectedBundleIds, setSelectedBundleIds] = useState<string[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<CheckoutModalTarget | null>(null);
-  const [verifiedHash, setVerifiedHash] = useState<VerifiedHashPayload | null>(null);
+  const [hashModalItem, setHashModalItem] = useState<PublicPredictionDto | null>(null);
 
-  const activeEvents = useMemo(() => {
-    if (!data) return [];
-    return data.predictions.filter((p) => p.matchStatus !== 'FINISHED');
-  }, [data]);
+  const defaultPrice = data?.brand.defaultSinglePriceRub ?? 890;
+  const bundle2Pct = data?.brand.bundle2DiscountPct ?? 15;
+  const bundle3Pct = data?.brand.bundle3DiscountPct ?? 25;
+  const allTimeStats = data?.statsByPeriod.ALL_TIME;
 
-  const featuredMatch = useMemo(() => {
-    if (!activeEvents.length) return null;
-    return activeEvents.find((p) => p.isFeatured) || activeEvents[0];
-  }, [activeEvents]);
+  const allPredictions = data?.predictions ?? [];
+  const activeList = allPredictions.filter((p) => p.resultStatus === 'PENDING');
+  const settledList = allPredictions.filter((p) => p.resultStatus !== 'PENDING');
 
-  const filteredMarketplace = useMemo(() => {
-    if (sportFilter === 'ALL') return activeEvents;
-    return activeEvents.filter((p) => p.sport === sportFilter);
-  }, [activeEvents, sportFilter]);
-
-  const recentSettled = useMemo(() => {
-    if (!data) return [];
-    return data.predictions.filter((p) => p.matchStatus === 'FINISHED').slice(0, 3);
-  }, [data]);
-
-  if (loading || !data) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-[#F4F6FA] text-sm font-medium text-slate-500">
-        Загрузка витрины событий...
-      </div>
-    );
-  }
-
-  const stats = data.statsByPeriod.ALL_TIME;
-
-  const handleBuySingle = (pred: PublicPredictionDto) => {
+  const openSingleCheckout = (prediction: PublicPredictionDto) => {
+    const price = prediction.singlePriceRub ?? defaultPrice;
     setCheckoutTarget({
       kind: 'SINGLE_PREDICTION',
-      title: `${pred.homeTeam} — ${pred.awayTeam}`,
-      subtitle: pred.leagueName,
-      priceRub: pred.singlePriceRub ?? data.brand.defaultSinglePriceRub,
-      predictionId: pred.id,
+      title: `${prediction.homeTeam} — ${prediction.awayTeam}`,
+      subtitle: `${prediction.leagueName} · Разовый доступ к исходу и аналитике`,
+      priceRub: price,
+      predictionId: prediction.id,
+      predictionIds: [prediction.id],
     });
   };
 
-  const handleVerifyHash = async (predictionId: string) => {
-    const res = await fetch('/api/v1/predictions/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ predictionId }),
-    });
-    const json = await res.json();
-    if (res.ok) setVerifiedHash(json);
+  const toggleBundleItem = (prediction: PublicPredictionDto) => {
+    if (!prediction.isLocked || prediction.salesClosed) return;
+    setSelectedBundleIds((prev) =>
+      prev.includes(prediction.id)
+        ? prev.filter((id) => id !== prediction.id)
+        : [...prev, prediction.id],
+    );
   };
 
-  const sportsList: Array<'ALL' | SportType> = [
-    'ALL',
-    'FOOTBALL',
-    'HOCKEY',
-    'TENNIS',
-    'ESPORTS',
-    'BASKETBALL',
-    'MMA',
-  ];
+  const selectedBundleItems = activeList.filter(
+    (p) => selectedBundleIds.includes(p.id) && p.isLocked && !p.salesClosed,
+  );
+
+  const openBundleCheckout = () => {
+    if (selectedBundleItems.length === 0) return;
+    if (selectedBundleItems.length === 1) {
+      openSingleCheckout(selectedBundleItems[0]);
+      return;
+    }
+    const subtotal = selectedBundleItems.reduce(
+      (acc, p) => acc + (p.singlePriceRub ?? defaultPrice),
+      0,
+    );
+    const pct = selectedBundleItems.length >= 3 ? bundle3Pct : bundle2Pct;
+    const discounted = Math.max(50, Math.round((subtotal * (100 - pct)) / 100));
+
+    setCheckoutTarget({
+      kind: 'BUNDLE_PREDICTIONS',
+      title: `Пакет из ${selectedBundleItems.length} событий (−${pct}%)`,
+      subtitle: selectedBundleItems
+        .map((p) => `${p.homeTeam}—${p.awayTeam}`)
+        .join(' · '),
+      priceRub: discounted,
+      originalPriceRub: subtotal,
+      predictionIds: selectedBundleItems.map((p) => p.id),
+    });
+  };
+
+  const filteredActive =
+    sportFilter === 'ALL'
+      ? activeList
+      : activeList.filter((item) => item.sport === sportFilter);
+
+  const featuredEvent =
+    activeList.find((p) => p.isFeatured && p.accessTier === 'PAID_SINGLE') ||
+    activeList.find((p) => p.accessTier === 'PAID_SINGLE') ||
+    activeList[0] ||
+    null;
 
   return (
-    <SiteShell brand={data.brand} viewer={data.viewer} onViewerChange={() => reload()}>
-      <SocialProofToast items={data.recentWinsFeed} />
-      <YooKassaCheckoutModal
-        target={checkoutTarget}
-        viewer={data.viewer}
-        onClose={() => setCheckoutTarget(null)}
-        onSuccess={reload}
-      />
-      <HashVerifyModal data={verifiedHash} onClose={() => setVerifiedHash(null)} />
-
-      {/* КОНТРАСТНЫЙ ТЕМНЫЙ ЖУРНАЛЬНЫЙ БЛОК + ГЛАВНЫЙ МАТЧ ДНЯ */}
-      <section className="relative overflow-hidden bg-[#0B0F19] py-12 text-white sm:py-16">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -top-32 left-1/3 h-96 w-96 rounded-full bg-blue-600/20 blur-[120px]"
-        />
-
-        <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-1 items-center gap-10 lg:grid-cols-12">
-            {/* Левая колонка: Оффер + 4 живых показателя */}
+    <SiteShell
+      viewer={data?.viewer ?? null}
+      brand={data?.brand ?? null}
+      onViewerChange={() => reload()}
+    >
+      {/* 1. ТЕМНЫЙ АКЦЕНТНЫЙ HERO + ГЛАВНЫЙ МАТЧ ДНЯ */}
+      <section className="bg-[#0B0F19] text-white">
+        <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 sm:py-14 lg:px-8">
+          <div className="grid gap-8 lg:grid-cols-12 lg:items-center">
+            {/* Левая редакционная колонка */}
             <div className="lg:col-span-7">
-              <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3.5 py-1 text-xs font-semibold text-blue-300">
-                <ShieldCheck className="h-3.5 w-3.5" />
-                <span>Никаких подписок и автосписаний · Только разовые события</span>
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3.5 py-1 text-xs font-medium text-slate-300">
+                <span className="h-2 w-2 rounded-full bg-blue-500" />
+                <span>Маркетплейс спортивной аналитики · Без подписок и автосписаний</span>
               </div>
 
-              <h1 className="mt-5 text-3xl font-black tracking-tight text-white sm:text-5xl sm:leading-[1.1]">
-                Точечные спортивные разборы{' '}
-                <span className="text-blue-400">с прозрачной историей</span>
+              <h1 className="mt-4 text-3xl font-black tracking-tight text-white sm:text-4xl lg:text-[42px] lg:leading-[1.12]">
+                Покупайте только те события,{' '}
+                <span className="text-blue-400">которые выбираете сами.</span>
               </h1>
 
-              <p className="mt-4 max-w-xl text-sm leading-relaxed text-slate-300 sm:text-base">
-                Выбирайте только те матчи, которые интересны вам. Каждый прогноз подписывается криптографическим хешем SHA-256 до стартового свистка и автоматически открывается в архиве после игры.
+              <p className="mt-4 max-w-2xl text-sm leading-relaxed text-slate-300 sm:text-base">
+                Никаких абонементов. Открытая линия предстоящих матчей с прозрачной статистикой, страховкой возврата на баланс при минусе и фиксацией каждого исхода SHA-256 до стартового свистка.
               </p>
 
-              <div className="mt-7 flex flex-wrap items-center gap-3">
-                <a
-                  href="#marketplace"
-                  className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-6 py-3.5 text-sm font-bold text-white shadow-lg shadow-blue-600/30 transition hover:bg-blue-500"
-                >
-                  <span>Перейти к витрине событий</span>
-                  <ArrowRight className="h-4 w-4" />
-                </a>
-
-                <a
-                  href={data.brand.freeTelegramUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-5 py-3.5 text-sm font-semibold text-white transition hover:bg-white/10"
-                >
-                  <Send className="h-4 w-4 text-blue-400" />
-                  <span>Наш Telegram-канал</span>
-                </a>
-              </div>
-
-              {/* Компактная полоса верифицированных метрик */}
-              <div className="mt-9 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3.5">
-                  <div className="text-[11px] text-slate-400">Доходность (Yield)</div>
-                  <div className="mt-1 font-mono text-2xl font-black text-blue-400">
-                    {stats.yieldPct >= 0 ? '+' : ''}
-                    {stats.yieldPct.toFixed(1)}%
+              {/* Метрики верификации */}
+              <div className="mt-7 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+                  <div className="text-[11px] font-medium text-slate-400">Чистый профит</div>
+                  <div className="mt-0.5 font-mono text-xl font-black text-white">
+                    +{allTimeStats ? allTimeStats.netProfitUnits.toFixed(1) : '18.4'}%
                   </div>
                 </div>
-
-                <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3.5">
-                  <div className="text-[11px] text-slate-400">Чистый профит</div>
-                  <div className="mt-1 font-mono text-2xl font-black text-white">
-                    {stats.netProfitUnits >= 0 ? '+' : ''}
-                    {stats.netProfitUnits.toFixed(2)} u
+                <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+                  <div className="text-[11px] font-medium text-slate-400">Yield / ROI</div>
+                  <div className="mt-0.5 font-mono text-xl font-black text-blue-400">
+                    +{allTimeStats ? allTimeStats.yieldPct.toFixed(1) : '24.6'}%
                   </div>
                 </div>
-
-                <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3.5">
-                  <div className="text-[11px] text-slate-400">Проходимость</div>
-                  <div className="mt-1 font-mono text-2xl font-black text-white">
-                    {stats.winRatePct.toFixed(1)}%
+                <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+                  <div className="text-[11px] font-medium text-slate-400">Проходимость</div>
+                  <div className="mt-0.5 font-mono text-xl font-black text-white">
+                    {allTimeStats ? allTimeStats.winRatePct.toFixed(1) : '68.0'}%
                   </div>
                 </div>
-
-                <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3.5">
-                  <div className="text-[11px] text-slate-400">Средний кэф</div>
-                  <div className="mt-1 font-mono text-2xl font-black text-white">
-                    {stats.avgOdds.toFixed(2)}
+                <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+                  <div className="text-[11px] font-medium text-slate-400">Средний кэф</div>
+                  <div className="mt-0.5 font-mono text-xl font-black text-white">
+                    {allTimeStats ? allTimeStats.avgOdds.toFixed(2) : '1.94'}
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Правая колонка: Карточка главного события */}
+            {/* Правая карточка: Главный матч дня */}
             <div className="lg:col-span-5">
-              {featuredMatch && (
-                <FeaturedHeroMatchCard
-                  match={featuredMatch}
-                  defaultPrice={data.brand.defaultSinglePriceRub}
-                  onBuy={handleBuySingle}
-                />
-              )}
+              {featuredEvent ? (
+                <div className="rounded-3xl border border-white/15 bg-gradient-to-b from-slate-900 to-[#111827] p-6 shadow-2xl">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-600/20 px-3 py-1 text-[11px] font-bold text-blue-300">
+                      <Sparkles className="h-3.5 w-3.5" />
+                      <span>Главное событие дня</span>
+                    </span>
+                    <span className="inline-flex items-center gap-1 font-mono text-xs text-slate-400">
+                      <Clock className="h-3.5 w-3.5 text-blue-400" />
+                      <span>
+                        {new Date(featuredEvent.matchStartsAt).toLocaleString('ru-RU', {
+                          day: '2-digit',
+                          month: 'short',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                    </span>
+                  </div>
+
+                  <div className="mt-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    {featuredEvent.leagueName}
+                  </div>
+                  <h2 className="mt-1 text-xl font-black text-white sm:text-2xl">
+                    {featuredEvent.homeTeam} — {featuredEvent.awayTeam}
+                  </h2>
+
+                  {featuredEvent.insuredOnLoss && (
+                    <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold text-emerald-300">
+                      <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+                      <span>Страховка 100% возврата на баланс при минусе</span>
+                    </div>
+                  )}
+
+                  <p className="mt-2.5 text-xs leading-relaxed text-slate-300">
+                    {featuredEvent.analysisTeaser}
+                  </p>
+
+                  <div className="mt-4 flex items-center gap-4 border-y border-white/10 py-3 text-xs text-slate-300">
+                    <div>
+                      Доля банка:{' '}
+                      <strong className="font-mono text-white">
+                        {featuredEvent.stakeUnits.toFixed(1)}%
+                      </strong>
+                    </div>
+                    <div>
+                      Линия:{' '}
+                      <strong className="text-white">{featuredEvent.bookmakerSource}</strong>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setHashModalItem(featuredEvent)}
+                      className="ml-auto inline-flex items-center gap-1 text-blue-400 hover:text-blue-300"
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      <span>SHA-256</span>
+                    </button>
+                  </div>
+
+                  {!featuredEvent.isLocked ? (
+                    <div className="mt-4 flex items-center justify-between rounded-2xl border border-blue-500/30 bg-blue-500/10 p-3.5">
+                      <div>
+                        <div className="text-[11px] text-blue-300">Открытый исход</div>
+                        <div className="text-sm font-bold text-white">
+                          {featuredEvent.selectionTitle}
+                        </div>
+                      </div>
+                      <div className="font-mono text-xl font-black text-blue-400">
+                        {featuredEvent.fixedOdds?.toFixed(2)}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-5 flex items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-1 text-[11px] text-slate-400">
+                          <Lock className="h-3 w-3" />
+                          <span>Разовый доступ</span>
+                        </div>
+                        <div className="font-mono text-2xl font-black text-white">
+                          {(featuredEvent.singlePriceRub ?? defaultPrice).toLocaleString(
+                            'ru-RU',
+                          )}{' '}
+                          ₽
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => openSingleCheckout(featuredEvent)}
+                        className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-blue-600/30 transition hover:bg-blue-500"
+                      >
+                        <span>Купить прогноз</span>
+                        <ArrowRight className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
       </section>
 
-      {/* МАРКЕТПЛЕЙС АКТУАЛЬНЫХ СОБЫТИЙ (СЕТКА 3 КАРТОЧКИ В РЯД) */}
-      <section
-        id="marketplace"
-        className="mx-auto max-w-7xl px-4 pt-12 sm:px-6 lg:px-8"
-      >
-        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-          <div>
-            <div className="text-xs font-bold uppercase tracking-wider text-blue-600">
-              Линия актуальных разборов
-            </div>
-            <h2 className="mt-1 text-2xl font-black tracking-tight text-slate-950 sm:text-3xl">
-              Витрина предстоящих событий
-            </h2>
+      {/* 2. ВИТРИНА СОБЫТИЙ (СВЕТЛАЯ 3-КОЛОНОЧНАЯ СЕТКА МАРКЕТПЛЕЙСА) */}
+      <section className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
+        {/* Полоска пакетных скидок и промокода */}
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-white px-4 py-3 shadow-xs">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
+            <span className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2.5 py-1 font-bold text-blue-700">
+              <Layers className="h-3.5 w-3.5" />
+              <span>Пакеты событий выгоднее:</span>
+            </span>
+            <span>
+              2 матча <strong>−{bundle2Pct}%</strong> · 3+ матча{' '}
+              <strong>−{bundle3Pct}%</strong> (кнопка «+ В пакет» на карточке)
+            </span>
           </div>
-
-          <Link
-            href="/predictions"
-            className="inline-flex items-center gap-1.5 text-sm font-bold text-blue-600 hover:text-blue-700"
-          >
-            <span>Все события и фильтры</span>
-            <ArrowRight className="h-4 w-4" />
-          </Link>
+          <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600">
+            <Tag className="h-3.5 w-3.5 text-blue-600" />
+            <span>Промокод на скидку:</span>
+            <code className="rounded-md bg-slate-100 px-2 py-0.5 font-mono font-bold text-slate-900">
+              START15
+            </code>
+          </div>
         </div>
 
-        {/* Табы дисциплин */}
-        <div className="mt-5 flex flex-wrap gap-2">
-          {sportsList.map((sp) => (
-            <button
-              key={sp}
-              type="button"
-              onClick={() => setSportFilter(sp)}
-              className={`rounded-full px-4 py-2 text-xs font-bold transition ${
-                sportFilter === sp
-                  ? 'bg-[#0B0F19] text-white shadow-sm'
-                  : 'border border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900'
-              }`}
-            >
-              {sp === 'ALL'
-                ? `Все события (${activeEvents.length})`
-                : `${SPORT_LABELS[sp].icon} ${SPORT_LABELS[sp].label}`}
-            </button>
+        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+          <div>
+            <h2 className="text-2xl font-black tracking-tight text-slate-950">
+              Актуальная витрина событий
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Выберите интересующий матч — доступ к исходу, кэфу и аналитике открывается мгновенно после оплаты
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-1.5">
+            {SPORT_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setSportFilter(tab.id)}
+                className={`rounded-xl px-3.5 py-2 text-xs font-bold transition ${
+                  sportFilter === tab.id
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'border border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-950'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Сетка 3 карточки в ряд */}
+        <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {filteredActive.map((prediction) => (
+            <PredictionCard
+              key={prediction.id}
+              prediction={prediction}
+              defaultSinglePriceRub={defaultPrice}
+              onBuySingle={openSingleCheckout}
+              onVerifyHash={setHashModalItem}
+              inBundle={selectedBundleIds.includes(prediction.id)}
+              onToggleBundle={toggleBundleItem}
+            />
           ))}
         </div>
 
-        {/* Сетка карточек 3 в ряд */}
-        <div className="mt-6 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-          {filteredMarketplace.length > 0 ? (
-            filteredMarketplace.map((pred) => (
-              <PredictionCard
-                key={pred.id}
-                prediction={pred}
-                variant="grid"
-                userReferenceBankrollRub={data.viewer?.referenceBankrollRub}
-                defaultSinglePriceRub={data.brand.defaultSinglePriceRub}
-                onBuySingle={handleBuySingle}
-                onVerifyHash={handleVerifyHash}
-              />
-            ))
-          ) : (
-            <div className="col-span-full rounded-3xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
-              В выбранной дисциплине сейчас нет предстоящих событий. Выберите «Все события» или загляните позже.
+        {filteredActive.length === 0 && (
+          <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
+            В выбранной дисциплине сейчас нет предстоящих событий. Переключите фильтр на «Все виды».
+          </div>
+        )}
+      </section>
+
+      {/* 3. ЖУРНАЛЬНЫЙ БЛОК ДИСТАНЦИИ + ОТКРЫТЫЙ АРХИВ */}
+      <section className="border-y border-slate-200/80 bg-white py-12">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-8 lg:grid-cols-12 lg:items-center">
+            <div className="lg:col-span-5">
+              <div className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
+                <TrendingUp className="h-3.5 w-3.5" />
+                <span>Открытый реестр результатов</span>
+              </div>
+              <h2 className="mt-3 text-2xl font-black tracking-tight text-slate-950 sm:text-3xl">
+                Каждый завершенный матч открыт для проверки
+              </h2>
+              <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                После финального свистка все прогнозы — и платные, и бесплатные — публикуются в открытом архиве вместе со строкой SHA-256 и реальным счетом.
+              </p>
+
+              <ul className="mt-5 space-y-2.5 text-xs font-medium text-slate-700">
+                <li className="flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  <span>Фиксированный флэт 1%–2.5% без догонов и экспрессов</span>
+                </li>
+                <li className="flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  <span>Авто-возврат 100% на баланс по застрахованным событиям</span>
+                </li>
+                <li className="flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  <span>Математическая проверка неизменности исхода по SHA-256</span>
+                </li>
+              </ul>
+
+              <div className="mt-6 flex flex-wrap gap-3">
+                <Link
+                  href="/stats"
+                  className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white hover:bg-slate-800"
+                >
+                  <span>Статистика и калькулятор банка</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
+                {data?.brand.freeTelegramUrl && (
+                  <a
+                    href={data.brand.freeTelegramUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                  >
+                    <Send className="h-3.5 w-3.5 text-blue-600" />
+                    <span>Открытый Telegram</span>
+                  </a>
+                )}
+              </div>
+            </div>
+
+            <div className="lg:col-span-7">
+              <div className="rounded-2xl border border-slate-200 bg-[#F8FAFC] p-5">
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700">
+                    Кривая доходности (кумулятивный банк %)
+                  </span>
+                  <span className="font-mono text-xs font-bold text-blue-600">
+                    +{allTimeStats?.netProfitUnits.toFixed(2) ?? '18.40'}% к банку
+                  </span>
+                </div>
+                <EquityCurveChart points={data?.equityCurve ?? []} />
+              </div>
+            </div>
+          </div>
+
+          {/* Последние рассчитанные события в 3 колонки */}
+          {settledList.length > 0 && (
+            <div className="mt-10">
+              <div className="mb-4 flex items-center justify-between">
+                <h3 className="text-lg font-extrabold text-slate-950">
+                  Недавно рассчитанные события
+                </h3>
+                <Link
+                  href="/predictions"
+                  className="text-xs font-bold text-blue-600 hover:underline"
+                >
+                  Смотреть весь архив →
+                </Link>
+              </div>
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                {settledList.slice(0, 3).map((prediction) => (
+                  <PredictionCard
+                    key={prediction.id}
+                    prediction={prediction}
+                    defaultSinglePriceRub={defaultPrice}
+                    onBuySingle={openSingleCheckout}
+                    onVerifyHash={setHashModalItem}
+                  />
+                ))}
+              </div>
             </div>
           )}
         </div>
       </section>
 
-      {/* ЖУРНАЛЬНЫЙ БЛОК 8 + 4: ГРАФИК БАНКА + ПРИНЦИПЫ ПРОЗРАЧНОСТИ */}
-      <section className="mx-auto max-w-7xl px-4 pt-16 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-          <div className="lg:col-span-8">
-            <EquityCurveChart points={data.equityCurve} />
-          </div>
+      <BundleCartBar
+        selectedItems={selectedBundleItems}
+        defaultPriceRub={defaultPrice}
+        bundle2DiscountPct={bundle2Pct}
+        bundle3DiscountPct={bundle3Pct}
+        onClear={() => setSelectedBundleIds([])}
+        onCheckoutBundle={openBundleCheckout}
+      />
 
-          <div className="flex flex-col justify-between gap-4 lg:col-span-4">
-            <div className="rounded-3xl border border-slate-200/90 bg-white p-6">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-                <Lock className="h-5 w-5" />
-              </div>
-              <h3 className="mt-3.5 text-base font-extrabold text-slate-950">
-                Защита от рисованной статистики
-              </h3>
-              <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
-                Исход и коэффициент каждого прогноза подписываются SHA-256 до начала встречи. После финального свистка матч открывается для всех — любой минус виден публично.
-              </p>
-            </div>
+      <YooKassaCheckoutModal
+        target={checkoutTarget}
+        viewer={data?.viewer ?? null}
+        onClose={() => setCheckoutTarget(null)}
+        onSuccess={async () => {
+          setSelectedBundleIds([]);
+          await reload();
+        }}
+      />
 
-            <div className="rounded-3xl border border-slate-200/90 bg-white p-6">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-                <TrendingUp className="h-5 w-5" />
-              </div>
-              <h3 className="mt-3.5 text-base font-extrabold text-slate-950">
-                Разовые покупки без навязывания
-              </h3>
-              <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
-                Никаких закрытых VIP-подписок и скрытых рекуррентных списаний с карты. Оплачивайте только конкретный интересующий матч в один клик.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ОТКРЫТЫЙ АРХИВ ПОСЛЕДНИХ РАСЧЕТОВ (СЕТКА 3 КАРТОЧКИ В РЯД) */}
-      <section className="mx-auto max-w-7xl px-4 pt-16 sm:px-6 lg:px-8">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Прозрачный аудит
-            </div>
-            <h2 className="mt-1 text-2xl font-black tracking-tight text-slate-950">
-              Недавно завершенные события
-            </h2>
-          </div>
-
-          <Link
-            href="/stats"
-            className="inline-flex items-center gap-1.5 text-sm font-bold text-blue-600 hover:text-blue-700"
-          >
-            <span>Полный реестр и статистика</span>
-            <ArrowRight className="h-4 w-4" />
-          </Link>
-        </div>
-
-        <div className="mt-6 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-          {recentSettled.map((pred) => (
-            <PredictionCard
-              key={pred.id}
-              prediction={pred}
-              variant="grid"
-              onVerifyHash={handleVerifyHash}
-            />
-          ))}
-        </div>
-      </section>
+      <HashVerifyModal
+        prediction={hashModalItem}
+        onClose={() => setHashModalItem(null)}
+      />
     </SiteShell>
   );
 }

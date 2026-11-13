@@ -6,8 +6,10 @@ export async function POST(req: NextRequest) {
   try {
     const user = await requireAuthenticatedUser();
     const body = (await req.json()) as {
-      kind: 'SINGLE_PREDICTION' | 'BALANCE_TOPUP';
+      kind: 'SINGLE_PREDICTION' | 'BUNDLE_PREDICTIONS' | 'BALANCE_TOPUP';
       predictionId?: string;
+      predictionIds?: string[];
+      promoCode?: string | null;
       topupAmountRub?: number;
       paymentMethod: 'yookassa' | 'internal_balance';
     };
@@ -21,6 +23,8 @@ export async function POST(req: NextRequest) {
       userId: user.id,
       kind: body.kind,
       predictionId: body.predictionId,
+      predictionIds: body.predictionIds,
+      promoCode: body.promoCode,
       topupAmountRub: body.topupAmountRub,
       paymentMethod: body.paymentMethod,
       originUrl,

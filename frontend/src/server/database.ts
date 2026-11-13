@@ -17,6 +17,7 @@ import type {
   PayoutRequestRecord,
   PlatformSettings,
   PredictionRecord,
+  PromoCodeRecord,
   PublicPredictionDto,
   RecentWinFeedItem,
   ResultStatus,
@@ -32,6 +33,7 @@ export interface PersistentState {
   users: UserAccount[];
   predictions: PredictionRecord[];
   transactions: OrderTransaction[];
+  promoCodes: PromoCodeRecord[];
   affiliateLinks: AffiliateLinkRecord[];
   payouts: PayoutRequestRecord[];
   processedWebhooks: string[];
@@ -89,6 +91,8 @@ function createInitialState(): PersistentState {
     yookassaSecretKey: process.env.YOOKASSA_SECRET_KEY || '',
     yookassaVatCode: Number(process.env.YOOKASSA_VAT_CODE || 1),
     defaultSinglePriceRub: 790,
+    bundle2DiscountPct: 15,
+    bundle3DiscountPct: 25,
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
     telegramChannelId: process.env.TELEGRAM_VIP_CHANNEL_ID || '',
   };
@@ -135,6 +139,7 @@ function createInitialState(): PersistentState {
       result: ResultStatus;
       score: string | null;
       featured?: boolean;
+      insured?: boolean;
       cashoutMult?: number;
     },
   ): PredictionRecord => {
@@ -174,6 +179,7 @@ function createInitialState(): PersistentState {
       bookmakerSource: 'Pinnacle / Фонбет',
       analysisTeaser: opts.teaser,
       isFeatured: Boolean(opts.featured),
+      insuredOnLoss: opts.insured ?? opts.tier === 'PAID_SINGLE',
       selectionTitle: opts.selection,
       fixedOdds: opts.odds,
       minAcceptableOdds: opts.minOdds,
@@ -194,13 +200,12 @@ function createInitialState(): PersistentState {
   };
 
   const predictions: PredictionRecord[] = [
-    // Актуальная витрина событий (6 карточек для сетки 3x2)
     makeSeed(1, {
       sport: 'FOOTBALL',
       league: 'Лига Чемпионов · Плей-офф',
       home: 'Реал Мадрид',
       away: 'Бавария',
-      offsetHours: 2.4,
+      offsetHours: 2.8,
       matchStatus: 'UPCOMING',
       stake: 2.5,
       odds: 2.08,
@@ -214,13 +219,14 @@ function createInitialState(): PersistentState {
       result: 'PENDING',
       score: null,
       featured: true,
+      insured: true,
     }),
     makeSeed(2, {
       sport: 'HOCKEY',
       league: 'КХЛ · Регулярный чемпионат',
       home: 'Локомотив',
       away: 'СКА',
-      offsetHours: 1.3,
+      offsetHours: 1.6,
       matchStatus: 'UPCOMING',
       stake: 2.0,
       odds: 1.98,
@@ -233,13 +239,14 @@ function createInitialState(): PersistentState {
       price: 790,
       result: 'PENDING',
       score: null,
+      insured: true,
     }),
     makeSeed(3, {
       sport: 'ESPORTS',
       league: 'CS2 · Major Playoffs',
       home: 'Team Spirit',
       away: 'MOUZ',
-      offsetHours: 4.0,
+      offsetHours: 4.5,
       matchStatus: 'UPCOMING',
       stake: 2.5,
       odds: 2.06,
@@ -252,13 +259,14 @@ function createInitialState(): PersistentState {
       price: 890,
       result: 'PENDING',
       score: null,
+      insured: true,
     }),
     makeSeed(4, {
       sport: 'TENNIS',
       league: 'ATP Masters · Хард',
       home: 'Карлос Алькарас',
       away: 'Алекс де Минаур',
-      offsetHours: 5.5,
+      offsetHours: 5.8,
       matchStatus: 'UPCOMING',
       stake: 2.0,
       odds: 1.91,
@@ -271,17 +279,18 @@ function createInitialState(): PersistentState {
       price: 690,
       result: 'PENDING',
       score: null,
+      insured: false,
     }),
     makeSeed(5, {
       sport: 'BASKETBALL',
       league: 'Евролига · Мужчины',
       home: 'Панатинаикос',
       away: 'Монако',
-      offsetHours: 6.8,
+      offsetHours: 7.2,
       matchStatus: 'UPCOMING',
       stake: 1.5,
       odds: 1.89,
-      minOdds: 1.80,
+      minOdds: 1.8,
       selection: 'Фора 1 (-4.5) с ОТ',
       teaser:
         'Открытый бесплатный разбор дня: домашний темп греков и 42% реализации трехочковых из углов.',
@@ -290,13 +299,14 @@ function createInitialState(): PersistentState {
       price: null,
       result: 'PENDING',
       score: null,
+      insured: false,
     }),
     makeSeed(6, {
       sport: 'FOOTBALL',
       league: 'Англия · Премьер-лига',
       home: 'Арсенал',
       away: 'Ньюкасл',
-      offsetHours: -0.5,
+      offsetHours: -0.4,
       matchStatus: 'LIVE',
       stake: 2.0,
       odds: 1.94,
@@ -309,9 +319,10 @@ function createInitialState(): PersistentState {
       price: 790,
       result: 'PENDING',
       score: "1:0 (34')",
+      insured: true,
     }),
 
-    // Рассчитанный архив по месяцам (для честного расчета Yield и графика Equity Curve)
+    // Рассчитанный архив
     makeSeed(7, {
       sport: 'TENNIS',
       league: 'ATP Finals · Хард',
@@ -440,11 +451,24 @@ function createInitialState(): PersistentState {
     }),
   ];
 
+  const promoCodes: PromoCodeRecord[] = [
+    {
+      id: 'promo_start15',
+      code: 'START15',
+      discountPercent: 15,
+      maxUses: 500,
+      usedCount: 0,
+      active: true,
+      createdAt: new Date(now).toISOString(),
+    },
+  ];
+
   return {
     settings,
     users: [adminUser],
     predictions,
     transactions: [],
+    promoCodes,
     affiliateLinks: [
       {
         id: 'aff_init_1',
@@ -464,8 +488,9 @@ function createInitialState(): PersistentState {
   };
 }
 
-// Автоматическая миграция старых записей БД (без подписок и VIP_ONLY)
-function normalizeLoadedState(raw: Partial<PersistentState> & Record<string, unknown>): PersistentState {
+function normalizeLoadedState(
+  raw: Partial<PersistentState> & Record<string, unknown>,
+): PersistentState {
   const fallback = createInitialState();
   const rawSettings = (raw.settings || {}) as Partial<PlatformSettings> & {
     telegramVipChannelId?: string;
@@ -474,6 +499,8 @@ function normalizeLoadedState(raw: Partial<PersistentState> & Record<string, unk
   const settings: PlatformSettings = {
     ...fallback.settings,
     ...rawSettings,
+    bundle2DiscountPct: rawSettings.bundle2DiscountPct ?? 15,
+    bundle3DiscountPct: rawSettings.bundle3DiscountPct ?? 25,
     telegramChannelId:
       rawSettings.telegramChannelId ??
       rawSettings.telegramVipChannelId ??
@@ -486,6 +513,7 @@ function normalizeLoadedState(raw: Partial<PersistentState> & Record<string, unk
     return {
       ...p,
       isFeatured: p.isFeatured ?? idx === 0,
+      insuredOnLoss: p.insuredOnLoss ?? normalizedTier === 'PAID_SINGLE',
       accessTier: normalizedTier,
       singlePriceRub:
         normalizedTier === 'PAID_SINGLE'
@@ -494,9 +522,23 @@ function normalizeLoadedState(raw: Partial<PersistentState> & Record<string, unk
     };
   });
 
-  const transactions = (raw.transactions || []).filter(
-    (t) => t.kind === 'SINGLE_PREDICTION' || t.kind === 'BALANCE_TOPUP',
-  );
+  const transactions = (raw.transactions || [])
+    .filter(
+      (t) =>
+        t.kind === 'SINGLE_PREDICTION' ||
+        t.kind === 'BUNDLE_PREDICTIONS' ||
+        t.kind === 'BALANCE_TOPUP',
+    )
+    .map((t) => ({
+      ...t,
+      predictionIds: Array.isArray(t.predictionIds)
+        ? t.predictionIds
+        : t.predictionId
+          ? [t.predictionId]
+          : [],
+      promoCode: t.promoCode ?? null,
+      discountRub: t.discountRub ?? 0,
+    }));
 
   const users = (raw.users || fallback.users).map((u) => ({
     id: u.id,
@@ -527,15 +569,12 @@ function normalizeLoadedState(raw: Partial<PersistentState> & Record<string, unk
     users,
     predictions,
     transactions,
+    promoCodes: Array.isArray(raw.promoCodes) ? raw.promoCodes : fallback.promoCodes,
     affiliateLinks: raw.affiliateLinks || fallback.affiliateLinks,
     payouts: raw.payouts || [],
     processedWebhooks: raw.processedWebhooks || [],
   };
 }
-
-// =============================================================================
-// ДРАЙВЕР ХРАНЕНИЯ: POSTGRESQL (НА СЕРВЕРЕ) + ЛОКАЛЬНЫЙ ФАЙЛ (ДЛЯ ПРЕВЬЮ)
-// =============================================================================
 
 let pgPool: Pool | null = null;
 let pgAvailable: boolean | null = null;
@@ -615,7 +654,9 @@ export async function readState(): Promise<PersistentState> {
     `SELECT payload FROM valuex_app_storage WHERE store_key = 'main'`,
   );
   if (res.rows.length > 0) {
-    return normalizeLoadedState(res.rows[0].payload as unknown as Record<string, unknown>);
+    return normalizeLoadedState(
+      res.rows[0].payload as unknown as Record<string, unknown>,
+    );
   }
 
   const seeded = createInitialState();
@@ -694,14 +735,28 @@ export function toSafeSessionUser(user: UserAccount): SafeSessionUser {
   };
 }
 
+export function resolveEffectiveMatchStatus(record: PredictionRecord): MatchStatus {
+  if (record.matchStatus === 'FINISHED' || record.resultStatus !== 'PENDING') {
+    return 'FINISHED';
+  }
+  if (record.matchStatus === 'LIVE') {
+    return 'LIVE';
+  }
+  if (Date.now() >= new Date(record.matchStartsAt).getTime()) {
+    return 'LIVE';
+  }
+  return 'UPCOMING';
+}
+
 export function toPublicPredictionDto(
   record: PredictionRecord,
   viewer: UserAccount | null,
 ): PublicPredictionDto {
+  const effectiveStatus = resolveEffectiveMatchStatus(record);
   const isFree = record.accessTier === 'FREE';
   const isSettledPublic =
     record.revealAfterFinish &&
-    record.matchStatus === 'FINISHED' &&
+    effectiveStatus === 'FINISHED' &&
     record.resultStatus !== 'PENDING';
   const isBought = Boolean(viewer?.purchasedPredictionIds.includes(record.id));
   const isAdmin = viewer?.role === 'ADMIN';
@@ -720,12 +775,14 @@ export function toPublicPredictionDto(
     homeTeam: record.homeTeam,
     awayTeam: record.awayTeam,
     matchStartsAt: record.matchStartsAt,
-    matchStatus: record.matchStatus,
+    matchStatus: effectiveStatus,
     stakePercent: record.stakePercent,
     stakeUnits: record.stakeUnits,
     bookmakerSource: record.bookmakerSource,
     analysisTeaser: record.analysisTeaser,
     isFeatured: Boolean(record.isFeatured),
+    insuredOnLoss: Boolean(record.insuredOnLoss),
+    salesClosed: effectiveStatus === 'FINISHED',
     isLocked: !unlocked,
     isPurchased: isBought,
     accessTier: record.accessTier,
@@ -939,7 +996,70 @@ export function computePlatformAnalytics(predictions: PredictionRecord[]): {
 }
 
 // =============================================================================
-// БИЗНЕС-ОПЕРАЦИИ (АВТОРИЗАЦИЯ, РАЗОВЫЕ ОПЛАТЫ СОБЫТИЙ, ПРОГНОЗЫ, АДМИНКА)
+// РАСЧЕТ ПАКЕТНЫХ СКИДОК И ПРОМОКОДОВ
+// =============================================================================
+
+export function calculateCartPricing(params: {
+  state: PersistentState;
+  predictionIds: string[];
+  promoCode?: string | null;
+}): {
+  subtotalRub: number;
+  bundleDiscountPct: number;
+  promoDiscountPct: number;
+  promoValidCode: string | null;
+  discountRub: number;
+  finalAmountRub: number;
+} {
+  const uniqueIds = Array.from(new Set(params.predictionIds));
+  let subtotalRub = 0;
+  for (const pid of uniqueIds) {
+    const p = params.state.predictions.find((row) => row.id === pid);
+    if (p && p.accessTier === 'PAID_SINGLE') {
+      subtotalRub += p.singlePriceRub ?? params.state.settings.defaultSinglePriceRub;
+    }
+  }
+
+  let bundleDiscountPct = 0;
+  if (uniqueIds.length >= 3) {
+    bundleDiscountPct = params.state.settings.bundle3DiscountPct;
+  } else if (uniqueIds.length === 2) {
+    bundleDiscountPct = params.state.settings.bundle2DiscountPct;
+  }
+
+  let promoDiscountPct = 0;
+  let promoValidCode: string | null = null;
+  if (params.promoCode?.trim()) {
+    const clean = params.promoCode.trim().toUpperCase();
+    const found = params.state.promoCodes.find(
+      (c) => c.code.toUpperCase() === clean && c.active && c.usedCount < c.maxUses,
+    );
+    if (found) {
+      promoDiscountPct = found.discountPercent;
+      promoValidCode = found.code;
+    }
+  }
+
+  // Пакетная скидка и промокод суммируются с разумным потолком 60%
+  const combinedPct = Math.min(60, bundleDiscountPct + promoDiscountPct);
+  const finalAmountRub = Math.max(
+    50,
+    Math.round((subtotalRub * (100 - combinedPct)) / 100),
+  );
+  const discountRub = Math.max(0, subtotalRub - finalAmountRub);
+
+  return {
+    subtotalRub,
+    bundleDiscountPct,
+    promoDiscountPct,
+    promoValidCode,
+    discountRub,
+    finalAmountRub,
+  };
+}
+
+// =============================================================================
+// БИЗНЕС-ОПЕРАЦИИ (АВТОРИЗАЦИЯ, ОПЛАТЫ, ПРОМОКОДЫ, СТРАХОВКА, АДМИНКА)
 // =============================================================================
 
 export async function registerUserAccount(params: {
@@ -1056,8 +1176,10 @@ export async function recordReferralClick(refCode: string): Promise<void> {
 
 export async function initiateOrderCheckout(params: {
   userId: string;
-  kind: 'SINGLE_PREDICTION' | 'BALANCE_TOPUP';
+  kind: 'SINGLE_PREDICTION' | 'BUNDLE_PREDICTIONS' | 'BALANCE_TOPUP';
   predictionId?: string;
+  predictionIds?: string[];
+  promoCode?: string | null;
   topupAmountRub?: number;
   paymentMethod: 'yookassa' | 'internal_balance';
   originUrl: string;
@@ -1069,16 +1191,52 @@ export async function initiateOrderCheckout(params: {
   }
 
   let amountRub = 0;
+  let discountRub = 0;
+  let promoValidCode: string | null = null;
+  let targetIds: string[] = [];
   let title = '';
 
-  if (params.kind === 'SINGLE_PREDICTION') {
-    const pred = stateSnap.predictions.find((p) => p.id === params.predictionId);
-    if (!pred) throw new Error('Событие не найдено');
-    if (userSnap.purchasedPredictionIds.includes(pred.id)) {
-      throw new Error('Этот прогноз уже куплен и открыт в вашем кабинете');
+  if (params.kind === 'SINGLE_PREDICTION' || params.kind === 'BUNDLE_PREDICTIONS') {
+    const rawIds =
+      params.kind === 'BUNDLE_PREDICTIONS' && params.predictionIds?.length
+        ? params.predictionIds
+        : params.predictionId
+          ? [params.predictionId]
+          : [];
+
+    targetIds = Array.from(new Set(rawIds)).filter(
+      (id) => !userSnap.purchasedPredictionIds.includes(id),
+    );
+
+    if (!targetIds.length) {
+      throw new Error('Выбранные события уже куплены и открыты в вашем кабинете');
     }
-    amountRub = pred.singlePriceRub ?? stateSnap.settings.defaultSinglePriceRub;
-    title = `Аналитический прогноз: ${pred.homeTeam} — ${pred.awayTeam}`;
+
+    const matchedPreds = targetIds.map((id) => {
+      const p = stateSnap.predictions.find((row) => row.id === id);
+      if (!p) throw new Error('Одно из выбранных событий не найдено');
+      if (resolveEffectiveMatchStatus(p) === 'FINISHED') {
+        throw new Error(`Матч ${p.homeTeam} — ${p.awayTeam} уже завершен`);
+      }
+      return p;
+    });
+
+    const pricing = calculateCartPricing({
+      state: stateSnap,
+      predictionIds: targetIds,
+      promoCode: params.promoCode,
+    });
+    amountRub = pricing.finalAmountRub;
+    discountRub = pricing.discountRub;
+    promoValidCode = pricing.promoValidCode;
+
+    if (matchedPreds.length === 1) {
+      title = `Прогноз: ${matchedPreds[0].homeTeam} — ${matchedPreds[0].awayTeam}`;
+    } else {
+      title = `Пакет из ${matchedPreds.length} прогнозов (${matchedPreds
+        .map((m) => m.homeTeam)
+        .join(', ')})`;
+    }
   } else {
     amountRub = Math.max(100, Math.round(params.topupAmountRub || 1000));
     title = `Пополнение кошелька кабинета (${userSnap.email})`;
@@ -1086,7 +1244,7 @@ export async function initiateOrderCheckout(params: {
 
   if (params.paymentMethod === 'internal_balance' && userSnap.balanceRub < amountRub) {
     throw new Error(
-      `Недостаточно средств на балансе кабинета (${userSnap.balanceRub} ₽ из ${amountRub} ₽)`,
+      `Недостаточно средств на кошельке (${userSnap.balanceRub} ₽ из ${amountRub} ₽)`,
     );
   }
 
@@ -1126,8 +1284,16 @@ export async function initiateOrderCheckout(params: {
       externalPaymentId,
       userId: userSnap.id,
       userEmail: userSnap.email,
-      kind: params.kind,
-      predictionId: params.predictionId ?? null,
+      kind:
+        targetIds.length > 1
+          ? 'BUNDLE_PREDICTIONS'
+          : params.kind === 'BALANCE_TOPUP'
+            ? 'BALANCE_TOPUP'
+            : 'SINGLE_PREDICTION',
+      predictionId: targetIds[0] ?? null,
+      predictionIds: targetIds,
+      promoCode: promoValidCode,
+      discountRub,
       title,
       amountRub,
       paymentMethod: params.paymentMethod,
@@ -1177,15 +1343,28 @@ export async function fulfillOrderPayment(
     tx.status = 'SUCCEEDED';
     tx.paidAt = new Date().toISOString();
 
-    if (tx.kind === 'SINGLE_PREDICTION' && tx.predictionId) {
-      if (!buyer.purchasedPredictionIds.includes(tx.predictionId)) {
-        buyer.purchasedPredictionIds.push(tx.predictionId);
+    if (tx.promoCode) {
+      const promo = state.promoCodes.find(
+        (c) => c.code.toUpperCase() === tx.promoCode!.toUpperCase(),
+      );
+      if (promo) promo.usedCount += 1;
+    }
+
+    if (tx.kind === 'SINGLE_PREDICTION' || tx.kind === 'BUNDLE_PREDICTIONS') {
+      const unlockIds = tx.predictionIds.length
+        ? tx.predictionIds
+        : tx.predictionId
+          ? [tx.predictionId]
+          : [];
+      for (const pid of unlockIds) {
+        if (!buyer.purchasedPredictionIds.includes(pid)) {
+          buyer.purchasedPredictionIds.push(pid);
+        }
       }
     } else if (tx.kind === 'BALANCE_TOPUP') {
       buyer.balanceRub += tx.amountRub;
     }
 
-    // Начисление реферального вознаграждения с разовой покупки / пополнения через ЮKassa
     if (tx.paymentMethod === 'yookassa' && buyer.referredByUserId) {
       const partner = state.users.find((u) => u.id === buyer.referredByUserId);
       if (partner) {
@@ -1254,9 +1433,14 @@ export async function refundOrderTransaction(orderIdOrExternal: string): Promise
       buyer.balanceRub += tx.amountRub;
     }
 
-    if (tx.kind === 'SINGLE_PREDICTION' && tx.predictionId) {
+    const revokeIds = tx.predictionIds.length
+      ? tx.predictionIds
+      : tx.predictionId
+        ? [tx.predictionId]
+        : [];
+    if (revokeIds.length) {
       buyer.purchasedPredictionIds = buyer.purchasedPredictionIds.filter(
-        (pid) => pid !== tx.predictionId,
+        (pid) => !revokeIds.includes(pid),
       );
     }
   });
@@ -1276,6 +1460,7 @@ export async function createPredictionByAdmin(input: {
   accessTier: AccessTier;
   singlePriceRub?: number | null;
   isFeatured?: boolean;
+  insuredOnLoss?: boolean;
   analysisTeaser: string;
   analysisFull: string;
   pushToTelegram?: boolean;
@@ -1319,6 +1504,8 @@ export async function createPredictionByAdmin(input: {
       bookmakerSource: input.bookmakerSource?.trim() || 'Pinnacle / Фонбет',
       analysisTeaser: input.analysisTeaser.trim(),
       isFeatured: Boolean(input.isFeatured),
+      insuredOnLoss:
+        input.accessTier === 'PAID_SINGLE' ? Boolean(input.insuredOnLoss ?? true) : false,
       selectionTitle: input.selectionTitle.trim(),
       fixedOdds: odds,
       minAcceptableOdds: input.minAcceptableOdds ? Number(input.minAcceptableOdds) : null,
@@ -1348,7 +1535,9 @@ export async function createPredictionByAdmin(input: {
     const priceLabel =
       created.pred.accessTier === 'FREE'
         ? 'Открытый бесплатный разбор'
-        : `Разовый доступ: ${created.pred.singlePriceRub} ₽`;
+        : `Разовый доступ: ${created.pred.singlePriceRub} ₽${
+            created.pred.insuredOnLoss ? ' (со страховкой на баланс)' : ''
+          }`;
     const msg = [
       `📊 <b>Новый разбор на ${created.settings.brandName}</b>`,
       `🏆 ${created.pred.leagueName}`,
@@ -1369,7 +1558,7 @@ export async function settlePredictionByAdmin(params: {
   resultStatus: ResultStatus;
   finalScore?: string | null;
   cashoutMultiplier?: number | null;
-}): Promise<PredictionRecord> {
+}): Promise<{ prediction: PredictionRecord; compensatedUsers: number }> {
   return mutateState((state) => {
     const pred = state.predictions.find((p) => p.id === params.predictionId);
     if (!pred) throw new Error('Событие не найдено');
@@ -1384,7 +1573,7 @@ export async function settlePredictionByAdmin(params: {
       pred.profitUnits = null;
       pred.profitPercent = null;
       pred.settledAt = null;
-      return pred;
+      return { prediction: pred, compensatedUsers: 0 };
     }
 
     pred.matchStatus = 'FINISHED';
@@ -1405,6 +1594,30 @@ export async function settlePredictionByAdmin(params: {
 
     pred.profitUnits = profit;
     pred.profitPercent = profit;
-    return pred;
+
+    // Автоматическая страховка покупателей: возврат стоимости на кошелек при минусе или возврате
+    let compensatedUsers = 0;
+    if (
+      pred.insuredOnLoss &&
+      (params.resultStatus === 'LOSS' || params.resultStatus === 'PUSH')
+    ) {
+      for (const tx of state.transactions) {
+        if (
+          tx.status === 'SUCCEEDED' &&
+          !tx.insuranceCredited &&
+          tx.predictionIds.includes(pred.id)
+        ) {
+          const share = Math.round(tx.amountRub / Math.max(1, tx.predictionIds.length));
+          const buyer = state.users.find((u) => u.id === tx.userId);
+          if (buyer && share > 0) {
+            buyer.balanceRub += share;
+            tx.insuranceCredited = true;
+            compensatedUsers += 1;
+          }
+        }
+      }
+    }
+
+    return { prediction: pred, compensatedUsers };
   });
 }

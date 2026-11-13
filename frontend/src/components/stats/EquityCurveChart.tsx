@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { TrendingUp } from 'lucide-react';
 import type { EquityPoint } from '@/server/types';
 
 interface EquityCurveChartProps {
@@ -11,10 +10,10 @@ interface EquityCurveChartProps {
 export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ points }) => {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
-  const width = 760;
-  const height = 250;
-  const padX = 48;
-  const padY = 26;
+  const width = 740;
+  const height = 230;
+  const padX = 46;
+  const padY = 24;
 
   const { pathD, areaD, coords, minVal, maxVal } = useMemo(() => {
     if (!points.length) {
@@ -55,40 +54,33 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ points }) =>
       : coords[coords.length - 1];
 
   return (
-    <div className="rounded-3xl border border-slate-200/90 bg-white p-6 shadow-[0_2px_12px_rgba(15,23,42,0.03)]">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-blue-600">
-            <TrendingUp className="h-3.5 w-3.5" />
-            <span>График роста банка (Equity Curve)</span>
+    <div>
+      {activePoint && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white px-3.5 py-2 text-xs">
+          <div className="font-semibold text-slate-700">
+            {activePoint.point.label}{' '}
+            <span className="text-slate-400">
+              · событий: {activePoint.point.betsCount} · Yield{' '}
+              {activePoint.point.yieldPct >= 0 ? '+' : ''}
+              {activePoint.point.yieldPct.toFixed(1)}%
+            </span>
           </div>
-          <h3 className="mt-1 text-lg font-extrabold text-slate-950">
-            Накопительная доходность по всем рассчитанным событиям
-          </h3>
+          <div className="font-mono font-black text-blue-600">
+            Банк: {activePoint.point.cumulativeBankPct.toFixed(2)}% (
+            {activePoint.point.profitUnits >= 0 ? '+' : ''}
+            {activePoint.point.profitUnits.toFixed(2)}%)
+          </div>
         </div>
+      )}
 
-        {activePoint && (
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-right">
-            <div className="text-[11px] font-medium text-slate-500">
-              {activePoint.point.label} · событий: {activePoint.point.betsCount}
-            </div>
-            <div className="font-mono text-sm font-black text-blue-600">
-              Банк: {activePoint.point.cumulativeBankPct.toFixed(2)}% (
-              {activePoint.point.profitUnits >= 0 ? '+' : ''}
-              {activePoint.point.profitUnits.toFixed(2)} u)
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="mt-5 overflow-x-auto">
+      <div className="overflow-x-auto">
         <svg
           viewBox={`0 0 ${width} ${height}`}
-          className="h-56 w-full min-w-[520px] select-none overflow-visible"
+          className="h-52 w-full min-w-[480px] select-none overflow-visible"
         >
           <defs>
             <linearGradient id="equityFillCobalt" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#2563EB" stopOpacity="0.20" />
+              <stop offset="0%" stopColor="#2563EB" stopOpacity="0.22" />
               <stop offset="100%" stopColor="#2563EB" stopOpacity="0.0" />
             </linearGradient>
           </defs>
@@ -107,10 +99,10 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ points }) =>
                   strokeDasharray="4 4"
                 />
                 <text
-                  x={4}
+                  x={2}
                   y={y + 4}
                   fill="#64748B"
-                  fontSize="11"
+                  fontSize="10.5"
                   fontFamily="monospace"
                 >
                   {val.toFixed(0)}%
@@ -141,7 +133,7 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ points }) =>
                 onMouseEnter={() => setHoveredIdx(idx)}
                 onMouseLeave={() => setHoveredIdx(null)}
               >
-                <circle cx={c.x} cy={c.y} r={12} fill="transparent" />
+                <circle cx={c.x} cy={c.y} r={14} fill="transparent" />
                 <circle
                   cx={c.x}
                   cy={c.y}
@@ -152,10 +144,10 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ points }) =>
                 />
                 <text
                   x={c.x}
-                  y={height - 4}
+                  y={height - 3}
                   textAnchor="middle"
                   fill="#64748B"
-                  fontSize="10.5"
+                  fontSize="10"
                 >
                   {c.point.label}
                 </text>

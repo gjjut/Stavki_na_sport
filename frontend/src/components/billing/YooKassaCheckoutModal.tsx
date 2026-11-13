@@ -1,23 +1,26 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
   CheckCircle2,
   CreditCard,
   Loader2,
   ShieldCheck,
+  Tag,
   Wallet,
   X,
 } from 'lucide-react';
 import type { OrderTransaction, SafeSessionUser } from '@/server/types';
 
 export interface CheckoutModalTarget {
-  kind: 'SINGLE_PREDICTION' | 'BALANCE_TOPUP';
+  kind: 'SINGLE_PREDICTION' | 'BUNDLE_PREDICTIONS' | 'BALANCE_TOPUP';
   title: string;
   subtitle: string;
   priceRub: number;
+  originalPriceRub?: number;
   predictionId?: string;
+  predictionIds?: string[];
 }
 
 interface YooKassaCheckoutModalProps {
@@ -34,16 +37,67 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
   onSuccess,
 }) => {
   const [method, setMethod] = useState<'yookassa' | 'internal_balance'>('yookassa');
+  const [promoInput, setPromoInput] = useState('');
+  const [appliedPromo, setAppliedPromo] = useState<{
+    code: string;
+    finalAmountRub: number;
+    discountRub: number;
+    subtotalRub: number;
+  } | null>(null);
+  const [promoMessage, setPromoMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [paidOrder, setPaidOrder] = useState<OrderTransaction | null>(null);
 
+  useEffect(() => {
+    setPromoInput('');
+    setAppliedPromo(null);
+    setPromoMessage(null);
+    setError(null);
+    setPaidOrder(null);
+  }, [target]);
+
   if (!target) return null;
+
+  const effectivePriceRub = appliedPromo ? appliedPromo.finalAmountRub : target.priceRub;
+  const effectiveOldPriceRub = appliedPromo
+    ? appliedPromo.subtotalRub
+    : target.originalPriceRub;
 
   const canUseBalance =
     viewer !== null &&
     target.kind !== 'BALANCE_TOPUP' &&
-    viewer.balanceRub >= target.priceRub;
+    viewer.balanceRub >= effectivePriceRub;
+
+  const handleApplyPromo = async () => {
+    if (!promoInput.trim()) return;
+    setPromoMessage(null);
+    const ids =
+      target.predictionIds && target.predictionIds.length
+        ? target.predictionIds
+        : target.predictionId
+          ? [target.predictionId]
+          : [];
+
+    const res = await fetch('/api/v1/billing/promo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ predictionIds: ids, promoCode: promoInput.trim() }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      setAppliedPromo(null);
+      setPromoMessage(json.error || 'Промокод не найден');
+      return;
+    }
+    setAppliedPromo({
+      code: json.pricing.promoValidCode,
+      finalAmountRub: json.pricing.finalAmountRub,
+      discountRub: json.pricing.discountRub,
+      subtotalRub: json.pricing.subtotalRub,
+    });
+    setPromoMessage(`Промокод ${json.pricing.promoValidCode} активирован!`);
+  };
 
   const handlePay = async () => {
     setLoading(true);
@@ -55,6 +109,8 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
         body: JSON.stringify({
           kind: target.kind,
           predictionId: target.predictionId,
+          predictionIds: target.predictionIds,
+          promoCode: appliedPromo?.code || undefined,
           topupAmountRub: target.kind === 'BALANCE_TOPUP' ? target.priceRub : undefined,
           paymentMethod: method,
         }),
@@ -88,19 +144,20 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
       <div className="w-full max-w-md overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
-        {/* Контрастная шапка модального окна */}
         <div className="flex items-center justify-between bg-[#0B0F19] px-6 py-4 text-white">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-blue-400" />
-            <span className="text-sm font-bold">Разовая покупка события</span>
+            <span className="text-sm font-bold">
+              {target.kind === 'BUNDLE_PREDICTIONS'
+                ? 'Покупка пакета событий'
+                : target.kind === 'BALANCE_TOPUP'
+                  ? 'Пополнение кошелька'
+                  : 'Разовая покупка прогноза'}
+            </span>
           </div>
           <button
             type="button"
-            onClick={() => {
-              setPaidOrder(null);
-              setError(null);
-              onClose();
-            }}
+            onClick={onClose}
             className="rounded-lg p-1 text-slate-400 hover:bg-white/10 hover:text-white"
           >
             <X className="h-5 w-5" />
@@ -108,7 +165,6 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
         </div>
 
         <div className="p-6">
-          {/* Карточка выбранного события */}
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
               {target.subtitle}
@@ -116,18 +172,25 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
             <div className="mt-0.5 text-base font-extrabold text-slate-950">
               {target.title}
             </div>
-            <div className="mt-2 flex items-baseline justify-between">
-              <span className="text-xs text-slate-500">К оплате без подписок:</span>
-              <span className="font-mono text-2xl font-black text-blue-600">
-                {target.priceRub.toLocaleString('ru-RU')} ₽
-              </span>
+            <div className="mt-2.5 flex items-baseline justify-between">
+              <span className="text-xs text-slate-500">Сумма к оплате:</span>
+              <div className="flex items-baseline gap-2">
+                {effectiveOldPriceRub && effectiveOldPriceRub > effectivePriceRub && (
+                  <span className="font-mono text-xs text-slate-400 line-through">
+                    {effectiveOldPriceRub.toLocaleString('ru-RU')} ₽
+                  </span>
+                )}
+                <span className="font-mono text-2xl font-black text-blue-600">
+                  {effectivePriceRub.toLocaleString('ru-RU')} ₽
+                </span>
+              </div>
             </div>
           </div>
 
           {!viewer ? (
             <div className="mt-5 space-y-3.5">
               <p className="text-xs leading-relaxed text-slate-600">
-                Войдите или создайте аккаунт за 15 секунд — купленный прогноз откроется мгновенно и навсегда сохранится в разделе «Мои покупки».
+                Войдите или создайте аккаунт за 15 секунд — приобретенные прогнозы и страховка на баланс закрепятся за вашим кабинетом.
               </p>
               <div className="grid grid-cols-2 gap-2.5">
                 <Link
@@ -150,7 +213,7 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                 <CheckCircle2 className="h-6 w-6" />
               </div>
               <h4 className="mt-3 text-lg font-extrabold text-slate-950">
-                Доступ к событию открыт!
+                Доступ успешно открыт!
               </h4>
               <p className="mt-1 text-xs text-slate-500">
                 Исход, зафиксированный коэффициент и аналитический разбор уже разблокированы на карточке и в разделе «Мои покупки».
@@ -158,17 +221,48 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => {
-                  setPaidOrder(null);
-                  onClose();
-                }}
+                onClick={onClose}
                 className="mt-5 w-full rounded-xl bg-blue-600 py-3 text-sm font-bold text-white hover:bg-blue-700"
               >
-                Смотреть открытый прогноз
+                Перейти к открытым прогнозам
               </button>
             </div>
           ) : (
-            <div className="mt-5 space-y-4">
+            <div className="mt-4 space-y-4">
+              {/* Блок ввода промокода (только для событий) */}
+              {target.kind !== 'BALANCE_TOPUP' && (
+                <div>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Tag className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        value={promoInput}
+                        onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
+                        placeholder="Промокод (напр. START15)"
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-8 pr-3 font-mono text-xs font-bold uppercase text-slate-900 placeholder:font-sans placeholder:font-normal placeholder:normal-case placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleApplyPromo}
+                      className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:border-blue-300 hover:text-blue-600"
+                    >
+                      Применить
+                    </button>
+                  </div>
+                  {promoMessage && (
+                    <div
+                      className={`mt-1.5 text-[11px] font-semibold ${
+                        appliedPromo ? 'text-emerald-600' : 'text-rose-500'
+                      }`}
+                    >
+                      {promoMessage}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-2">
                 <button
                   type="button"
@@ -212,7 +306,7 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                           Списать с кошелька кабинета
                         </div>
                         <div className="text-[11px] text-slate-500">
-                          На балансе: {viewer.balanceRub.toLocaleString('ru-RU')} ₽
+                          Доступно: {viewer.balanceRub.toLocaleString('ru-RU')} ₽
                         </div>
                       </div>
                     </div>
@@ -236,7 +330,7 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                 <span>
                   {loading
                     ? 'Переход к оплате...'
-                    : `Оплатить ${target.priceRub.toLocaleString('ru-RU')} ₽`}
+                    : `Оплатить ${effectivePriceRub.toLocaleString('ru-RU')} ₽`}
                 </span>
               </button>
 

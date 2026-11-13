@@ -2,139 +2,131 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import {
   ArrowLeft,
-  BarChart3,
-  CreditCard,
-  FilePlus2,
+  CheckCircle2,
+  Coins,
+  Plus,
   Send,
   Settings,
-  Share2,
-  Sparkles,
+  ShieldCheck,
+  Tag,
   Trash2,
   Users,
 } from 'lucide-react';
-import { SPORT_LABELS } from '@/components/predictions/PredictionCard';
 import type {
   AccessTier,
-  AffiliateLinkRecord,
-  AffiliatePayoutRequest,
   OrderTransaction,
   PlatformSettings,
   PredictionRecord,
+  PromoCodeRecord,
   ResultStatus,
   SafeSessionUser,
   SportType,
   StatsSummary,
 } from '@/server/types';
 
-interface AdminUserRow extends SafeSessionUser {
-  referredByCode: string | null;
-  createdAt: string;
-  lastLoginAt: string;
-}
-
 interface AdminOverviewPayload {
   settings: PlatformSettings;
   predictions: PredictionRecord[];
-  users: AdminUserRow[];
+  promoCodes: PromoCodeRecord[];
+  users: SafeSessionUser[];
   transactions: OrderTransaction[];
-  affiliateLinks: AffiliateLinkRecord[];
-  payouts: AffiliatePayoutRequest[];
   stats: StatsSummary;
 }
 
-type AdminSection =
-  | 'OVERVIEW'
-  | 'PREDICTIONS'
-  | 'USERS'
-  | 'FINANCE'
-  | 'AFFILIATES'
-  | 'SETTINGS';
+const LEAGUE_PRESETS: Array<{ label: string; sport: SportType; league: string }> = [
+  { label: 'ЛЧ УЕФА', sport: 'FOOTBALL', league: 'Лига Чемпионов УЕФА' },
+  { label: 'АПЛ', sport: 'FOOTBALL', league: 'Англия · Премьер-лига' },
+  { label: 'РПЛ', sport: 'FOOTBALL', league: 'Россия · Мир РПЛ' },
+  { label: 'КХЛ', sport: 'HOCKEY', league: 'КХЛ · Регулярный сезон' },
+  { label: 'НХЛ', sport: 'HOCKEY', league: 'NHL · Регулярный чемпионат' },
+  { label: 'ATP Tour', sport: 'TENNIS', league: 'ATP Masters 1000' },
+  { label: 'CS2 Tier-1', sport: 'ESPORTS', league: 'CS2 · BLAST Premier' },
+  { label: 'UFC', sport: 'MMA', league: 'UFC · Номерной турнир' },
+];
 
 export default function AdminDashboardPage() {
-  const router = useRouter();
   const [data, setData] = useState<AdminOverviewPayload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [section, setSection] = useState<AdminSection>('PREDICTIONS');
-  const [toast, setToast] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [tab, setTab] = useState<
+    'PREDICTIONS' | 'PRICING_PROMOS' | 'FINANCE' | 'USERS' | 'SETTINGS'
+  >('PREDICTIONS');
+  const [notice, setNotice] = useState<string | null>(null);
 
-  // Форма нового события
+  // Форма нового прогноза
   const [sport, setSport] = useState<SportType>('FOOTBALL');
-  const [leagueName, setLeagueName] = useState('');
+  const [leagueName, setLeagueName] = useState('Лига Чемпионов УЕФА');
   const [homeTeam, setHomeTeam] = useState('');
   const [awayTeam, setAwayTeam] = useState('');
-  const [startsInHours, setStartsInHours] = useState('3');
-  const [selectionTitle, setSelectionTitle] = useState('');
-  const [fixedOdds, setFixedOdds] = useState('1.95');
-  const [minOdds, setMinOdds] = useState('1.85');
-  const [stakeUnits, setStakeUnits] = useState('2.0');
+  const [matchStartsAt, setMatchStartsAt] = useState(() => {
+    const d = new Date(Date.now() + 5 * 3600_000);
+    return d.toISOString().slice(0, 16);
+  });
   const [accessTier, setAccessTier] = useState<AccessTier>('PAID_SINGLE');
-  const [singlePrice, setSinglePrice] = useState('790');
+  const [singlePriceRub, setSinglePriceRub] = useState(890);
+  const [insuredOnLoss, setInsuredOnLoss] = useState(true);
+  const [selectionTitle, setSelectionTitle] = useState('');
+  const [fixedOdds, setFixedOdds] = useState(1.92);
+  const [stakeUnits, setStakeUnits] = useState(2.0);
+  const [bookmakerSource, setBookmakerSource] = useState('Фонбет / Pari');
+  const [analysisTeaser, setAnalysisTeaser] = useState('');
+  const [analysisFull, setAnalysisFull] = useState('');
   const [isFeatured, setIsFeatured] = useState(false);
-  const [teaser, setTeaser] = useState('');
-  const [fullText, setFullText] = useState('');
-  const [pushTelegram, setPushTelegram] = useState(true);
 
-  const [scoreInputs, setScoreInputs] = useState<Record<string, string>>({});
-  const [userSearch, setUserSearch] = useState('');
-  const [singleDefaultDraft, setSingleDefaultDraft] = useState('790');
-  const [applyDefaultToAll, setApplyDefaultToAll] = useState(false);
+  // Форма пакетов и промокодов
+  const [defaultPriceInput, setDefaultPriceInput] = useState(890);
+  const [bundle2PctInput, setBundle2PctInput] = useState(15);
+  const [bundle3PctInput, setBundle3PctInput] = useState(25);
+  const [newPromoCode, setNewPromoCode] = useState('');
+  const [newPromoPct, setNewPromoPct] = useState(15);
+  const [newPromoMaxUses, setNewPromoMaxUses] = useState(200);
 
+  // Настройки интеграций
   const [settingsDraft, setSettingsDraft] = useState<PlatformSettings | null>(null);
-  const [newAdminEmail, setNewAdminEmail] = useState('');
-  const [newAdminPassword, setNewAdminPassword] = useState('');
-
-  const notify = (msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 4000);
-  };
 
   const loadOverview = useCallback(async () => {
     const res = await fetch('/api/v1/admin/overview', { cache: 'no-store' });
-    if (res.status === 401 || res.status === 403) {
-      router.replace('/login');
+    if (!res.ok) {
+      setAuthError(
+        'Требуется вход под аккаунтом администратора (admin@valuex.pro).',
+      );
       return;
     }
-    if (res.ok) {
-      const json = (await res.json()) as AdminOverviewPayload;
-      setData(json);
-      setSettingsDraft(json.settings);
-      setSingleDefaultDraft(String(json.settings.defaultSinglePriceRub));
-      setSinglePrice(String(json.settings.defaultSinglePriceRub));
-    }
-    setLoading(false);
-  }, [router]);
+    const json = (await res.json()) as AdminOverviewPayload;
+    setData(json);
+    setSettingsDraft(json.settings);
+    setDefaultPriceInput(json.settings.defaultSinglePriceRub);
+    setBundle2PctInput(json.settings.bundle2DiscountPct);
+    setBundle3PctInput(json.settings.bundle3DiscountPct);
+  }, []);
 
   useEffect(() => {
-    loadOverview();
+    void loadOverview();
   }, [loadOverview]);
 
-  if (loading || !data || !settingsDraft) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-[#F4F6FA] text-sm font-medium text-slate-500">
-        Загрузка панели управления...
-      </div>
-    );
-  }
+  const showToast = (msg: string) => {
+    setNotice(msg);
+    window.setTimeout(() => setNotice(null), 4000);
+  };
 
-  const totalRevenueRub = data.transactions
-    .filter((t) => t.status === 'SUCCEEDED')
+  const paidTransactions = (data?.transactions ?? []).filter(
+    (t) => t.status === 'SUCCEEDED',
+  );
+  const totalRevenueRub = paidTransactions.reduce((acc, t) => acc + t.amountRub, 0);
+  const dayAgo = Date.now() - 86_400_000;
+  const todayRevenueRub = paidTransactions
+    .filter((t) => new Date(t.createdAt).getTime() >= dayAgo)
     .reduce((acc, t) => acc + t.amountRub, 0);
-
-  const soldSingleCount = data.transactions.filter(
-    (t) => t.kind === 'SINGLE_PREDICTION' && t.status === 'SUCCEEDED',
+  const buyersCount = (data?.users ?? []).filter(
+    (u) => u.purchasedPredictionIds.length > 0,
   ).length;
-
-  const pendingPayoutsCount = data.payouts.filter((p) => p.status === 'PENDING').length;
+  const pendingPredictionsCount = (data?.predictions ?? []).filter(
+    (p) => p.resultStatus === 'PENDING',
+  ).length;
 
   const handleCreatePrediction = async (e: React.FormEvent) => {
     e.preventDefault();
-    const kickoffIso = new Date(
-      Date.now() + Math.max(0.25, Number(startsInHours) || 3) * 3600 * 1000,
-    ).toISOString();
-
     const res = await fetch('/api/v1/admin/predictions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -143,1264 +135,931 @@ export default function AdminDashboardPage() {
         leagueName,
         homeTeam,
         awayTeam,
-        matchStartsAt: kickoffIso,
+        matchStartsAt: new Date(matchStartsAt).toISOString(),
+        accessTier,
+        singlePriceRub: accessTier === 'FREE' ? null : Number(singlePriceRub),
+        insuredOnLoss: accessTier === 'PAID_SINGLE' ? insuredOnLoss : false,
         selectionTitle,
         fixedOdds: Number(fixedOdds),
-        minAcceptableOdds: Number(minOdds) || null,
         stakeUnits: Number(stakeUnits),
-        accessTier,
-        singlePriceRub: accessTier === 'PAID_SINGLE' ? Number(singlePrice) : null,
+        bookmakerSource,
+        analysisTeaser,
+        analysisFull,
         isFeatured,
-        analysisTeaser: teaser,
-        analysisFull: fullText,
-        pushToTelegram: pushTelegram,
+        pushToTelegram: true,
       }),
     });
     const json = await res.json();
     if (!res.ok) {
-      notify(json.error || 'Ошибка публикации события');
+      showToast(json.error || 'Ошибка публикации');
       return;
     }
     setHomeTeam('');
     setAwayTeam('');
     setSelectionTitle('');
-    setTeaser('');
-    setFullText('');
-    setIsFeatured(false);
-    notify('Событие опубликовано на витрине и подписано SHA-256');
+    setAnalysisTeaser('');
+    setAnalysisFull('');
+    showToast('Событие опубликовано на витрине и зафиксировано SHA-256!');
     await loadOverview();
   };
 
-  const handleSetFeatured = async (predictionId: string) => {
-    const res = await fetch('/api/v1/admin/predictions', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ predictionId, setFeatured: true }),
-    });
-    if (res.ok) {
-      notify('Событие закреплено на главном баннере');
-      await loadOverview();
-    }
-  };
-
-  const handleSettlePrediction = async (
-    predictionId: string,
-    resultStatus: ResultStatus,
-  ) => {
+  const handleSettle = async (id: string, resultStatus: ResultStatus) => {
+    const score = window.prompt('Введите итоговый счет матча (например 2:1):', '2:1');
+    if (score === null) return;
     const res = await fetch('/api/v1/admin/predictions', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        predictionId,
+        predictionId: id,
         resultStatus,
-        finalScore: scoreInputs[predictionId] || undefined,
-        cashoutMultiplier: resultStatus === 'CASHOUT' ? 1.45 : undefined,
+        finalScore: score,
       }),
     });
+    const json = await res.json();
     if (res.ok) {
-      notify('Матч рассчитан, статистика и график обновлены');
+      const compMsg =
+        json.compensatedUsers > 0
+          ? ` Страховка автоматически начислена ${json.compensatedUsers} покупателям!`
+          : '';
+      showToast(`Событие рассчитано (${resultStatus}).${compMsg}`);
       await loadOverview();
     }
   };
 
-  const handleDeletePrediction = async (id: string) => {
-    if (!window.confirm('Удалить это событие с витрины?')) return;
-    const res = await fetch(`/api/v1/admin/predictions?id=${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    });
-    if (res.ok) {
-      notify('Событие удалено');
-      await loadOverview();
-    }
-  };
+  const handleQuickEditPrice = async (item: PredictionRecord) => {
+    const nextPriceStr = window.prompt(
+      `Новая цена для «${item.homeTeam} — ${item.awayTeam}» (₽):`,
+      String(item.singlePriceRub ?? defaultPriceInput),
+    );
+    if (!nextPriceStr) return;
+    const nextPrice = Number(nextPriceStr);
+    if (!Number.isFinite(nextPrice) || nextPrice < 50) return;
 
-  const handleUserAction = async (
-    userId: string,
-    action: string,
-    extra?: Record<string, string | number>,
-  ) => {
-    const res = await fetch('/api/v1/admin/users', {
+    await fetch('/api/v1/admin/predictions', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, action, ...extra }),
+      body: JSON.stringify({
+        predictionId: item.id,
+        editMeta: { singlePriceRub: nextPrice },
+      }),
     });
-    const json = await res.json();
-    if (!res.ok) {
-      notify(json.error || 'Ошибка операции');
-      return;
-    }
-    notify('Данные покупателя обновлены');
+    showToast('Цена события обновлена');
     await loadOverview();
   };
 
-  const handleSaveDefaultPrice = async (e: React.FormEvent) => {
+  const handleToggleInsured = async (item: PredictionRecord) => {
+    await fetch('/api/v1/admin/predictions', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        predictionId: item.id,
+        editMeta: { insuredOnLoss: !item.insuredOnLoss },
+      }),
+    });
+    showToast(
+      !item.insuredOnLoss
+        ? 'Страховка на баланс включена для события'
+        : 'Страховка отключена для события',
+    );
+    await loadOverview();
+  };
+
+  const handleDeletePrediction = async (id: string) => {
+    if (!window.confirm('Удалить событие с витрины?')) return;
+    await fetch(`/api/v1/admin/predictions?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    showToast('Событие удалено');
+    await loadOverview();
+  };
+
+  const handleSavePricingRules = async (applyToPending: boolean) => {
+    await fetch('/api/v1/admin/finance', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'SAVE_PRICING_RULES',
+        defaultSinglePriceRub: defaultPriceInput,
+        bundle2DiscountPct: bundle2PctInput,
+        bundle3DiscountPct: bundle3PctInput,
+        applyToPending,
+      }),
+    });
+    showToast(
+      applyToPending
+        ? 'Правила цен и пакетные скидки применены ко всем активным матчам!'
+        : 'Правила цен и пакетных скидок сохранены!',
+    );
+    await loadOverview();
+  };
+
+  const handleCreatePromo = async (e: React.FormEvent) => {
     e.preventDefault();
     const res = await fetch('/api/v1/admin/finance', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: 'SAVE_DEFAULT_PRICE',
-        defaultSinglePriceRub: Number(singleDefaultDraft) || 790,
-        applyToPending: applyDefaultToAll,
+        action: 'CREATE_PROMO',
+        code: newPromoCode,
+        discountPercent: newPromoPct,
+        maxUses: newPromoMaxUses,
       }),
     });
-    if (res.ok) {
-      notify('Базовая стоимость прогноза сохранена');
-      await loadOverview();
-    }
-  };
-
-  const handleRefundOrder = async (orderId: string) => {
-    if (!window.confirm('Оформить возврат и закрыть доступ к купленному событию?')) {
+    const json = await res.json();
+    if (!res.ok) {
+      showToast(json.error || 'Не удалось создать промокод');
       return;
     }
-    const res = await fetch('/api/v1/admin/finance', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'REFUND_ORDER', orderId }),
-    });
-    if (res.ok) {
-      notify('Возврат оформлен');
-      await loadOverview();
-    }
+    setNewPromoCode('');
+    showToast('Промокод создан и активен в окне оплаты!');
+    await loadOverview();
   };
 
-  const handleProcessPayout = async (
-    payoutId: string,
-    decision: 'PAID' | 'REJECTED',
-  ) => {
-    const res = await fetch('/api/v1/admin/finance', {
+  const handleDeletePromo = async (promoId: string) => {
+    await fetch('/api/v1/admin/finance', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'PROCESS_PAYOUT', payoutId, decision }),
+      body: JSON.stringify({ action: 'DELETE_PROMO', promoId }),
     });
-    if (res.ok) {
-      notify(decision === 'PAID' ? 'Выплата подтверждена' : 'Заявка отклонена');
-      await loadOverview();
-    }
+    showToast('Промокод удален');
+    await loadOverview();
   };
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await fetch('/api/v1/admin/settings', {
+    if (!settingsDraft) return;
+    await fetch('/api/v1/admin/settings', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        settings: settingsDraft,
-        newAdminEmail: newAdminEmail || undefined,
-        newAdminPassword: newAdminPassword || undefined,
-      }),
+      body: JSON.stringify({ settings: settingsDraft }),
     });
-    const json = await res.json();
-    if (!res.ok) {
-      notify(json.error || 'Ошибка сохранения настроек');
-      return;
-    }
-    setNewAdminPassword('');
-    notify('Настройки успешно сохранены');
+    showToast('Настройки кассы ЮKassa и бренда сохранены!');
     await loadOverview();
   };
 
-  const handleTestTelegram = async () => {
-    const res = await fetch('/api/v1/admin/settings', { method: 'POST' });
-    const json = await res.json();
-    if (!res.ok) {
-      notify(json.error || 'Не удалось отправить сообщение в Telegram');
-      return;
-    }
-    notify('Тестовый анонс доставлен в ваш Telegram-канал!');
-  };
-
-  const filteredUsers = data.users.filter((u) => {
-    if (!userSearch.trim()) return true;
-    const q = userSearch.trim().toLowerCase();
+  if (authError) {
     return (
-      u.email.toLowerCase().includes(q) ||
-      u.displayName.toLowerCase().includes(q) ||
-      (u.telegramUsername || '').toLowerCase().includes(q)
+      <div className="flex min-h-screen items-center justify-center bg-[#F4F6FA] p-6">
+        <div className="max-w-md rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+          <p className="text-sm font-semibold text-slate-800">{authError}</p>
+          <Link
+            href="/login"
+            className="mt-4 inline-block rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white"
+          >
+            Войти в админ-аккаунт
+          </Link>
+        </div>
+      </div>
     );
-  });
-
-  const upcomingPaidList = data.predictions.filter(
-    (p) => p.matchStatus !== 'FINISHED' && p.accessTier === 'PAID_SINGLE',
-  );
-
-  const webhookUrl =
-    typeof window !== 'undefined'
-      ? `${window.location.origin}/api/v1/webhooks/yookassa`
-      : '/api/v1/webhooks/yookassa';
-
-  const navItems: Array<{
-    id: AdminSection;
-    label: string;
-    Icon: React.ComponentType<{ className?: string }>;
-    badge?: number;
-  }> = [
-    { id: 'PREDICTIONS', label: 'События и расчет', Icon: FilePlus2 },
-    { id: 'OVERVIEW', label: 'Сводка продаж', Icon: BarChart3 },
-    { id: 'FINANCE', label: 'Цены и платежи', Icon: CreditCard },
-    { id: 'USERS', label: 'Покупатели (CRM)', Icon: Users },
-    {
-      id: 'AFFILIATES',
-      label: 'Партнеры и выплаты',
-      Icon: Share2,
-      badge: pendingPayoutsCount || undefined,
-    },
-    { id: 'SETTINGS', label: 'ЮKassa, Telegram и реквизиты', Icon: Settings },
-  ];
+  }
 
   return (
     <div className="min-h-screen bg-[#F4F6FA] text-slate-900">
-      {toast && (
-        <div className="fixed bottom-5 right-5 z-50 rounded-2xl bg-[#0B0F19] px-5 py-3 text-xs font-bold text-white shadow-2xl">
-          {toast}
-        </div>
-      )}
-
-      {/* Темная шапка панели управления */}
-      <header className="bg-[#0B0F19] px-4 py-4 text-white sm:px-6 lg:px-8">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3">
+      {/* Темная шапка админ-панели */}
+      <header className="bg-[#0B0F19] text-white">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3">
-            <span className="rounded-lg bg-blue-600 px-2.5 py-1 font-mono text-xs font-black text-white">
-              ADMIN
-            </span>
-            <h1 className="text-base font-black text-white">
-              Управление витриной {data.settings.brandName}
-            </h1>
-            <span
-              className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-                data.settings.paymentMode === 'YOOKASSA_LIVE'
-                  ? 'bg-emerald-500/20 text-emerald-300'
-                  : 'bg-amber-500/20 text-amber-300'
-              }`}
+            <Link
+              href="/"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/10 hover:text-white"
             >
-              {data.settings.paymentMode === 'YOOKASSA_LIVE'
-                ? 'Боевой шлюз ЮKassa'
-                : 'Тестовый режим оплаты'}
-            </span>
+              <ArrowLeft className="h-3.5 w-3.5" />
+              <span>На витрину</span>
+            </Link>
+            <h1 className="text-lg font-black">
+              Управление маркетплейсом прогнозов
+            </h1>
           </div>
 
-          <Link
-            href="/"
-            className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/5 px-3.5 py-2 text-xs font-bold text-white hover:bg-white/10"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            <span>На витрину сайта</span>
-          </Link>
+          {notice && (
+            <div className="rounded-xl bg-blue-600 px-4 py-1.5 text-xs font-bold text-white shadow">
+              {notice}
+            </div>
+          )}
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 px-4 py-8 sm:px-6 lg:grid-cols-12 lg:px-8">
-        {/* Боковая навигация */}
-        <aside className="space-y-1.5 lg:col-span-3">
-          {navItems.map(({ id, label, Icon, badge }) => (
+      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        {/* KPI карточки выручки */}
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-xs text-slate-500">Выручка всего</div>
+            <div className="mt-1 font-mono text-2xl font-black text-slate-950">
+              {totalRevenueRub.toLocaleString('ru-RU')} ₽
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-xs text-slate-500">Продажи за 24ч</div>
+            <div className="mt-1 font-mono text-2xl font-black text-blue-600">
+              {todayRevenueRub.toLocaleString('ru-RU')} ₽
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-xs text-slate-500">Оплаченных чеков</div>
+            <div className="mt-1 font-mono text-2xl font-black text-slate-950">
+              {paidTransactions.length}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-xs text-slate-500">Покупателей / Всего</div>
+            <div className="mt-1 font-mono text-2xl font-black text-slate-950">
+              {buyersCount} / {data?.users.length ?? 0}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-xs text-slate-500">Активных на витрине</div>
+            <div className="mt-1 font-mono text-2xl font-black text-emerald-600">
+              {pendingPredictionsCount}
+            </div>
+          </div>
+        </div>
+
+        {/* Навигация разделов */}
+        <div className="mt-6 flex flex-wrap gap-2">
+          {(
+            [
+              ['PREDICTIONS', 'События и расчет', Plus],
+              ['PRICING_PROMOS', 'Пакеты и Промокоды', Tag],
+              ['FINANCE', 'Чеки и заказы', Coins],
+              ['USERS', 'Клиенты и доступы', Users],
+              ['SETTINGS', 'ЮKassa, Telegram и Бренд', Settings],
+            ] as const
+          ).map(([id, label, Icon]) => (
             <button
               key={id}
               type="button"
-              onClick={() => setSection(id)}
-              className={`flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-xs font-bold transition ${
-                section === id
-                  ? 'bg-[#0B0F19] text-white shadow-sm'
-                  : 'border border-slate-200/80 bg-white text-slate-600 hover:text-slate-950'
+              onClick={() => setTab(id)}
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition ${
+                tab === id
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'border border-slate-200 bg-white text-slate-600 hover:text-slate-950'
               }`}
             >
-              <span className="flex items-center gap-2.5">
-                <Icon className="h-4 w-4" />
-                <span>{label}</span>
-              </span>
-              {badge ? (
-                <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-black text-white">
-                  {badge}
-                </span>
-              ) : null}
+              <Icon className="h-3.5 w-3.5" />
+              <span>{label}</span>
             </button>
           ))}
-        </aside>
+        </div>
 
-        {/* Рабочая зона */}
-        <div className="lg:col-span-9">
-          {/* СВОДКА */}
-          {section === 'OVERVIEW' && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="text-xs font-semibold text-slate-400">Общая выручка</div>
-                  <div className="mt-1.5 font-mono text-2xl font-black text-blue-600">
-                    {totalRevenueRub.toLocaleString('ru-RU')} ₽
-                  </div>
+        {/* ВКЛАДКА 1: СОБЫТИЯ */}
+        {tab === 'PREDICTIONS' && (
+          <div className="mt-6 grid gap-6 lg:grid-cols-12">
+            {/* Форма публикации */}
+            <form
+              onSubmit={handleCreatePrediction}
+              className="space-y-3.5 rounded-2xl border border-slate-200 bg-white p-6 lg:col-span-5"
+            >
+              <h2 className="text-base font-extrabold text-slate-950">
+                Опубликовать новое событие на витрину
+              </h2>
+
+              {/* Быстрые пресеты популярных лиг */}
+              <div>
+                <div className="mb-1.5 text-[11px] font-semibold text-slate-400">
+                  Быстрый выбор турнира:
                 </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="text-xs font-semibold text-slate-400">
-                    Продано прогнозов
-                  </div>
-                  <div className="mt-1.5 font-mono text-2xl font-black text-slate-950">
-                    {soldSingleCount}
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="text-xs font-semibold text-slate-400">Покупателей</div>
-                  <div className="mt-1.5 font-mono text-2xl font-black text-slate-950">
-                    {data.users.length}
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="text-xs font-semibold text-slate-400">Yield аналитики</div>
-                  <div className="mt-1.5 font-mono text-2xl font-black text-emerald-600">
-                    {data.stats.yieldPct >= 0 ? '+' : ''}
-                    {data.stats.yieldPct.toFixed(1)}%
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                <h2 className="text-base font-extrabold text-slate-950">
-                  Памятка по работе с витриной разовых событий
-                </h2>
-                <ol className="mt-3 list-decimal space-y-2 pl-5 text-xs leading-relaxed text-slate-600">
-                  <li>
-                    При публикации нового матча вы сами назначаете ему индивидуальную цену в рублях (например, 690 ₽ за рядовой матч или 1 290 ₽ за главный матч тура) либо делаете его бесплатным для прогрева аудитории.
-                  </li>
-                  <li>
-                    Галочка <strong>«Сделать главным событием дня»</strong> выводит карточку матча в темный акцентный блок на самом верху главной страницы.
-                  </li>
-                  <li>
-                    После окончания матча укажите счет и нажмите «Выигрыш / Проигрыш / Возврат» — показатели Yield и график на сайте пересчитаются автоматически.
-                  </li>
-                </ol>
-              </div>
-            </div>
-          )}
-
-          {/* СОБЫТИЯ И РАСЧЕТ */}
-          {section === 'PREDICTIONS' && (
-            <div className="space-y-8">
-              <form
-                onSubmit={handleCreatePrediction}
-                className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7"
-              >
-                <h2 className="text-lg font-extrabold text-slate-950">
-                  Добавить событие на витрину
-                </h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  Исход и коэффициент автоматически защищаются подписью SHA-256 до начала матча.
-                </p>
-
-                <div className="mt-5 grid grid-cols-1 gap-3.5 sm:grid-cols-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Дисциплина
-                    </label>
-                    <select
-                      value={sport}
-                      onChange={(e) => setSport(e.target.value as SportType)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-900"
+                <div className="flex flex-wrap gap-1.5">
+                  {LEAGUE_PRESETS.map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => {
+                        setSport(preset.sport);
+                        setLeagueName(preset.league);
+                      }}
+                      className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
                     >
-                      {(Object.keys(SPORT_LABELS) as SportType[]).map((sp) => (
-                        <option key={sp} value={sp}>
-                          {SPORT_LABELS[sp].icon} {SPORT_LABELS[sp].label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Турнир / Лига
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={leagueName}
-                      onChange={(e) => setLeagueName(e.target.value)}
-                      placeholder="РПЛ / Лига Чемпионов / КХЛ"
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Начало через (часов)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="0.5"
-                      required
-                      value={startsInHours}
-                      onChange={(e) => setStartsInHours(e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Команда 1 (Хозяева)
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={homeTeam}
-                      onChange={(e) => setHomeTeam(e.target.value)}
-                      placeholder="Краснодар"
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Команда 2 (Гости)
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={awayTeam}
-                      onChange={(e) => setAwayTeam(e.target.value)}
-                      placeholder="Зенит"
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Точный исход (скрыт до оплаты)
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={selectionTitle}
-                      onChange={(e) => setSelectionTitle(e.target.value)}
-                      placeholder="Тотал больше (2.5)"
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Фиксированный кэф
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="1.05"
-                      required
-                      value={fixedOdds}
-                      onChange={(e) => setFixedOdds(e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Мин. допустимый кэф
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="1.01"
-                      value={minOdds}
-                      onChange={(e) => setMinOdds(e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Флэт (% от банка = юниты)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="0.5"
-                      max="5"
-                      required
-                      value={stakeUnits}
-                      onChange={(e) => setStakeUnits(e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Тип продажи
-                    </label>
-                    <select
-                      value={accessTier}
-                      onChange={(e) => setAccessTier(e.target.value as AccessTier)}
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-900"
-                    >
-                      <option value="PAID_SINGLE">Платная разовая продажа</option>
-                      <option value="FREE">Бесплатный открытый разбор</option>
-                    </select>
-                  </div>
-
-                  {accessTier === 'PAID_SINGLE' && (
-                    <div>
-                      <label className="block text-xs font-bold text-slate-600">
-                        Цена этого события (₽)
-                      </label>
-                      <input
-                        type="number"
-                        min="50"
-                        value={singlePrice}
-                        onChange={(e) => setSinglePrice(e.target.value)}
-                        className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-xs font-bold text-blue-700"
-                      />
-                    </div>
-                  )}
+                      {preset.label}
+                    </button>
+                  ))}
                 </div>
-
-                <div className="mt-4 space-y-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Краткий анонс на карточке (виден до покупки)
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={teaser}
-                      onChange={(e) => setTeaser(e.target.value)}
-                      placeholder="Краткое описание предматчевых факторов без раскрытия самого исхода..."
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Полный разбор (открывается после разовой оплаты)
-                    </label>
-                    <textarea
-                      rows={3}
-                      required
-                      value={fullText}
-                      onChange={(e) => setFullText(e.target.value)}
-                      placeholder="Подробная аргументация по составам, статистике и движению линии..."
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-                </div>
-
-                <div className="mt-5 flex flex-wrap items-center justify-between gap-4">
-                  <div className="flex flex-wrap gap-4">
-                    <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={isFeatured}
-                        onChange={(e) => setIsFeatured(e.target.checked)}
-                        className="h-4 w-4 rounded border-slate-300 text-blue-600"
-                      />
-                      <span>Сделать «Главным событием дня» в шапке</span>
-                    </label>
-
-                    <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={pushTelegram}
-                        onChange={(e) => setPushTelegram(e.target.checked)}
-                        className="h-4 w-4 rounded border-slate-300 text-blue-600"
-                      />
-                      <span>Отправить анонс в Telegram-канал</span>
-                    </label>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="rounded-xl bg-blue-600 px-6 py-3 text-xs font-bold text-white shadow-md shadow-blue-600/25 hover:bg-blue-700"
-                  >
-                    Опубликовать на витрине
-                  </button>
-                </div>
-              </form>
-
-              {/* Список событий и расчет */}
-              <div className="space-y-3">
-                <h3 className="text-base font-extrabold text-slate-950">
-                  Все события на витрине ({data.predictions.length})
-                </h3>
-                {data.predictions.map((p) => (
-                  <div
-                    key={p.id}
-                    className="rounded-2xl border border-slate-200 bg-white p-4 text-xs shadow-sm"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-extrabold text-slate-950">
-                            {p.homeTeam} — {p.awayTeam}
-                          </span>
-                          <span className="text-slate-400">({p.leagueName})</span>
-                          {p.isFeatured && (
-                            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700">
-                              Главный матч дня
-                            </span>
-                          )}
-                        </div>
-                        <div className="mt-1 font-mono text-slate-600">
-                          <strong className="text-blue-600">{p.selectionTitle}</strong> · кэф{' '}
-                          {p.fixedOdds.toFixed(2)} · флэт {p.stakeUnits.toFixed(1)}% ·{' '}
-                          {p.accessTier === 'FREE'
-                            ? 'Бесплатно'
-                            : `${p.singlePriceRub} ₽`}
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {p.matchStatus !== 'FINISHED' && !p.isFeatured && (
-                          <button
-                            type="button"
-                            onClick={() => handleSetFeatured(p.id)}
-                            title="Вывести в главный баннер"
-                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 font-semibold text-slate-600 hover:border-blue-300 hover:text-blue-600"
-                          >
-                            <Sparkles className="h-3.5 w-3.5" />
-                            <span>В баннер</span>
-                          </button>
-                        )}
-
-                        <input
-                          type="text"
-                          value={scoreInputs[p.id] ?? p.finalScore ?? ''}
-                          onChange={(e) =>
-                            setScoreInputs((prev) => ({
-                              ...prev,
-                              [p.id]: e.target.value,
-                            }))
-                          }
-                          placeholder="Счет (2:1)"
-                          className="w-24 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 font-mono text-xs text-slate-900"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleSettlePrediction(p.id, 'WIN')}
-                          className={`rounded-lg px-2.5 py-1.5 font-bold ${
-                            p.resultStatus === 'WIN'
-                              ? 'bg-emerald-600 text-white'
-                              : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                          }`}
-                        >
-                          Выигрыш
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleSettlePrediction(p.id, 'LOSS')}
-                          className={`rounded-lg px-2.5 py-1.5 font-bold ${
-                            p.resultStatus === 'LOSS'
-                              ? 'bg-rose-600 text-white'
-                              : 'bg-rose-50 text-rose-600 hover:bg-rose-100'
-                          }`}
-                        >
-                          Проигрыш
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleSettlePrediction(p.id, 'PUSH')}
-                          className={`rounded-lg px-2.5 py-1.5 font-bold ${
-                            p.resultStatus === 'PUSH'
-                              ? 'bg-amber-500 text-white'
-                              : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
-                          }`}
-                        >
-                          Возврат
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleSettlePrediction(p.id, 'CASHOUT')}
-                          className="rounded-lg bg-sky-50 px-2.5 py-1.5 font-bold text-sky-700 hover:bg-sky-100"
-                        >
-                          Cashout
-                        </button>
-                        <button
-                          type="button"
-                          title="Удалить"
-                          onClick={() => handleDeletePrediction(p.id)}
-                          className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
               </div>
-            </div>
-          )}
 
-          {/* ПОКУПАТЕЛИ CRM */}
-          {section === 'USERS' && (
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-lg font-extrabold text-slate-950">
-                  Покупатели ({data.users.length})
-                </h2>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">Вид спорта</label>
+                  <select
+                    value={sport}
+                    onChange={(e) => setSport(e.target.value as SportType)}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold"
+                  >
+                    <option value="FOOTBALL">Футбол</option>
+                    <option value="HOCKEY">Хоккей</option>
+                    <option value="TENNIS">Теннис</option>
+                    <option value="ESPORTS">Киберспорт</option>
+                    <option value="BASKETBALL">Баскетбол</option>
+                    <option value="MMA">ММА / Бокс</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">Формат продажи</label>
+                  <select
+                    value={accessTier}
+                    onChange={(e) => setAccessTier(e.target.value as AccessTier)}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold"
+                  >
+                    <option value="PAID_SINGLE">Платный прогноз (разовый)</option>
+                    <option value="FREE">Бесплатный открытый прогноз</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">Лига / Турнир</label>
                 <input
-                  type="text"
-                  value={userSearch}
-                  onChange={(e) => setUserSearch(e.target.value)}
-                  placeholder="Поиск по email, имени или @telegram..."
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-900 sm:w-72"
+                  required
+                  value={leagueName}
+                  onChange={(e) => setLeagueName(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
                 />
               </div>
 
-              <div className="space-y-3">
-                {filteredUsers.map((u) => (
-                  <div
-                    key={u.id}
-                    className="rounded-2xl border border-slate-200 bg-white p-4 text-xs shadow-sm"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-extrabold text-slate-950">
-                            {u.displayName}
-                          </span>
-                          <span className="text-slate-400">{u.email}</span>
-                          {u.status === 'BLOCKED' && (
-                            <span className="rounded bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-600">
-                              Заблокирован
-                            </span>
-                          )}
-                        </div>
-                        <div className="mt-1 flex flex-wrap gap-3 text-slate-500">
-                          <span>Кошелек: {u.balanceRub} ₽</span>
-                          <span>Куплено прогнозов: {u.purchasedPredictionIds.length}</span>
-                          <span>
-                            Оплачено всего:{' '}
-                            {data.transactions
-                              .filter(
-                                (tx) =>
-                                  tx.userId === u.id && tx.status === 'SUCCEEDED',
-                              )
-                              .reduce((s, tx) => s + tx.amountRub, 0)
-                              .toLocaleString('ru-RU')}{' '}
-                            ₽
-                          </span>
-                          <span>RevShare: {u.revsharePercent}%</span>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2">
-                        {upcomingPaidList.length > 0 && (
-                          <select
-                            defaultValue=""
-                            onChange={(e) => {
-                              if (e.target.value) {
-                                handleUserAction(u.id, 'GRANT_PREDICTION', {
-                                  predictionId: e.target.value,
-                                });
-                                e.target.value = '';
-                              }
-                            }}
-                            className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700"
-                          >
-                            <option value="">+ Открыть событие...</option>
-                            {upcomingPaidList.map((mp) => (
-                              <option key={mp.id} value={mp.id}>
-                                {mp.homeTeam} — {mp.awayTeam}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleUserAction(u.id, 'ADD_BALANCE', { amountRub: 500 })
-                          }
-                          className="rounded-lg bg-blue-50 px-2.5 py-1.5 font-bold text-blue-700 hover:bg-blue-100"
-                        >
-                          +500 ₽ на баланс
-                        </button>
-
-                        {u.role !== 'ADMIN' && (
-                          <button
-                            type="button"
-                            onClick={() => handleUserAction(u.id, 'TOGGLE_BLOCK')}
-                            className="rounded-lg bg-rose-50 px-2.5 py-1.5 font-bold text-rose-600 hover:bg-rose-100"
-                          >
-                            {u.status === 'ACTIVE' ? 'Блок' : 'Разблок'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">Хозяева / Игрок 1</label>
+                  <input
+                    required
+                    value={homeTeam}
+                    onChange={(e) => setHomeTeam(e.target.value)}
+                    placeholder="Реал Мадрид"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">Гости / Игрок 2</label>
+                  <input
+                    required
+                    value={awayTeam}
+                    onChange={(e) => setAwayTeam(e.target.value)}
+                    placeholder="Бавария"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+                  />
+                </div>
               </div>
-            </div>
-          )}
 
-          {/* ЦЕНЫ И ЖУРНАЛ ОПЛАТ */}
-          {section === 'FINANCE' && (
-            <div className="space-y-8">
-              <form
-                onSubmit={handleSaveDefaultPrice}
-                className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
-              >
-                <h2 className="text-lg font-extrabold text-slate-950">
-                  Базовая цена разового события
-                </h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  Подставляется по умолчанию при создании нового матча (при желании каждому матчу можно указать свою цену).
-                </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">Начало матча</label>
+                  <input
+                    type="datetime-local"
+                    required
+                    value={matchStartsAt}
+                    onChange={(e) => setMatchStartsAt(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+                  />
+                </div>
+                {accessTier === 'PAID_SINGLE' && (
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-500">
+                      Цена события (₽)
+                    </label>
+                    <input
+                      type="number"
+                      min={50}
+                      required
+                      value={singlePriceRub}
+                      onChange={(e) => setSinglePriceRub(Number(e.target.value))}
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold"
+                    />
+                  </div>
+                )}
+              </div>
 
-                <div className="mt-4 flex flex-wrap items-center gap-4">
+              <div className="grid grid-cols-3 gap-2.5">
+                <div className="col-span-2">
+                  <label className="text-[11px] font-bold text-slate-500">
+                    Точный исход (скрыт до оплаты)
+                  </label>
+                  <input
+                    required
+                    value={selectionTitle}
+                    onChange={(e) => setSelectionTitle(e.target.value)}
+                    placeholder="Фора 1 (-1.0) / ТБ 2.5"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">Кэф</label>
                   <input
                     type="number"
-                    min={50}
-                    value={singleDefaultDraft}
-                    onChange={(e) => setSingleDefaultDraft(e.target.value)}
-                    className="w-44 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 font-mono text-sm font-bold text-slate-900"
+                    step="0.01"
+                    required
+                    value={fixedOdds}
+                    onChange={(e) => setFixedOdds(Number(e.target.value))}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold"
                   />
+                </div>
+              </div>
 
-                  <label className="flex items-center gap-2 text-xs text-slate-600">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">Флэт (% от банка)</label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={stakeUnits}
+                    onChange={(e) => setStakeUnits(Number(e.target.value))}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">Букмекер</label>
+                  <input
+                    value={bookmakerSource}
+                    onChange={(e) => setBookmakerSource(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">
+                  Публичный анонс на карточке витрины
+                </label>
+                <textarea
+                  required
+                  rows={2}
+                  value={analysisTeaser}
+                  onChange={(e) => setAnalysisTeaser(e.target.value)}
+                  placeholder="Краткое описание ценности матча для покупателя..."
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">
+                  Закрытая аналитика (открывается после покупки)
+                </label>
+                <textarea
+                  required
+                  rows={3}
+                  value={analysisFull}
+                  onChange={(e) => setAnalysisFull(e.target.value)}
+                  placeholder="Подробные цифры xG, составы, мотивация и обоснование выбора..."
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs"
+                />
+              </div>
+
+              <div className="space-y-2 rounded-xl border border-slate-100 bg-slate-50 p-3">
+                {accessTier === 'PAID_SINGLE' && (
+                  <label className="flex items-center gap-2 text-xs font-bold text-emerald-800">
                     <input
                       type="checkbox"
-                      checked={applyDefaultToAll}
-                      onChange={(e) => setApplyDefaultToAll(e.target.checked)}
-                      className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                      checked={insuredOnLoss}
+                      onChange={(e) => setInsuredOnLoss(e.target.checked)}
                     />
-                    <span>Применить ко всем текущим предстоящим событиям</span>
+                    <span>Страховка 100% возврата на баланс при минусе</span>
                   </label>
+                )}
 
-                  <button
-                    type="submit"
-                    className="rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-blue-700"
-                  >
-                    Сохранить цену
-                  </button>
-                </div>
-              </form>
-
-              <div>
-                <h3 className="text-base font-extrabold text-slate-950">
-                  Журнал разовых покупок и пополнений ({data.transactions.length})
-                </h3>
-                <div className="mt-3 overflow-x-auto rounded-3xl border border-slate-200 bg-white shadow-sm">
-                  <table className="w-full min-w-[640px] text-left text-xs">
-                    <thead className="border-b border-slate-100 bg-slate-50 text-slate-500">
-                      <tr>
-                        <th className="px-5 py-3.5 font-bold">Дата</th>
-                        <th className="px-5 py-3.5 font-bold">Покупатель</th>
-                        <th className="px-5 py-3.5 font-bold">Событие</th>
-                        <th className="px-5 py-3.5 font-bold">Сумма</th>
-                        <th className="px-5 py-3.5 font-bold">Статус</th>
-                        <th className="px-5 py-3.5 font-bold">Действие</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-slate-700">
-                      {data.transactions.length > 0 ? (
-                        data.transactions.map((tx) => (
-                          <tr key={tx.id}>
-                            <td className="px-5 py-3.5 text-slate-400">
-                              {new Date(tx.createdAt).toLocaleString('ru-RU')}
-                            </td>
-                            <td className="px-5 py-3.5">{tx.userEmail}</td>
-                            <td className="px-5 py-3.5 font-bold text-slate-950">
-                              {tx.title}
-                            </td>
-                            <td className="px-5 py-3.5 font-mono font-black">
-                              {tx.amountRub.toLocaleString('ru-RU')} ₽
-                            </td>
-                            <td className="px-5 py-3.5">{tx.status}</td>
-                            <td className="px-5 py-3.5">
-                              {tx.status === 'SUCCEEDED' && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleRefundOrder(tx.id)}
-                                  className="font-bold text-rose-600 hover:underline"
-                                >
-                                  Возврат
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={6} className="px-5 py-10 text-center text-slate-400">
-                            Покупок пока не совершалось.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ПАРТНЕРЫ И ВЫПЛАТЫ */}
-          {section === 'AFFILIATES' && (
-            <div className="space-y-6">
-              <div>
-                <h2 className="text-lg font-extrabold text-slate-950">
-                  Заявки партнеров на выплату ({data.payouts.length})
-                </h2>
-                <div className="mt-3 space-y-2.5">
-                  {data.payouts.length > 0 ? (
-                    data.payouts.map((p) => (
-                      <div
-                        key={p.id}
-                        className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-xs shadow-sm"
-                      >
-                        <div>
-                          <div className="font-extrabold text-slate-950">
-                            {p.userEmail} · {p.amountRub.toLocaleString('ru-RU')} ₽ (
-                            {p.method})
-                          </div>
-                          <div className="mt-0.5 text-slate-500">
-                            Реквизиты: {p.requisites}
-                          </div>
-                        </div>
-
-                        {p.status === 'PENDING' ? (
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleProcessPayout(p.id, 'PAID')}
-                              className="rounded-lg bg-emerald-600 px-3 py-1.5 font-bold text-white"
-                            >
-                              Выплачено
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleProcessPayout(p.id, 'REJECTED')}
-                              className="rounded-lg bg-rose-50 px-3 py-1.5 font-bold text-rose-600"
-                            >
-                              Отклонить
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="font-bold text-slate-400">{p.status}</span>
-                        )}
-                      </div>
-                    ))
-                  ) : (
-                    <div className="rounded-2xl border border-slate-200 bg-white p-6 text-xs text-slate-400">
-                      Активных заявок на выплату нет.
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div>
-                <h3 className="text-base font-extrabold text-slate-950">
-                  Партнерские ссылки ({data.affiliateLinks.length})
-                </h3>
-                <div className="mt-3 overflow-x-auto rounded-3xl border border-slate-200 bg-white shadow-sm">
-                  <table className="w-full min-w-[580px] text-left text-xs">
-                    <thead className="border-b border-slate-100 bg-slate-50 text-slate-500">
-                      <tr>
-                        <th className="px-5 py-3.5 font-bold">Партнер</th>
-                        <th className="px-5 py-3.5 font-bold">Код (?ref=)</th>
-                        <th className="px-5 py-3.5 font-bold">Переходы</th>
-                        <th className="px-5 py-3.5 font-bold">Регистрации</th>
-                        <th className="px-5 py-3.5 font-bold">Покупки</th>
-                        <th className="px-5 py-3.5 font-bold">Оборот</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-slate-700">
-                      {data.affiliateLinks.map((l) => (
-                        <tr key={l.id}>
-                          <td className="px-5 py-3.5">{l.userEmail}</td>
-                          <td className="px-5 py-3.5 font-mono font-bold text-blue-600">
-                            {l.code}
-                          </td>
-                          <td className="px-5 py-3.5">{l.clicks}</td>
-                          <td className="px-5 py-3.5">{l.registrations}</td>
-                          <td className="px-5 py-3.5">{l.buyers}</td>
-                          <td className="px-5 py-3.5 font-mono font-black">
-                            {l.revenueRub.toLocaleString('ru-RU')} ₽
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* НАСТРОЙКИ */}
-          {section === 'SETTINGS' && (
-            <form
-              onSubmit={handleSaveSettings}
-              className="space-y-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8"
-            >
-              <div>
-                <h2 className="text-lg font-extrabold text-slate-950">
-                  Платежный шлюз ЮKassa
-                </h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  В «Тестовом режиме» покупка событий проходит мгновенно для демонстрации. Для приема реальных карт и СБП укажите ключи ЮKassa и включите боевой режим.
-                </p>
-
-                <div className="mt-4 grid grid-cols-1 gap-3.5 sm:grid-cols-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Режим оплаты
-                    </label>
-                    <select
-                      value={settingsDraft.paymentMode}
-                      onChange={(e) =>
-                        setSettingsDraft({
-                          ...settingsDraft,
-                          paymentMode: e.target.value as
-                            | 'TEST_INSTANT'
-                            | 'YOOKASSA_LIVE',
-                        })
-                      }
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-900"
-                    >
-                      <option value="TEST_INSTANT">Тестовый (мгновенно)</option>
-                      <option value="YOOKASSA_LIVE">Боевой ЮKassa API v3</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Shop ID ЮKassa
-                    </label>
-                    <input
-                      type="text"
-                      value={settingsDraft.yookassaShopId}
-                      onChange={(e) =>
-                        setSettingsDraft({
-                          ...settingsDraft,
-                          yookassaShopId: e.target.value,
-                        })
-                      }
-                      placeholder="Напр. 394102"
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Секретный ключ ЮKassa
-                    </label>
-                    <input
-                      type="password"
-                      value={settingsDraft.yookassaSecretKey}
-                      onChange={(e) =>
-                        setSettingsDraft({
-                          ...settingsDraft,
-                          yookassaSecretKey: e.target.value,
-                        })
-                      }
-                      placeholder="live_..."
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-xs text-slate-900"
-                    />
-                  </div>
-                </div>
-
-                <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
-                  Адрес для HTTP-уведомлений в кабинете ЮKassa:{' '}
-                  <code className="font-mono font-bold text-blue-600">{webhookUrl}</code>
-                </div>
-              </div>
-
-              {/* Telegram для анонсов */}
-              <div className="border-t border-slate-100 pt-5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h3 className="text-base font-extrabold text-slate-950">
-                      Автоанонсы новых событий в Telegram-канал
-                    </h3>
-                    <p className="mt-0.5 text-xs text-slate-500">
-                      Бот автоматически публикует красивый анонс в ваш открытый Telegram-канал при добавлении нового прогноза на сайт.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleTestTelegram}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3.5 py-2 text-xs font-bold text-blue-700 hover:bg-blue-100"
-                  >
-                    <Send className="h-3.5 w-3.5" />
-                    <span>Проверить отправку поста</span>
-                  </button>
-                </div>
-
-                <div className="mt-4 grid grid-cols-1 gap-3.5 sm:grid-cols-2">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Токен бота (@BotFather)
-                    </label>
-                    <input
-                      type="password"
-                      value={settingsDraft.telegramBotToken}
-                      onChange={(e) =>
-                        setSettingsDraft({
-                          ...settingsDraft,
-                          telegramBotToken: e.target.value,
-                        })
-                      }
-                      placeholder="123456789:AAH..."
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      ID вашего Telegram-канала
-                    </label>
-                    <input
-                      type="text"
-                      value={settingsDraft.telegramChannelId}
-                      onChange={(e) =>
-                        setSettingsDraft({
-                          ...settingsDraft,
-                          telegramChannelId: e.target.value,
-                        })
-                      }
-                      placeholder="@my_channel или -1001987654321"
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-xs text-slate-900"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Бренд и юридические реквизиты */}
-              <div className="border-t border-slate-100 pt-5">
-                <h3 className="text-base font-extrabold text-slate-950">
-                  Бренд и реквизиты для Публичной оферты
-                </h3>
-                <div className="mt-4 grid grid-cols-1 gap-3.5 sm:grid-cols-2">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Название бренда
-                    </label>
-                    <input
-                      type="text"
-                      value={settingsDraft.brandName}
-                      onChange={(e) =>
-                        setSettingsDraft({ ...settingsDraft, brandName: e.target.value })
-                      }
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Ссылка на ваш Telegram-канал
-                    </label>
-                    <input
-                      type="text"
-                      value={settingsDraft.freeTelegramUrl}
-                      onChange={(e) =>
-                        setSettingsDraft({
-                          ...settingsDraft,
-                          freeTelegramUrl: e.target.value,
-                        })
-                      }
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Ссылка на поддержку в Telegram
-                    </label>
-                    <input
-                      type="text"
-                      value={settingsDraft.supportTelegram}
-                      onChange={(e) =>
-                        setSettingsDraft({
-                          ...settingsDraft,
-                          supportTelegram: e.target.value,
-                        })
-                      }
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Email поддержки
-                    </label>
-                    <input
-                      type="email"
-                      value={settingsDraft.supportEmail}
-                      onChange={(e) =>
-                        setSettingsDraft({
-                          ...settingsDraft,
-                          supportEmail: e.target.value,
-                        })
-                      }
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      Исполнитель (ИП / Самозанятый / ООО)
-                    </label>
-                    <input
-                      type="text"
-                      value={settingsDraft.legalSellerName}
-                      onChange={(e) =>
-                        setSettingsDraft({
-                          ...settingsDraft,
-                          legalSellerName: e.target.value,
-                        })
-                      }
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600">
-                      ИНН / ОГРНИП
-                    </label>
-                    <input
-                      type="text"
-                      value={settingsDraft.legalInn}
-                      onChange={(e) =>
-                        setSettingsDraft({
-                          ...settingsDraft,
-                          legalInn: e.target.value,
-                        })
-                      }
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Смена доступа администратора */}
-              <div className="border-t border-slate-100 pt-5">
-                <h3 className="text-base font-extrabold text-slate-950">
-                  Смена логина и пароля администратора
-                </h3>
-                <div className="mt-3 grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
                   <input
-                    type="email"
-                    value={newAdminEmail}
-                    onChange={(e) => setNewAdminEmail(e.target.value)}
-                    placeholder="Новый email администратора (необязательно)"
-                    className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
+                    type="checkbox"
+                    checked={isFeatured}
+                    onChange={(e) => setIsFeatured(e.target.checked)}
                   />
-                  <input
-                    type="password"
-                    value={newAdminPassword}
-                    onChange={(e) => setNewAdminPassword(e.target.value)}
-                    placeholder="Новый пароль администратора (от 6 символов)"
-                    className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-900"
-                  />
-                </div>
+                  <span>Закрепить как «Главное событие дня» в шапке</span>
+                </label>
               </div>
 
               <button
                 type="submit"
-                className="rounded-xl bg-blue-600 px-6 py-3 text-xs font-bold text-white shadow-md shadow-blue-600/25 hover:bg-blue-700"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3 text-xs font-bold text-white shadow-sm hover:bg-blue-700"
               >
-                Сохранить все настройки
+                <Send className="h-3.5 w-3.5" />
+                <span>Выставить на витрину (+ SHA-256)</span>
               </button>
             </form>
-          )}
-        </div>
-      </div>
+
+            {/* Список всех матчей и расчет в 1 клик */}
+            <div className="space-y-3 lg:col-span-7">
+              {(data?.predictions ?? []).map((item) => (
+                <div
+                  key={item.id}
+                  className="rounded-2xl border border-slate-200 bg-white p-4"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold text-slate-400">
+                        <span>{item.leagueName}</span>
+                        <span>·</span>
+                        {item.accessTier === 'PAID_SINGLE' ? (
+                          <button
+                            type="button"
+                            onClick={() => handleQuickEditPrice(item)}
+                            className="font-mono text-blue-600 underline decoration-dotted hover:text-blue-800"
+                            title="Нажмите для изменения цены"
+                          >
+                            {item.singlePriceRub} ₽ (изм.)
+                          </button>
+                        ) : (
+                          <span className="text-emerald-600">БЕСПЛАТНО</span>
+                        )}
+                        {item.accessTier === 'PAID_SINGLE' && (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleInsured(item)}
+                            className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                              item.insuredOnLoss
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : 'bg-slate-100 text-slate-500'
+                            }`}
+                          >
+                            <ShieldCheck className="h-3 w-3" />
+                            <span>
+                              {item.insuredOnLoss ? 'Страховка ВКЛ' : 'Без страховки'}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                      <div className="mt-0.5 text-sm font-extrabold text-slate-950">
+                        {item.homeTeam} — {item.awayTeam}
+                      </div>
+                      <div className="mt-0.5 text-xs text-slate-600">
+                        Исход: <strong>{item.selectionTitle}</strong> @{' '}
+                        <strong className="font-mono">{item.fixedOdds.toFixed(2)}</strong>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {item.resultStatus === 'PENDING' ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleSettle(item.id, 'WIN')}
+                            className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-700"
+                          >
+                            WIN
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSettle(item.id, 'LOSS')}
+                            className="rounded-lg bg-rose-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-rose-700"
+                          >
+                            LOSS
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSettle(item.id, 'PUSH')}
+                            className="rounded-lg bg-slate-200 px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-300"
+                          >
+                            PUSH
+                          </button>
+                        </>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1 font-mono text-xs font-bold text-slate-700">
+                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                          <span>
+                            {item.resultStatus} ({item.finalScore})
+                          </span>
+                        </span>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeletePrediction(item.id)}
+                        className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ВКЛАДКА 2: ПАКЕТНЫЕ СКИДКИ И ПРОМОКОДЫ */}
+        {tab === 'PRICING_PROMOS' && (
+          <div className="mt-6 grid gap-6 lg:grid-cols-2">
+            {/* Правила цен и пакетов */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-6">
+              <h2 className="text-base font-extrabold text-slate-950">
+                Ценообразование ординаров и пакетные скидки
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Когда покупатель добавляет 2 или 3+ событий кнопкой «+ В пакет», скидка применяется автоматически.
+              </p>
+
+              <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">
+                    Базовая цена 1 события (₽)
+                  </label>
+                  <input
+                    type="number"
+                    value={defaultPriceInput}
+                    onChange={(e) => setDefaultPriceInput(Number(e.target.value))}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-sm font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">
+                    Скидка за 2 события (%)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={50}
+                    value={bundle2PctInput}
+                    onChange={(e) => setBundle2PctInput(Number(e.target.value))}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-sm font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">
+                    Скидка за 3+ события (%)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={60}
+                    value={bundle3PctInput}
+                    onChange={(e) => setBundle3PctInput(Number(e.target.value))}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-sm font-bold"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => handleSavePricingRules(false)}
+                  className="rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white hover:bg-slate-800"
+                >
+                  Сохранить правила
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSavePricingRules(true)}
+                  className="rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-blue-700"
+                >
+                  Сохранить + обновить цену всех активных событий
+                </button>
+              </div>
+            </div>
+
+            {/* Промокоды */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-6">
+              <h2 className="text-base font-extrabold text-slate-950">
+                Промокоды для Telegram и рассылок
+              </h2>
+              <form onSubmit={handleCreatePromo} className="mt-4 grid gap-3 sm:grid-cols-4">
+                <input
+                  required
+                  value={newPromoCode}
+                  onChange={(e) => setNewPromoCode(e.target.value.toUpperCase())}
+                  placeholder="КОД (DERBY20)"
+                  className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold uppercase sm:col-span-2"
+                />
+                <input
+                  type="number"
+                  min={5}
+                  max={60}
+                  required
+                  value={newPromoPct}
+                  onChange={(e) => setNewPromoPct(Number(e.target.value))}
+                  placeholder="Скидка %"
+                  className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold"
+                />
+                <button
+                  type="submit"
+                  className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700"
+                >
+                  Создать
+                </button>
+              </form>
+
+              <div className="mt-4 divide-y divide-slate-100">
+                {(data?.promoCodes ?? []).map((promo) => (
+                  <div
+                    key={promo.id}
+                    className="flex items-center justify-between py-2.5 text-xs"
+                  >
+                    <div>
+                      <span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono font-bold text-slate-900">
+                        {promo.code}
+                      </span>
+                      <span className="ml-2 font-bold text-blue-600">
+                        −{promo.discountPercent}%
+                      </span>
+                      <span className="ml-2 text-slate-400">
+                        Использовано: {promo.usedCount} / {promo.maxUses}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleDeletePromo(promo.id)}
+                      className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ВКЛАДКА 3: ЧЕКИ И ЗАКАЗЫ */}
+        {tab === 'FINANCE' && (
+          <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            <div className="border-b border-slate-200 px-6 py-4">
+              <h2 className="text-base font-extrabold text-slate-950">
+                Реестр заказов и возвратов страховки
+              </h2>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {(data?.transactions ?? []).map((order) => (
+                <div
+                  key={order.id}
+                  className="flex flex-wrap items-center justify-between gap-3 px-6 py-3.5 text-xs"
+                >
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-bold text-slate-900">{order.title}</span>
+                      {order.promoCode && (
+                        <span className="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-blue-700">
+                          {order.promoCode}
+                        </span>
+                      )}
+                      {order.insuranceCredited && (
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">
+                          Страховка выплачена на баланс
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-slate-400">
+                      {order.userEmail} · {new Date(order.createdAt).toLocaleString('ru-RU')}
+                    </div>
+                  </div>
+                  <div className="font-mono font-bold text-slate-950">
+                    {order.amountRub.toLocaleString('ru-RU')} ₽ ({order.status})
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ВКЛАДКА 4: ПОЛЬЗОВАТЕЛИ */}
+        {tab === 'USERS' && (
+          <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            <div className="divide-y divide-slate-100">
+              {(data?.users ?? []).map((u) => (
+                <div
+                  key={u.id}
+                  className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 text-xs"
+                >
+                  <div>
+                    <div className="font-bold text-slate-950">
+                      {u.displayName} ({u.email})
+                    </div>
+                    <div className="text-slate-500">
+                      Баланс: <strong>{u.balanceRub} ₽</strong> · Открыто прогнозов:{' '}
+                      <strong>{u.purchasedPredictionIds.length}</strong>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const amount = Number(
+                          window.prompt('Начислить на баланс (₽):', '1000') || '0',
+                        );
+                        if (!amount) return;
+                        await fetch('/api/v1/admin/users', {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            action: 'ADD_BALANCE',
+                            userId: u.id,
+                            amountRub: amount,
+                          }),
+                        });
+                        showToast('Баланс начислен');
+                        await loadOverview();
+                      }}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 font-bold text-slate-700 hover:bg-slate-50"
+                    >
+                      + Начислить ₽
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ВКЛАДКА 5: НАСТРОЙКИ ЮKASSA И TELEGRAM */}
+        {tab === 'SETTINGS' && settingsDraft && (
+          <form
+            onSubmit={handleSaveSettings}
+            className="mt-6 max-w-2xl space-y-4 rounded-2xl border border-slate-200 bg-white p-6"
+          >
+            <h2 className="text-base font-extrabold text-slate-950">
+              Платежный шлюз ЮKassa, Telegram и реквизиты
+            </h2>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">Название бренда</label>
+                <input
+                  value={settingsDraft.brandName}
+                  onChange={(e) =>
+                    setSettingsDraft({ ...settingsDraft, brandName: e.target.value })
+                  }
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">Режим приема оплат</label>
+                <select
+                  value={settingsDraft.paymentMode}
+                  onChange={(e) =>
+                    setSettingsDraft({
+                      ...settingsDraft,
+                      paymentMode: e.target.value as 'TEST_INSTANT' | 'YOOKASSA_LIVE',
+                    })
+                  }
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold"
+                >
+                  <option value="TEST_INSTANT">Демо-касса (мгновенная оплата)</option>
+                  <option value="YOOKASSA_LIVE">Боевая ЮKassa (Карты РФ / СБП)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">ЮKassa Shop ID</label>
+                <input
+                  value={settingsDraft.yookassaShopId}
+                  onChange={(e) =>
+                    setSettingsDraft({ ...settingsDraft, yookassaShopId: e.target.value })
+                  }
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">ЮKassa Secret Key</label>
+                <input
+                  type="password"
+                  value={settingsDraft.yookassaSecretKey}
+                  onChange={(e) =>
+                    setSettingsDraft({
+                      ...settingsDraft,
+                      yookassaSecretKey: e.target.value,
+                    })
+                  }
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">Telegram Bot Token</label>
+                <input
+                  type="password"
+                  value={settingsDraft.telegramBotToken}
+                  onChange={(e) =>
+                    setSettingsDraft({
+                      ...settingsDraft,
+                      telegramBotToken: e.target.value,
+                    })
+                  }
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">
+                  ID открытого канала анонсов (@channel)
+                </label>
+                <input
+                  value={settingsDraft.telegramChannelId}
+                  onChange={(e) =>
+                    setSettingsDraft({
+                      ...settingsDraft,
+                      telegramChannelId: e.target.value,
+                    })
+                  }
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-blue-700"
+            >
+              Сохранить настройки
+            </button>
+          </form>
+        )}
+      </main>
     </div>
   );
 }

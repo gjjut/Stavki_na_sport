@@ -23,14 +23,30 @@ export interface PublicBrandInfo {
   supportEmail: string;
   paymentMode: 'TEST_INSTANT' | 'YOOKASSA_LIVE';
   defaultSinglePriceRub: number;
+  bundle2DiscountPct?: number;
+  bundle3DiscountPct?: number;
 }
 
 interface SiteShellProps {
-  brand: PublicBrandInfo;
+  brand: PublicBrandInfo | null;
   viewer: SafeSessionUser | null;
   onViewerChange?: (next: SafeSessionUser | null) => void;
+  onLogout?: () => Promise<void> | void;
   children: React.ReactNode;
 }
+
+const DEFAULT_BRAND: PublicBrandInfo = {
+  brandName: 'VALUEX',
+  supportTelegram: 'https://t.me/valuex_support',
+  freeTelegramUrl: 'https://t.me/valuex_open',
+  legalSellerName: 'Спортивно-аналитическое бюро VALUEX',
+  legalInn: 'ИНН 770000000000',
+  supportEmail: 'support@valuex.local',
+  paymentMode: 'TEST_INSTANT',
+  defaultSinglePriceRub: 890,
+  bundle2DiscountPct: 15,
+  bundle3DiscountPct: 25,
+};
 
 const NAV_LINKS = [
   { href: '/', label: 'Главная' },
@@ -39,16 +55,22 @@ const NAV_LINKS = [
 ];
 
 export const SiteShell: React.FC<SiteShellProps> = ({
-  brand,
+  brand: rawBrand,
   viewer,
   onViewerChange,
+  onLogout,
   children,
 }) => {
+  const brand = rawBrand ?? DEFAULT_BRAND;
   const pathname = usePathname();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const handleLogout = async () => {
+    if (onLogout) {
+      await onLogout();
+      return;
+    }
     await fetch('/api/v1/auth/logout', { method: 'POST' });
     onViewerChange?.(null);
     router.refresh();

@@ -26,7 +26,7 @@ export interface UserAccount {
   telegramUsername: string | null;
   purchasedPredictionIds: string[];
 
-  // Партнерская программа (реферальные отчисления с разовых покупок)
+  // Партнерская программа (реферальные отчисления с разовых и пакетных покупок)
   referralCode: string;
   referredByUserId: string | null;
   referredByCode: string | null;
@@ -70,6 +70,9 @@ export interface PredictionRecord {
   analysisTeaser: string;
   isFeatured?: boolean;
 
+  // Гарантия возврата стоимости на баланс сайта при минусе или возврате (PUSH)
+  insuredOnLoss?: boolean;
+
   // Секретные поля прогноза (никогда не уходят в JSON до покупки или завершения матча)
   selectionTitle: string;
   fixedOdds: number;
@@ -106,6 +109,8 @@ export interface PublicPredictionDto {
   bookmakerSource: string;
   analysisTeaser: string;
   isFeatured: boolean;
+  insuredOnLoss: boolean;
+  salesClosed: boolean;
   isLocked: boolean;
   isPurchased: boolean;
   accessTier: AccessTier;
@@ -123,18 +128,32 @@ export interface PublicPredictionDto {
   settledAt: string | null;
 }
 
+export interface PromoCodeRecord {
+  id: string;
+  code: string;
+  discountPercent: number; // 5..90
+  maxUses: number;
+  usedCount: number;
+  active: boolean;
+  createdAt: string;
+}
+
 export interface OrderTransaction {
   id: string;
   idempotenceKey: string;
   externalPaymentId: string;
   userId: string;
   userEmail: string;
-  kind: 'SINGLE_PREDICTION' | 'BALANCE_TOPUP';
+  kind: 'SINGLE_PREDICTION' | 'BUNDLE_PREDICTIONS' | 'BALANCE_TOPUP';
   predictionId: string | null;
+  predictionIds: string[];
+  promoCode: string | null;
+  discountRub: number;
   title: string;
   amountRub: number;
   paymentMethod: 'yookassa' | 'internal_balance';
   status: 'PENDING' | 'SUCCEEDED' | 'CANCELED' | 'REFUNDED';
+  insuranceCredited?: boolean;
   receiptEmail: string;
   confirmationUrl: string | null;
   affiliateUserId: string | null;
@@ -183,6 +202,8 @@ export interface PlatformSettings {
   yookassaSecretKey: string;
   yookassaVatCode: number;
   defaultSinglePriceRub: number;
+  bundle2DiscountPct: number; // Скидка за 2 события в корзине (напр. 15%)
+  bundle3DiscountPct: number; // Скидка за 3+ событий в корзине (напр. 25%)
 
   telegramBotToken: string;
   telegramChannelId: string;

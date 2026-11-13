@@ -31,7 +31,12 @@ export async function PATCH(req: NextRequest) {
     const body = (await req.json()) as {
       predictionId: string;
       setFeatured?: boolean;
-      singlePriceRub?: number;
+      editMeta?: {
+        singlePriceRub?: number;
+        insuredOnLoss?: boolean;
+        analysisTeaser?: string;
+        analysisFull?: string;
+      };
       resultStatus?: ResultStatus;
       matchStatus?: MatchStatus;
       finalScore?: string | null;
@@ -48,16 +53,28 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ prediction: updated });
     }
 
-    if (typeof body.singlePriceRub === 'number' && !body.resultStatus) {
+    if (body.editMeta) {
       const updated = await mutateState((state) => {
         const pred = state.predictions.find((p) => p.id === body.predictionId);
         if (!pred) throw new Error('Событие не найдено');
-        if (body.singlePriceRub! <= 0) {
-          pred.accessTier = 'FREE';
-          pred.singlePriceRub = null;
-        } else {
-          pred.accessTier = 'PAID_SINGLE';
-          pred.singlePriceRub = Math.round(body.singlePriceRub!);
+        if (typeof body.editMeta!.singlePriceRub === 'number') {
+          if (body.editMeta!.singlePriceRub <= 0) {
+            pred.accessTier = 'FREE';
+            pred.singlePriceRub = null;
+            pred.insuredOnLoss = false;
+          } else {
+            pred.accessTier = 'PAID_SINGLE';
+            pred.singlePriceRub = Math.round(body.editMeta!.singlePriceRub);
+          }
+        }
+        if (typeof body.editMeta!.insuredOnLoss === 'boolean') {
+          pred.insuredOnLoss = pred.accessTier === 'PAID_SINGLE' && body.editMeta!.insuredOnLoss;
+        }
+        if (typeof body.editMeta!.analysisTeaser === 'string' && body.editMeta!.analysisTeaser.trim()) {
+          pred.analysisTeaser = body.editMeta!.analysisTeaser.trim();
+        }
+        if (typeof body.editMeta!.analysisFull === 'string' && body.editMeta!.analysisFull.trim()) {
+          pred.analysisFull = body.editMeta!.analysisFull.trim();
         }
         return pred;
       });
@@ -75,13 +92,13 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ prediction: updated });
     }
 
-    const settled = await settlePredictionByAdmin({
+    const res = await settlePredictionByAdmin({
       predictionId: body.predictionId,
       resultStatus: body.resultStatus ?? 'PENDING',
       finalScore: body.finalScore,
       cashoutMultiplier: body.cashoutMultiplier,
     });
-    return NextResponse.json({ prediction: settled });
+    return NextResponse.json(res);
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка обновления прогноза' },
