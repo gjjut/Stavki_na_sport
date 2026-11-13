@@ -1330,8 +1330,223 @@ function buildQuantitativeFallbackPool(
     }));
 }
 
+function buildCandidateLlmBaseUrls(rawBaseUrl: string, provider: string): string[] {
+  const cleaned = (rawBaseUrl || '').trim();
+  const candidates: string[] = [];
+
+  const pushUnique = (u: string) => {
+    const norm = u.replace(/\/+$/, '');
+    if (norm && !candidates.includes(norm)) candidates.push(norm);
+  };
+
+  // Если пользователь вставил ссылку на личный кабинет вида https://www.orcarouter.ai/console/token
+  if (cleaned) {
+    try {
+      const parsed = new URL(
+        cleaned.startsWith('http') ? cleaned : `https://${cleaned}`,
+      );
+      if (
+        parsed.pathname.includes('/console') ||
+        parsed.pathname === '/' ||
+        parsed.pathname === ''
+      ) {
+        pushUnique(`${parsed.origin}/v1`);
+      } else if (parsed.pathname.endsWith('/chat/completions')) {
+        pushUnique(
+          `${parsed.origin}${parsed.pathname.replace(/\/chat\/completions$/, '')}`,
+        );
+      } else {
+        pushUnique(`${parsed.origin}${parsed.pathname}`);
+      }
+
+      if (parsed.hostname.includes('orcarouter.ai')) {
+        pushUnique('https://www.orcarouter.ai/v1');
+        pushUnique('https://api.orcarouter.ai/v1');
+        pushUnique('https://orcarouter.ai/v1');
+      }
+    } catch {
+      pushUnique(cleaned);
+    }
+  }
+
+  if (provider === 'ORCAROUTER') {
+    pushUnique('https://www.orcarouter.ai/v1');
+    pushUnique('https://api.orcarouter.ai/v1');
+    pushUnique('https://orcarouter.ai/v1');
+  }
+
+  if (candidates.length === 0) {
+    pushUnique('https://www.orcarouter.ai/v1');
+  }
+
+  return candidates;
+}
+
+export async function testLlmConnectionAndModels(input: {
+  llmProvider: string;
+  llmBaseUrl: string;
+  llmApiKey: string;
+  llmModel: string;
+}): Promise<{
+  ok: boolean;
+  resolvedBaseUrl: string;
+  testedModel: string;
+  availableModels: string[];
+  latencyMs: number;
+  message: string;
+}> {
+  const t0 = Date.now();
+  const key = (input.llmApiKey || '').trim();
+
+  if (!key) {
+    return {
+      ok: false,
+      resolvedBaseUrl: input.llmBaseUrl,
+      testedModel: input.llmModel,
+      availableModels: [],
+      latencyMs: 0,
+      message:
+        'Вставьте секретный ключ (начинается на sk-...) со страницы https://www.orcarouter.ai/console/token — нажмите кнопку «Copy / Копировать» рядом с вашим initial token.',
+    };
+  }
+
+  if (/\s/.test(key) || key.toLowerCase().includes('initial token')) {
+    return {
+      ok: false,
+      resolvedBaseUrl: input.llmBaseUrl,
+      testedModel: input.llmModel,
+      availableModels: [],
+      latencyMs: 0,
+      message:
+        'Вы вставили название ключа («google_306743 - initial token»), а нужен сам секретный токен! Откройте https://www.orcarouter.ai/console/token и нажмите иконку «Копировать» в строке с этим ключом — скопируется длинный код вида sk-...',
+    };
+  }
+
+  const baseUrls = buildCandidateLlmBaseUrls(input.llmBaseUrl, input.llmProvider);
+  let resolvedBaseUrl = baseUrls[0];
+  let availableModels: string[] = [];
+
+  // 1. Пробуем получить список доступных на этом токене моделей (/v1/models)
+  for (const base of baseUrls) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(`${base}/models`, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${key}`,
+        },
+        cache: 'no-store',
+      });
+      clearTimeout(timer);
+
+      if (res.ok) {
+        const json = (await res.json()) as {
+          data?: Array<{ id?: string }>;
+        };
+        if (Array.isArray(json?.data) && json.data.length > 0) {
+          resolvedBaseUrl = base;
+          availableModels = json.data
+            .map((m) => (m.id || '').trim())
+            .filter(Boolean)
+            .sort((a, b) => a.localeCompare(b));
+          break;
+        }
+      }
+    } catch {
+      // пробуем следующее зеркало
+    }
+  }
+
+  // Выбираем модель для проверочного запроса
+  let modelToTest = (input.llmModel || '').trim();
+  if (
+    availableModels.length > 0 &&
+    (!modelToTest || !availableModels.includes(modelToTest))
+  ) {
+    const preferred = [
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+      'deepseek-chat',
+      'deepseek-v3',
+      'gpt-4o-mini',
+      'gpt-4.1-mini',
+      'claude-3-5-haiku-latest',
+    ];
+    modelToTest =
+      preferred.find((p) => availableModels.includes(p)) ||
+      availableModels.find((m) =>
+        /gemini|deepseek|gpt-4|claude|qwen/i.test(m),
+      ) ||
+      availableModels[0];
+  }
+  if (!modelToTest) {
+    modelToTest = 'gpt-4o-mini';
+  }
+
+  // 2. Делаем реальный тестовый запрос генерации
+  let lastErrorText = 'Не удалось достучаться до сервера API';
+  const urlsToTry = availableModels.length > 0 ? [resolvedBaseUrl] : baseUrls;
+
+  for (const base of urlsToTry) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 12_000);
+      const res = await fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          model: modelToTest,
+          max_tokens: 16,
+          messages: [{ role: 'user', content: 'Ответь одним словом: Готов' }],
+        }),
+      });
+      clearTimeout(timer);
+
+      if (res.ok) {
+        return {
+          ok: true,
+          resolvedBaseUrl: base,
+          testedModel: modelToTest,
+          availableModels,
+          latencyMs: Date.now() - t0,
+          message:
+            availableModels.length > 0
+              ? `Токен подключен! Доступно моделей на вашем ключе: ${availableModels.length}. Активна модель «${modelToTest}».`
+              : `Токен успешно подключен! Модель «${modelToTest}» отвечает штатно.`,
+        };
+      }
+
+      const errBody = await res.text().catch(() => '');
+      lastErrorText = `HTTP ${res.status}${
+        errBody ? `: ${errBody.slice(0, 140)}` : ''
+      }`;
+    } catch (e) {
+      lastErrorText = e instanceof Error ? e.message : 'Сбой сети';
+    }
+  }
+
+  return {
+    ok: false,
+    resolvedBaseUrl,
+    testedModel: modelToTest,
+    availableModels,
+    latencyMs: Date.now() - t0,
+    message:
+      availableModels.length > 0
+        ? `Ключ верный (найдено моделей: ${availableModels.length}), выберите подходящую модель из выпадающего списка ниже (${lastErrorText}).`
+        : `Не удалось выполнить запрос (${lastErrorText}). Проверьте правильность ключа sk-... и баланс на OrcaRouter.`,
+  };
+}
+
 /**
- * Генерация аналитического досье через API нейросети (DeepSeek / OpenRouter / OpenAI)
+ * Генерация аналитического досье через API нейросети (OrcaRouter / DeepSeek / OpenRouter / OpenAI)
  * либо встроенный понятный русскоязычный генератор (0 ₽).
  */
 async function generateAnalystDossier(
@@ -1357,7 +1572,10 @@ async function generateAnalystDossier(
     config.llmProvider !== 'BUILTIN_QUANT' &&
     config.llmApiKey.trim().length > 8
   ) {
-    const endpoint = `${config.llmBaseUrl.replace(/\/+$/, '')}/chat/completions`;
+    const candidateBases = buildCandidateLlmBaseUrls(
+      config.llmBaseUrl,
+      config.llmProvider,
+    );
     const systemPrompt = [
       'Ты — главный спортивный аналитик российского сервиса прогнозов VALUEX.',
       'Твоя аудитория — обычные российские любители спорта, которые ставят в Фонбет, Винлайн, Пари и Бетбум. Пиши живым, ясным и убедительным русским языком БЕЗ заумного англоязычного жаргона (не используй слова EV, PPDA, xGA, ростер, вето).',
@@ -1390,77 +1608,89 @@ async function generateAnalystDossier(
       notes: candidate.contextNotes,
     });
 
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 18_000);
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${config.llmApiKey.trim()}`,
-        },
-        body: JSON.stringify({
-          model: config.llmModel.trim() || 'deepseek-chat',
-          temperature: 0.3,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-        }),
-      });
-      clearTimeout(timer);
+    for (const base of candidateBases) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 18_000);
+        const res = await fetch(`${base}/chat/completions`, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${config.llmApiKey.trim()}`,
+          },
+          body: JSON.stringify({
+            model: config.llmModel.trim() || 'gpt-4o-mini',
+            temperature: 0.3,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt },
+            ],
+          }),
+        });
+        clearTimeout(timer);
 
-      if (res.ok) {
-        const json = (await res.json()) as {
-          choices?: Array<{ message?: { content?: string } }>;
-        };
-        const rawText = json.choices?.[0]?.message?.content?.trim() || '';
-        const jsonStart = rawText.indexOf('{');
-        const jsonEnd = rawText.lastIndexOf('}');
-        const slice =
-          jsonStart >= 0 && jsonEnd > jsonStart
-            ? rawText.slice(jsonStart, jsonEnd + 1)
-            : rawText;
-        const parsed = JSON.parse(slice) as {
-          selectionTitle?: string;
-          fixedOdds?: number;
-          stakeUnits?: number;
-          confidencePct?: number;
-          valueEdgePct?: number;
-          analysisTeaser?: string;
-          analysisFull?: string;
-        };
-
-        if (parsed.selectionTitle && parsed.analysisTeaser && parsed.analysisFull) {
-          return {
-            selectionTitle: parsed.selectionTitle.trim(),
-            fixedOdds: Number(
-              Math.min(
-                3.2,
-                Math.max(1.55, Number(parsed.fixedOdds) || candidate.suggestedOdds),
-              ).toFixed(2),
-            ),
-            stakeUnits: Number(
-              Math.min(
-                2.5,
-                Math.max(1.0, Number(parsed.stakeUnits) || recommendedStake),
-              ).toFixed(1),
-            ),
-            confidencePct: Math.min(
-              86,
-              Math.max(60, Math.round(parsed.confidencePct || candidate.confidencePct)),
-            ),
-            valueEdgePct: Number(
-              (parsed.valueEdgePct || candidate.valueEdgePct).toFixed(1),
-            ),
-            analysisTeaser: parsed.analysisTeaser.trim(),
-            analysisFull: parsed.analysisFull.trim(),
+        if (res.ok) {
+          const json = (await res.json()) as {
+            choices?: Array<{ message?: { content?: string } }>;
           };
+          const rawText = json.choices?.[0]?.message?.content?.trim() || '';
+          const jsonStart = rawText.indexOf('{');
+          const jsonEnd = rawText.lastIndexOf('}');
+          const slice =
+            jsonStart >= 0 && jsonEnd > jsonStart
+              ? rawText.slice(jsonStart, jsonEnd + 1)
+              : rawText;
+          const parsed = JSON.parse(slice) as {
+            selectionTitle?: string;
+            fixedOdds?: number;
+            stakeUnits?: number;
+            confidencePct?: number;
+            valueEdgePct?: number;
+            analysisTeaser?: string;
+            analysisFull?: string;
+          };
+
+          if (
+            parsed.selectionTitle &&
+            parsed.analysisTeaser &&
+            parsed.analysisFull
+          ) {
+            return {
+              selectionTitle: parsed.selectionTitle.trim(),
+              fixedOdds: Number(
+                Math.min(
+                  3.2,
+                  Math.max(
+                    1.55,
+                    Number(parsed.fixedOdds) || candidate.suggestedOdds,
+                  ),
+                ).toFixed(2),
+              ),
+              stakeUnits: Number(
+                Math.min(
+                  2.5,
+                  Math.max(1.0, Number(parsed.stakeUnits) || recommendedStake),
+                ).toFixed(1),
+              ),
+              confidencePct: Math.min(
+                86,
+                Math.max(
+                  60,
+                  Math.round(parsed.confidencePct || candidate.confidencePct),
+                ),
+              ),
+              valueEdgePct: Number(
+                (parsed.valueEdgePct || candidate.valueEdgePct).toFixed(1),
+              ),
+              analysisTeaser: parsed.analysisTeaser.trim(),
+              analysisFull: parsed.analysisFull.trim(),
+            };
+          }
         }
+      } catch {
+        // Пробуем следующее зеркало или переходим на встроенное ядро
       }
-    } catch {
-      // Безотказный переход на встроенное аналитическое ядро
     }
   }
 
@@ -2095,40 +2325,18 @@ export async function runAutopilotDiagnostics(): Promise<AiDiagnosticsReport> {
           : 'Ключ нейросети не заполнен — работает встроенный русскоязычный аналитик',
     });
   } else {
-    try {
-      const endpoint = `${cfg.llmBaseUrl.replace(/\/+$/, '')}/chat/completions`;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${cfg.llmApiKey.trim()}`,
-        },
-        body: JSON.stringify({
-          model: cfg.llmModel.trim() || 'deepseek-chat',
-          max_tokens: 12,
-          messages: [{ role: 'user', content: 'Ответь одним словом: ОК' }],
-        }),
-      });
-      clearTimeout(timer);
-      items.push({
-        name: `Нейросеть ${cfg.llmProvider} (${cfg.llmModel})`,
-        ok: res.ok,
-        latencyMs: Date.now() - tLlm,
-        details: res.ok
-          ? 'Соединение по API установлено, модель отвечает штатно'
-          : `Ошибка ответа API (HTTP ${res.status}) — проверьте ключ или баланс`,
-      });
-    } catch {
-      items.push({
-        name: `Нейросеть ${cfg.llmProvider}`,
-        ok: false,
-        latencyMs: Date.now() - tLlm,
-        details: 'Нет связи с сервером модели (сработает встроенный резервный аналитик)',
-      });
-    }
+    const llmCheck = await testLlmConnectionAndModels({
+      llmProvider: cfg.llmProvider,
+      llmBaseUrl: cfg.llmBaseUrl,
+      llmApiKey: cfg.llmApiKey,
+      llmModel: cfg.llmModel,
+    });
+    items.push({
+      name: `Нейросеть ${cfg.llmProvider} (${llmCheck.testedModel})`,
+      ok: llmCheck.ok,
+      latencyMs: llmCheck.latencyMs,
+      details: llmCheck.message,
+    });
   }
 
   const mskNow = new Date(Date.now() + 3 * 3600_000);

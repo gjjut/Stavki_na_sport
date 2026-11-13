@@ -56,6 +56,11 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
   const [draftConfig, setDraftConfig] = useState<AiAutopilotConfig>(config);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<AiDiagnosticsReport | null>(null);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [llmCheckStatus, setLlmCheckStatus] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
 
   useEffect(() => {
     setDraftConfig(config);
@@ -87,7 +92,16 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
   };
 
   const handleApplyProviderPreset = (provider: AiLlmProvider) => {
-    if (provider === 'DEEPSEEK') {
+    setLlmCheckStatus(null);
+    setAvailableModels([]);
+    if (provider === 'ORCAROUTER') {
+      setDraftConfig({
+        ...draftConfig,
+        llmProvider: 'ORCAROUTER',
+        llmBaseUrl: 'https://www.orcarouter.ai/v1',
+        llmModel: 'gemini-2.5-flash',
+      });
+    } else if (provider === 'DEEPSEEK') {
       setDraftConfig({
         ...draftConfig,
         llmProvider: 'DEEPSEEK',
@@ -101,6 +115,13 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         llmBaseUrl: 'https://openrouter.ai/api/v1',
         llmModel: 'deepseek/deepseek-chat',
       });
+    } else if (provider === 'RU_GATEWAY') {
+      setDraftConfig({
+        ...draftConfig,
+        llmProvider: 'RU_GATEWAY',
+        llmBaseUrl: 'https://api.proxyapi.ru/openai/v1',
+        llmModel: 'gpt-4o-mini',
+      });
     } else if (provider === 'OPENAI') {
       setDraftConfig({
         ...draftConfig,
@@ -113,6 +134,48 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         ...draftConfig,
         llmProvider: 'BUILTIN_QUANT',
       });
+    }
+  };
+
+  const handleTestLlmAndFetchModels = async () => {
+    setBusyAction('TEST_LLM');
+    setLlmCheckStatus(null);
+    try {
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'TEST_LLM',
+          llmProvider: draftConfig.llmProvider,
+          llmBaseUrl: draftConfig.llmBaseUrl,
+          llmApiKey: draftConfig.llmApiKey,
+          llmModel: draftConfig.llmModel,
+        }),
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        resolvedBaseUrl?: string;
+        testedModel?: string;
+        availableModels?: string[];
+        message?: string;
+        error?: string;
+      };
+      if (Array.isArray(json.availableModels) && json.availableModels.length > 0) {
+        setAvailableModels(json.availableModels);
+      }
+      if (json.resolvedBaseUrl || json.testedModel) {
+        setDraftConfig((prev) => ({
+          ...prev,
+          llmBaseUrl: json.resolvedBaseUrl || prev.llmBaseUrl,
+          llmModel: json.testedModel || prev.llmModel,
+        }));
+      }
+      setLlmCheckStatus({
+        ok: Boolean(json.ok),
+        message: json.message || json.error || 'Проверка завершена',
+      });
+    } finally {
+      setBusyAction(null);
     }
   };
 
@@ -660,10 +723,12 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {(
                 [
+                  ['ORCAROUTER', 'OrcaRouter.ai (Gemini / GPT / Claude / DeepSeek)'],
                   ['DEEPSEEK', 'DeepSeek API (РФ без VPN)'],
-                  ['OPENROUTER', 'OpenRouter (Claude/GPT/Qwen)'],
-                  ['OPENAI', 'OpenAI GPT-4o'],
-                  ['BUILTIN_QUANT', 'Встроенный мат. аналитик (0 ₽, без ключей)'],
+                  ['OPENROUTER', 'OpenRouter'],
+                  ['RU_GATEWAY', 'ProxyAPI / AITunnel'],
+                  ['OPENAI', 'OpenAI'],
+                  ['BUILTIN_QUANT', 'Встроенный аналитик (0 ₽, без ключей)'],
                 ] as const
               ).map(([prov, label]) => (
                 <button
@@ -683,45 +748,112 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
           </div>
 
           {draftConfig.llmProvider !== 'BUILTIN_QUANT' && (
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div>
-                <label className="text-[11px] font-bold text-slate-500">
-                  API URL
-                </label>
-                <input
-                  value={draftConfig.llmBaseUrl}
-                  onChange={(e) =>
-                    setDraftConfig({ ...draftConfig, llmBaseUrl: e.target.value })
-                  }
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
-                />
+            <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/40 p-3.5">
+              {draftConfig.llmProvider === 'ORCAROUTER' && (
+                <p className="text-[11px] leading-relaxed text-slate-600">
+                  В кабинете{' '}
+                  <span className="font-mono font-bold text-slate-900">
+                    orcarouter.ai/console/token
+                  </span>{' '}
+                  нажмите кнопку <strong>«Копировать / Copy»</strong> в строке с вашим ключом{' '}
+                  <strong>initial token</strong> (скопируется длинный секретный код на{' '}
+                  <span className="font-mono font-bold">sk-...</span>), вставьте его ниже и нажмите{' '}
+                  <strong>«Проверить токен и загрузить модели»</strong>.
+                </p>
+              )}
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">
+                    API URL шлюза
+                  </label>
+                  <input
+                    value={draftConfig.llmBaseUrl}
+                    onChange={(e) =>
+                      setDraftConfig({ ...draftConfig, llmBaseUrl: e.target.value })
+                    }
+                    placeholder="https://www.orcarouter.ai/v1"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">
+                    Модель
+                  </label>
+                  {availableModels.length > 0 ? (
+                    <select
+                      value={draftConfig.llmModel}
+                      onChange={(e) =>
+                        setDraftConfig({ ...draftConfig, llmModel: e.target.value })
+                      }
+                      className="mt-1 w-full rounded-xl border border-blue-300 bg-white px-2.5 py-2 font-mono text-xs font-bold text-slate-900"
+                    >
+                      {availableModels.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      value={draftConfig.llmModel}
+                      onChange={(e) =>
+                        setDraftConfig({ ...draftConfig, llmModel: e.target.value })
+                      }
+                      placeholder="gemini-2.5-flash"
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs"
+                    />
+                  )}
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">
+                    Секретный ключ (sk-...)
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="sk-..."
+                    value={draftConfig.llmApiKey}
+                    onChange={(e) =>
+                      setDraftConfig({ ...draftConfig, llmApiKey: e.target.value })
+                    }
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="text-[11px] font-bold text-slate-500">
-                  Модель
-                </label>
-                <input
-                  value={draftConfig.llmModel}
-                  onChange={(e) =>
-                    setDraftConfig({ ...draftConfig, llmModel: e.target.value })
-                  }
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
-                />
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  disabled={busyAction !== null}
+                  onClick={handleTestLlmAndFetchModels}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {busyAction === 'TEST_LLM' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Activity className="h-3.5 w-3.5" />
+                  )}
+                  <span>Проверить токен и загрузить модели</span>
+                </button>
+
+                {availableModels.length > 0 && (
+                  <span className="text-[11px] font-semibold text-emerald-700">
+                    Загружено моделей с вашего токена: {availableModels.length} — выберите любую в списке и нажмите «Сохранить параметры ИИ»
+                  </span>
+                )}
               </div>
-              <div>
-                <label className="text-[11px] font-bold text-slate-500">
-                  API Ключ нейросети
-                </label>
-                <input
-                  type="password"
-                  placeholder="sk-..."
-                  value={draftConfig.llmApiKey}
-                  onChange={(e) =>
-                    setDraftConfig({ ...draftConfig, llmApiKey: e.target.value })
-                  }
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
-                />
-              </div>
+
+              {llmCheckStatus && (
+                <div
+                  className={`rounded-xl border p-2.5 text-xs font-semibold ${
+                    llmCheckStatus.ok
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                      : 'border-amber-200 bg-amber-50 text-amber-900'
+                  }`}
+                >
+                  {llmCheckStatus.message}
+                </div>
+              )}
             </div>
           )}
 

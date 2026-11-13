@@ -260,7 +260,14 @@ export interface EquityPoint {
 
 export type AiAutopilotMode = 'OFF' | 'MODERATION' | 'FULL_AUTOPILOT';
 
-export type AiLlmProvider = 'DEEPSEEK' | 'OPENROUTER' | 'OPENAI' | 'BUILTIN_QUANT';
+export type AiLlmProvider =
+  | 'ORCAROUTER'
+  | 'DEEPSEEK'
+  | 'OPENROUTER'
+  | 'RU_GATEWAY'
+  | 'GEMINI'
+  | 'OPENAI'
+  | 'BUILTIN_QUANT';
 
 export interface AiAutopilotConfig {
   mode: AiAutopilotMode;

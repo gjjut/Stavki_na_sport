@@ -6,6 +6,7 @@ import {
   runAiScanAndGenerateCycle,
   runAutopilotDiagnostics,
   runAutoSettlementCycle,
+  testLlmConnectionAndModels,
 } from '@/server/ai-autopilot';
 import { mutateState, readState } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
@@ -20,9 +21,21 @@ export async function PATCH(req: NextRequest) {
 
     const nextConfig = await mutateState((state) => {
       const prevMode = state.aiAutopilot.mode;
+      const incoming = { ...body.config };
+      if (
+        typeof incoming.llmBaseUrl === 'string' &&
+        incoming.llmBaseUrl.includes('/console')
+      ) {
+        try {
+          const parsed = new URL(incoming.llmBaseUrl.trim());
+          incoming.llmBaseUrl = `${parsed.origin}/v1`;
+        } catch {
+          // оставляем как есть
+        }
+      }
       state.aiAutopilot = {
         ...state.aiAutopilot,
-        ...body.config,
+        ...incoming,
       };
       if (body.config.mode && body.config.mode !== prevMode) {
         state.aiLogs.unshift({
@@ -62,10 +75,27 @@ export async function POST(req: NextRequest) {
       | { action: 'REPLACE_DEMO_WITH_REAL' }
       | { action: 'RUN_SETTLE_NOW' }
       | { action: 'RUN_DIAGNOSTICS' }
+      | {
+          action: 'TEST_LLM';
+          llmProvider: string;
+          llmBaseUrl: string;
+          llmApiKey: string;
+          llmModel: string;
+        }
       | { action: 'APPROVE_DRAFT'; draftId: string }
       | { action: 'APPROVE_ALL_DRAFTS' }
       | { action: 'DELETE_DRAFT'; draftId: string }
       | { action: 'CLEAR_LOGS' };
+
+    if (body.action === 'TEST_LLM') {
+      const result = await testLlmConnectionAndModels({
+        llmProvider: body.llmProvider,
+        llmBaseUrl: body.llmBaseUrl,
+        llmApiKey: body.llmApiKey,
+        llmModel: body.llmModel,
+      });
+      return NextResponse.json(result);
+    }
 
     if (body.action === 'RUN_DIAGNOSTICS') {
       const report = await runAutopilotDiagnostics();
