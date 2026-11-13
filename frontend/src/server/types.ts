@@ -294,11 +294,21 @@ export interface AiConnectorDiagnosticItem {
   details: string;
 }
 
+export interface AiDiagnosticsSampleMatch {
+  leagueName: string;
+  matchTitle: string;
+  startsAtFormatted: string;
+  market: string;
+  odds: number;
+  source: string;
+}
+
 export interface AiDiagnosticsReport {
   checkedAt: string;
   mskTimeFormatted: string;
   nextSlotLabel: string;
   items: AiConnectorDiagnosticItem[];
+  sampleMatches?: AiDiagnosticsSampleMatch[];
 }
 
 export interface AiPredictionDraft {

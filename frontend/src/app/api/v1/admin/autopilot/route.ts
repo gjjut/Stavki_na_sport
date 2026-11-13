@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import {
   approveAiDraftToStorefront,
+  replaceDemoWithRealMatches,
   runAiScanAndGenerateCycle,
   runAutopilotDiagnostics,
   runAutoSettlementCycle,
@@ -58,6 +59,7 @@ export async function POST(req: NextRequest) {
     await requireAdminAccount();
     const body = (await req.json()) as
       | { action: 'RUN_SCAN_NOW'; forcePublish?: boolean }
+      | { action: 'REPLACE_DEMO_WITH_REAL' }
       | { action: 'RUN_SETTLE_NOW' }
       | { action: 'RUN_DIAGNOSTICS' }
       | { action: 'APPROVE_DRAFT'; draftId: string }
@@ -68,6 +70,11 @@ export async function POST(req: NextRequest) {
     if (body.action === 'RUN_DIAGNOSTICS') {
       const report = await runAutopilotDiagnostics();
       return NextResponse.json({ report });
+    }
+
+    if (body.action === 'REPLACE_DEMO_WITH_REAL') {
+      const res = await replaceDemoWithRealMatches();
+      return NextResponse.json(res);
     }
 
     if (body.action === 'RUN_SCAN_NOW') {

@@ -208,6 +208,26 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
     }
   };
 
+  const handleReplaceDemoWithReal = async () => {
+    setBusyAction('REPLACE_DEMO');
+    try {
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'REPLACE_DEMO_WITH_REAL' }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        onToast(
+          `Стартовые демо убраны (${json.removedDemoCount} шт.), опубликовано реальных матчей: ${json.createdCount} (${json.feedSource})!`,
+        );
+        await onRefresh();
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const handleApproveDraft = async (draftId: string) => {
     setBusyAction(draftId);
     try {
@@ -415,6 +435,20 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
           <button
             type="button"
             disabled={busyAction !== null}
+            onClick={handleReplaceDemoWithReal}
+            className="inline-flex items-center gap-2 rounded-xl border border-amber-400/40 bg-amber-400/15 px-4 py-2.5 text-xs font-bold text-amber-200 hover:bg-amber-400/25 disabled:opacity-50"
+          >
+            {busyAction === 'REPLACE_DEMO' ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5 text-amber-300" />
+            )}
+            <span>Заменить стартовые демо реальными матчами</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={busyAction !== null}
             onClick={handleRunDiagnostics}
             className="ml-auto inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-xs font-bold text-blue-300 hover:bg-white/10 disabled:opacity-50"
           >
@@ -423,7 +457,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             ) : (
               <Activity className="h-3.5 w-3.5" />
             )}
-            <span>Диагностика узлов</span>
+            <span>Проверить реальные матчи и узлы</span>
           </button>
         </div>
 
@@ -461,6 +495,44 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                 </div>
               ))}
             </div>
+
+            {diagnostics.sampleMatches && diagnostics.sampleMatches.length > 0 && (
+              <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-950/30 p-3.5">
+                <div className="mb-2.5 flex items-center justify-between gap-2 text-xs font-bold text-emerald-300">
+                  <span>
+                    Живая проверка: реальные предстоящие матчи в линии прямо сейчас
+                  </span>
+                  <span className="rounded-md bg-emerald-500/20 px-2 py-0.5 font-mono text-[10px] text-emerald-200">
+                    Источник: {diagnostics.sampleMatches[0].source}
+                  </span>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {diagnostics.sampleMatches.map((m, i) => (
+                    <div
+                      key={`${m.matchTitle}_${i}`}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-slate-950/70 px-3 py-2 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-[10px] text-slate-400">
+                          {m.leagueName} · {m.startsAtFormatted} МСК
+                        </div>
+                        <div className="truncate font-bold text-white">
+                          {m.matchTitle}
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="text-[11px] font-semibold text-blue-300">
+                          {m.market}
+                        </div>
+                        <div className="font-mono text-xs font-black text-emerald-400">
+                          {m.odds.toFixed(2)}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

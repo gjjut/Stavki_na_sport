@@ -23,6 +23,7 @@ import type {
   AiPerformanceStats,
   AiPredictionDraft,
   OrderTransaction,
+  PayoutRequestRecord,
   PlatformSettings,
   PredictionRecord,
   PromoCodeRecord,
@@ -38,6 +39,7 @@ interface AdminOverviewPayload {
   promoCodes: PromoCodeRecord[];
   users: SafeSessionUser[];
   transactions: OrderTransaction[];
+  payouts: PayoutRequestRecord[];
   stats: StatsSummary;
   aiAutopilot: AiAutopilotConfig;
   aiDrafts: AiPredictionDraft[];
@@ -92,8 +94,10 @@ export default function AdminDashboardPage() {
   const [newPromoPct, setNewPromoPct] = useState(15);
   const [newPromoMaxUses, setNewPromoMaxUses] = useState(200);
 
-  // Настройки интеграций
+  // Настройки интеграций и доступов администратора
   const [settingsDraft, setSettingsDraft] = useState<PlatformSettings | null>(null);
+  const [newAdminEmail, setNewAdminEmail] = useState('');
+  const [newAdminPassword, setNewAdminPassword] = useState('');
 
   const loadOverview = useCallback(async () => {
     const res = await fetch('/api/v1/admin/overview', { cache: 'no-store' });
@@ -298,13 +302,34 @@ export default function AdminDashboardPage() {
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!settingsDraft) return;
-    await fetch('/api/v1/admin/settings', {
+    const res = await fetch('/api/v1/admin/settings', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ settings: settingsDraft }),
+      body: JSON.stringify({
+        settings: settingsDraft,
+        newAdminEmail: newAdminEmail.trim() || undefined,
+        newAdminPassword: newAdminPassword.trim() || undefined,
+      }),
     });
-    showToast('Настройки кассы ЮKassa и бренда сохранены!');
+    const json = await res.json();
+    if (!res.ok) {
+      showToast(json.error || 'Ошибка сохранения настроек');
+      return;
+    }
+    setNewAdminEmail('');
+    setNewAdminPassword('');
+    showToast('Настройки кассы ЮKassa, реквизитов и доступов сохранены!');
     await loadOverview();
+  };
+
+  const handleTestTelegram = async () => {
+    const res = await fetch('/api/v1/admin/settings', { method: 'POST' });
+    const json = await res.json();
+    if (res.ok) {
+      showToast('Тестовый анонс успешно отправлен в ваш Telegram-канал!');
+    } else {
+      showToast(json.error || 'Сначала сохраните Bot Token и ID канала');
+    }
   };
 
   if (authError) {
@@ -391,32 +416,42 @@ export default function AdminDashboardPage() {
               ['AUTOPILOT', 'ИИ-Автопилот 24/7', Bot],
               ['PREDICTIONS', 'События и расчет', Plus],
               ['PRICING_PROMOS', 'Пакеты и Промокоды', Tag],
-              ['FINANCE', 'Чеки и заказы', Coins],
-              ['USERS', 'Клиенты и доступы', Users],
-              ['SETTINGS', 'ЮKassa, Telegram и Бренд', Settings],
+              ['FINANCE', 'Чеки и выплаты', Coins],
+              ['USERS', 'Клиенты и партнеры', Users],
+              ['SETTINGS', 'ЮKassa, Telegram и Реквизиты', Settings],
             ] as const
-          ).map(([id, label, Icon]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setTab(id)}
-              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition ${
-                tab === id
-                  ? 'bg-slate-900 text-white shadow-xs'
-                  : 'border border-slate-200 bg-white text-slate-600 hover:text-slate-950'
-              }`}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              <span>{label}</span>
-              {id === 'AUTOPILOT' &&
-                data?.aiAutopilot.mode === 'FULL_AUTOPILOT' && (
-                  <span
-                    className="h-2 w-2 rounded-full bg-emerald-400"
-                    title="Полный автопилот активен"
-                  />
+          ).map(([id, label, Icon]) => {
+            const pendingPayoutsCount = (data?.payouts ?? []).filter(
+              (p) => p.status === 'PENDING',
+            ).length;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTab(id)}
+                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition ${
+                  tab === id
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'border border-slate-200 bg-white text-slate-600 hover:text-slate-950'
+                }`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                <span>{label}</span>
+                {id === 'AUTOPILOT' &&
+                  data?.aiAutopilot.mode === 'FULL_AUTOPILOT' && (
+                    <span
+                      className="h-2 w-2 rounded-full bg-emerald-400"
+                      title="Полный автопилот активен"
+                    />
+                  )}
+                {id === 'FINANCE' && pendingPayoutsCount > 0 && (
+                  <span className="rounded-full bg-amber-500 px-1.5 py-0.5 font-mono text-[10px] font-black text-white">
+                    {pendingPayoutsCount}
+                  </span>
                 )}
-            </button>
-          ))}
+              </button>
+            );
+          })}
         </div>
 
         {/* ВКЛАДКА 0: ИИ-АВТОПИЛОТ 24/7 */}
@@ -892,48 +927,187 @@ export default function AdminDashboardPage() {
           </div>
         )}
 
-        {/* ВКЛАДКА 3: ЧЕКИ И ЗАКАЗЫ */}
+        {/* ВКЛАДКА 3: ЧЕКИ, ВОЗВРАТЫ И ВЫПЛАТЫ ПАРТНЕРАМ */}
         {tab === 'FINANCE' && (
-          <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-            <div className="border-b border-slate-200 px-6 py-4">
-              <h2 className="text-base font-extrabold text-slate-950">
-                Реестр заказов и возвратов страховки
-              </h2>
-            </div>
-            <div className="divide-y divide-slate-100">
-              {(data?.transactions ?? []).map((order) => (
-                <div
-                  key={order.id}
-                  className="flex flex-wrap items-center justify-between gap-3 px-6 py-3.5 text-xs"
-                >
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-bold text-slate-900">{order.title}</span>
-                      {order.promoCode && (
-                        <span className="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-blue-700">
-                          {order.promoCode}
-                        </span>
-                      )}
-                      {order.insuranceCredited && (
-                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">
-                          Страховка выплачена на баланс
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-slate-400">
-                      {order.userEmail} · {new Date(order.createdAt).toLocaleString('ru-RU')}
-                    </div>
-                  </div>
-                  <div className="font-mono font-bold text-slate-950">
-                    {order.amountRub.toLocaleString('ru-RU')} ₽ ({order.status})
-                  </div>
+          <div className="mt-6 space-y-6">
+            {/* Заявки на вывод партнерских средств */}
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-6 py-4">
+                <div>
+                  <h2 className="text-base font-extrabold text-slate-950">
+                    Заявки партнеров на выплату (СБП / Карта РФ)
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    После перевода средств по реквизитам отметьте заявку оплаченной
+                  </p>
                 </div>
-              ))}
+              </div>
+              {(data?.payouts ?? []).length === 0 ? (
+                <div className="px-6 py-6 text-xs text-slate-500">
+                  Заявок на вывод партнерского вознаграждения пока нет.
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {(data?.payouts ?? []).map((p) => (
+                    <div
+                      key={p.id}
+                      className="flex flex-wrap items-center justify-between gap-3 px-6 py-3.5 text-xs"
+                    >
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-sm font-black text-slate-950">
+                            {p.amountRub.toLocaleString('ru-RU')} ₽
+                          </span>
+                          <span className="rounded bg-slate-100 px-2 py-0.5 font-semibold text-slate-800">
+                            {p.requisites}
+                          </span>
+                        </div>
+                        <div className="mt-0.5 text-slate-400">
+                          {p.userEmail} · {new Date(p.createdAt).toLocaleString('ru-RU')}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {p.status === 'PENDING' ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await fetch('/api/v1/admin/finance', {
+                                  method: 'PATCH',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    action: 'PROCESS_PAYOUT',
+                                    payoutId: p.id,
+                                    decision: 'PAID',
+                                  }),
+                                });
+                                showToast('Выплата отмечена как исполненная');
+                                await loadOverview();
+                              }}
+                              className="rounded-lg bg-emerald-600 px-3 py-1.5 font-bold text-white hover:bg-emerald-700"
+                            >
+                              Отметить выплаченной
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await fetch('/api/v1/admin/finance', {
+                                  method: 'PATCH',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    action: 'PROCESS_PAYOUT',
+                                    payoutId: p.id,
+                                    decision: 'REJECTED',
+                                  }),
+                                });
+                                showToast('Заявка отклонена, сумма возвращена на партнерский счет');
+                                await loadOverview();
+                              }}
+                              className="rounded-lg border border-rose-200 px-3 py-1.5 font-bold text-rose-600 hover:bg-rose-50"
+                            >
+                              Отклонить
+                            </button>
+                          </>
+                        ) : (
+                          <span
+                            className={`rounded-lg px-2.5 py-1 font-bold ${
+                              p.status === 'PAID'
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : 'bg-rose-50 text-rose-700'
+                            }`}
+                          >
+                            {p.status === 'PAID' ? 'Выплачено' : 'Отклонено'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Реестр заказов */}
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              <div className="border-b border-slate-200 px-6 py-4">
+                <h2 className="text-base font-extrabold text-slate-950">
+                  Реестр заказов и возвратов страховки
+                </h2>
+              </div>
+              <div className="divide-y divide-slate-100">
+                {(data?.transactions ?? []).map((order) => (
+                  <div
+                    key={order.id}
+                    className="flex flex-wrap items-center justify-between gap-3 px-6 py-3.5 text-xs"
+                  >
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-slate-900">{order.title}</span>
+                        {order.promoCode && (
+                          <span className="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-blue-700">
+                            {order.promoCode}
+                          </span>
+                        )}
+                        {order.insuranceCredited && (
+                          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">
+                            Страховка выплачена на баланс
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-slate-400">
+                        {order.userEmail} ·{' '}
+                        {new Date(order.createdAt).toLocaleString('ru-RU')}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <div className="font-mono font-bold text-slate-950">
+                        {order.amountRub.toLocaleString('ru-RU')} ₽ (
+                        {order.status === 'SUCCEEDED'
+                          ? 'Оплачен'
+                          : order.status === 'REFUNDED'
+                            ? 'Возврат'
+                            : 'Ожидает'}
+                        )
+                      </div>
+                      {order.status === 'SUCCEEDED' && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (
+                              !window.confirm(
+                                `Вернуть ${order.amountRub} ₽ на внутренний баланс покупателя и отозвать доступ к прогнозу?`,
+                              )
+                            ) {
+                              return;
+                            }
+                            const res = await fetch('/api/v1/admin/finance', {
+                              method: 'PATCH',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                action: 'REFUND_ORDER',
+                                orderId: order.id,
+                              }),
+                            });
+                            if (res.ok) {
+                              showToast('Возврат выполнен на баланс клиента');
+                              await loadOverview();
+                            }
+                          }}
+                          className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-rose-50 hover:text-rose-600"
+                        >
+                          Возврат на баланс
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
 
-        {/* ВКЛАДКА 4: ПОЛЬЗОВАТЕЛИ */}
+        {/* ВКЛАДКА 4: ПОЛЬЗОВАТЕЛИ И ПАРТНЕРЫ */}
         {tab === 'USERS' && (
           <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
             <div className="divide-y divide-slate-100">
@@ -943,11 +1117,26 @@ export default function AdminDashboardPage() {
                   className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 text-xs"
                 >
                   <div>
-                    <div className="font-bold text-slate-950">
-                      {u.displayName} ({u.email})
+                    <div className="flex flex-wrap items-center gap-2 font-bold text-slate-950">
+                      <span>
+                        {u.displayName} ({u.email})
+                      </span>
+                      {u.role === 'ADMIN' && (
+                        <span className="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-extrabold text-blue-700">
+                          АДМИНИСТРАТОР
+                        </span>
+                      )}
+                      {u.status === 'BLOCKED' && (
+                        <span className="rounded bg-rose-100 px-2 py-0.5 text-[10px] font-extrabold text-rose-700">
+                          ЗАБЛОКИРОВАН
+                        </span>
+                      )}
                     </div>
-                    <div className="text-slate-500">
-                      Баланс: <strong>{u.balanceRub} ₽</strong> · Открыто прогнозов:{' '}
+                    <div className="mt-0.5 text-slate-500">
+                      Баланс покупок: <strong>{u.balanceRub} ₽</strong> · Партнерский счет:{' '}
+                      <strong>{u.affiliateBalanceRub} ₽</strong> (ставка{' '}
+                      <strong>{u.revsharePercent}%</strong>, заработано всего:{' '}
+                      <strong>{u.affiliateTotalEarnedRub} ₽</strong>) · Открыто прогнозов:{' '}
                       <strong>{u.purchasedPredictionIds.length}</strong>
                     </div>
                   </div>
@@ -976,6 +1165,62 @@ export default function AdminDashboardPage() {
                     >
                       + Начислить ₽
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const pctStr = window.prompt(
+                          `Партнерский процент для ${u.displayName} (от 5 до 60%):`,
+                          String(u.revsharePercent),
+                        );
+                        if (!pctStr) return;
+                        const pct = Number(pctStr);
+                        if (!Number.isFinite(pct)) return;
+                        await fetch('/api/v1/admin/users', {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            action: 'SET_REVSHARE',
+                            userId: u.id,
+                            revsharePercent: pct,
+                          }),
+                        });
+                        showToast('Партнерский процент обновлен');
+                        await loadOverview();
+                      }}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 font-bold text-slate-700 hover:bg-slate-50"
+                    >
+                      Партнерка {u.revsharePercent}%
+                    </button>
+
+                    {u.role !== 'ADMIN' && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await fetch('/api/v1/admin/users', {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              action: 'TOGGLE_BLOCK',
+                              userId: u.id,
+                            }),
+                          });
+                          showToast(
+                            u.status === 'BLOCKED'
+                              ? 'Аккаунт разблокирован'
+                              : 'Аккаунт заблокирован',
+                          );
+                          await loadOverview();
+                        }}
+                        className={`rounded-lg border px-3 py-1.5 font-bold ${
+                          u.status === 'BLOCKED'
+                            ? 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
+                            : 'border-rose-200 text-rose-600 hover:bg-rose-50'
+                        }`}
+                      >
+                        {u.status === 'BLOCKED' ? 'Разблокировать' : 'Блок'}
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -983,17 +1228,17 @@ export default function AdminDashboardPage() {
           </div>
         )}
 
-        {/* ВКЛАДКА 5: НАСТРОЙКИ ЮKASSA И TELEGRAM */}
+        {/* ВКЛАДКА 5: НАСТРОЙКИ ЮKASSA, TELEGRAM, РЕКВИЗИТОВ И ПАРОЛЯ АДМИНА */}
         {tab === 'SETTINGS' && settingsDraft && (
           <form
             onSubmit={handleSaveSettings}
-            className="mt-6 max-w-2xl space-y-4 rounded-2xl border border-slate-200 bg-white p-6"
+            className="mt-6 max-w-3xl space-y-5 rounded-2xl border border-slate-200 bg-white p-6"
           >
             <h2 className="text-base font-extrabold text-slate-950">
-              Платежный шлюз ЮKassa, Telegram и реквизиты
+              Платежный шлюз ЮKassa, Telegram, реквизиты и доступ администратора
             </h2>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className="text-[11px] font-bold text-slate-500">Название бренда</label>
                 <input
@@ -1022,7 +1267,7 @@ export default function AdminDashboardPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className="text-[11px] font-bold text-slate-500">ЮKassa Shop ID</label>
                 <input
@@ -1049,35 +1294,155 @@ export default function AdminDashboardPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-extrabold text-slate-900">
+                  Интеграция с Telegram-каналом и контакты поддержки
+                </span>
+                <button
+                  type="button"
+                  onClick={handleTestTelegram}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-50"
+                >
+                  <Send className="h-3 w-3" />
+                  <span>Отправить тестовый пост в канал</span>
+                </button>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">
+                    Telegram Bot Token (@BotFather)
+                  </label>
+                  <input
+                    type="password"
+                    value={settingsDraft.telegramBotToken}
+                    onChange={(e) =>
+                      setSettingsDraft({
+                        ...settingsDraft,
+                        telegramBotToken: e.target.value,
+                      })
+                    }
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">
+                    ID канала для автопостинга (@channel или -100...)
+                  </label>
+                  <input
+                    value={settingsDraft.telegramChannelId}
+                    onChange={(e) =>
+                      setSettingsDraft({
+                        ...settingsDraft,
+                        telegramChannelId: e.target.value,
+                      })
+                    }
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">
+                    Ссылка на открытый Telegram-канал (в шапке сайта)
+                  </label>
+                  <input
+                    value={settingsDraft.freeTelegramUrl}
+                    onChange={(e) =>
+                      setSettingsDraft({
+                        ...settingsDraft,
+                        freeTelegramUrl: e.target.value,
+                      })
+                    }
+                    placeholder="https://t.me/your_channel"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500">
+                    Ссылка на поддержку в Telegram
+                  </label>
+                  <input
+                    value={settingsDraft.supportTelegram}
+                    onChange={(e) =>
+                      setSettingsDraft({
+                        ...settingsDraft,
+                        supportTelegram: e.target.value,
+                      })
+                    }
+                    placeholder="https://t.me/your_support"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="text-[11px] font-bold text-slate-500">Telegram Bot Token</label>
+                <label className="text-[11px] font-bold text-slate-500">
+                  Наименование продавца (ИП / Самозанятый / ООО для оферты)
+                </label>
                 <input
-                  type="password"
-                  value={settingsDraft.telegramBotToken}
+                  value={settingsDraft.legalSellerName}
                   onChange={(e) =>
                     setSettingsDraft({
                       ...settingsDraft,
-                      telegramBotToken: e.target.value,
+                      legalSellerName: e.target.value,
                     })
                   }
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
+                  placeholder="ИП Иванов И.И."
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
                 />
               </div>
               <div>
                 <label className="text-[11px] font-bold text-slate-500">
-                  ID открытого канала анонсов (@channel)
+                  ИНН продавца (появится в подвале и оферте, когда заполнен)
                 </label>
                 <input
-                  value={settingsDraft.telegramChannelId}
+                  value={settingsDraft.legalInn}
                   onChange={(e) =>
                     setSettingsDraft({
                       ...settingsDraft,
-                      telegramChannelId: e.target.value,
+                      legalInn: e.target.value,
                     })
                   }
+                  placeholder="770000000000"
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
                 />
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-4">
+              <div className="text-xs font-extrabold text-slate-900">
+                Безопасность: смена логина и пароля администратора
+              </div>
+              <p className="mt-0.5 text-[11px] text-slate-500">
+                Оставьте поля пустыми, если менять не нужно. Рекомендуем сменить стандартный пароль после установки на сервер.
+              </p>
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-600">
+                    Новый Email администратора
+                  </label>
+                  <input
+                    type="email"
+                    value={newAdminEmail}
+                    onChange={(e) => setNewAdminEmail(e.target.value)}
+                    placeholder="Оставьте пустым, чтобы не менять"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-600">
+                    Новый пароль администратора (от 6 символов)
+                  </label>
+                  <input
+                    type="password"
+                    value={newAdminPassword}
+                    onChange={(e) => setNewAdminPassword(e.target.value)}
+                    placeholder="Новый надежный пароль..."
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"
+                  />
+                </div>
               </div>
             </div>
 
@@ -1085,7 +1450,7 @@ export default function AdminDashboardPage() {
               type="submit"
               className="rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-blue-700"
             >
-              Сохранить настройки
+              Сохранить все настройки
             </button>
           </form>
         )}
