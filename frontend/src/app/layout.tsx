@@ -2,9 +2,12 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'VALUEX — Маркетплейс спортивной аналитики и прогнозов',
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_SITE_URL || 'http://194.67.125.155',
+  ),
+  title: 'VALUEX — Понятные прогнозы на спорт без подписок',
   description:
-    'Разовый доступ к аналитическим разборам матчей с фиксацией коэффициентов (SHA-256) и открытой верифицированной статистикой.',
+    'Поштучные прогнозы на футбол, хоккей и топ-матчи с понятной инструкцией для БК РФ, страховкой 100% на баланс и честной открытой статистикой.',
 };
 
 export default function RootLayout({

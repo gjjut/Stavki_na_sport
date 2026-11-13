@@ -6,7 +6,7 @@ import { PredictionDetailClient } from '@/components/predictions/PredictionDetai
 export async function generateMetadata({
   params,
 }: {
-  params: Promise<{ slug: string }>;
+  params: Promise<{ slug: string }> | { slug: string };
 }): Promise<Metadata> {
   const { slug } = await params;
   const state = await readState();
@@ -14,12 +14,14 @@ export async function generateMetadata({
 
   if (!prediction) {
     return {
-      title: `Событие не найдено | ${state.settings.brandName}`,
+      title: `Матч не найден | ${state.settings.brandName}`,
     };
   }
 
-  const title = `${prediction.homeTeam} — ${prediction.awayTeam} (${prediction.leagueName}) · Прогноз | ${state.settings.brandName}`;
-  const description = `${prediction.analysisTeaser} Рекомендуемый флэт ${prediction.stakeUnits.toFixed(1)}%. Проверка честности SHA-256 до стартового свистка.`;
+  const title = `${prediction.homeTeam} — ${prediction.awayTeam} (${prediction.leagueName}) · Прогноз на матч | ${state.settings.brandName}`;
+  const description = `${prediction.analysisTeaser} Понятный разбор для Фонбет, Винлайн и Пари без подписок${
+    prediction.insuredOnLoss ? ' + страховка 100% при минусе.' : '.'
+  }`;
 
   return {
     title,
@@ -28,6 +30,7 @@ export async function generateMetadata({
       title,
       description,
       type: 'article',
+      locale: 'ru_RU',
       siteName: state.settings.brandName,
     },
   };
@@ -36,7 +39,7 @@ export async function generateMetadata({
 export default async function PredictionDetailPage({
   params,
 }: {
-  params: Promise<{ slug: string }>;
+  params: Promise<{ slug: string }> | { slug: string };
 }) {
   const { slug } = await params;
   return <PredictionDetailClient slug={slug} />;

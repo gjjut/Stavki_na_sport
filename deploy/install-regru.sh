@@ -41,7 +41,7 @@ echo "[2/6] Обновление пакетов и установка Cron + Ngi
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 apt-get update -y
-apt-get install -y sudo curl git cron ca-certificates gnupg ufw nginx certbot python3-certbot-nginx
+apt-get install -y sudo curl git cron fonts-dejavu-core ca-certificates gnupg ufw nginx certbot python3-certbot-nginx
 systemctl enable --now cron >/dev/null 2>&1 || true
 
 # 3. Подготовка и актуализация .env файла
@@ -61,6 +61,9 @@ if [[ "${MODE}" != "docker" ]]; then
   if ! grep -q '^DATABASE_URL=' .env; then
     echo "DATABASE_URL=postgresql://tipster_user:strong_postgres_password@127.0.0.1:5432/tipster_db" >> .env
   fi
+fi
+if ! grep -q '^NEXT_PUBLIC_SITE_URL=' .env; then
+  echo "NEXT_PUBLIC_SITE_URL=http://${SERVER_IP}" >> .env
 fi
 sed -i 's/^TELEGRAM_BOT_TOKEN=.*replace_with.*/TELEGRAM_BOT_TOKEN=/' .env || true
 sed -i 's/^YOOKASSA_SECRET_KEY=.*replace_with.*/YOOKASSA_SECRET_KEY=/' .env || true
@@ -172,6 +175,11 @@ if [[ -d /etc/cron.d ]]; then
 EOF
   chmod 0644 /etc/cron.d/valuex-autopilot || true
 fi
+
+sleep 3
+echo "Проверка здоровья сервиса (/api/health):"
+curl -fsS http://127.0.0.1:3000/api/health || true
+echo ""
 
 echo "=================================================================="
 echo " ГОТОВО! Платформа успешно запущена на сервере Reg.ru Cloud!"

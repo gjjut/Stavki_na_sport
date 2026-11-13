@@ -158,6 +158,8 @@ export interface OrderTransaction {
   paymentMethod: 'yookassa' | 'internal_balance';
   status: 'PENDING' | 'SUCCEEDED' | 'CANCELED' | 'REFUNDED';
   insuranceCredited?: boolean;
+  insuredRefundedPredictionIds?: string[];
+  insuranceRefundedAmountRub?: number;
   receiptEmail: string;
   confirmationUrl: string | null;
   affiliateUserId: string | null;

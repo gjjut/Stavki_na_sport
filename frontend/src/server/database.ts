@@ -636,32 +636,43 @@ function normalizeLoadedState(
     promoCodes: Array.isArray(raw.promoCodes) ? raw.promoCodes : fallback.promoCodes,
     affiliateLinks: raw.affiliateLinks || fallback.affiliateLinks,
     payouts: raw.payouts || [],
-    processedWebhooks: raw.processedWebhooks || [],
+    processedWebhooks: Array.isArray(raw.processedWebhooks)
+      ? raw.processedWebhooks.slice(-1000)
+      : [],
     aiAutopilot,
     aiDrafts: Array.isArray(raw.aiDrafts) ? raw.aiDrafts : [],
-    aiLogs: Array.isArray(raw.aiLogs) ? raw.aiLogs.slice(0, 80) : fallback.aiLogs,
+    aiLogs: Array.isArray(raw.aiLogs) ? raw.aiLogs.slice(0, 100) : fallback.aiLogs,
   };
 }
 
 let pgPool: Pool | null = null;
-let pgAvailable: boolean | null = null;
+let pgLastFailAt = 0;
 let memoryFallback: PersistentState | null = null;
+let localWriteQueue: Promise<unknown> = Promise.resolve();
 
 async function getPostgresPool(): Promise<Pool | null> {
-  if (pgAvailable === false) return null;
-  if (pgPool && pgAvailable === true) return pgPool;
-
-  const dbUrl = process.env.DATABASE_URL;
+  const dbUrl = process.env.DATABASE_URL?.trim();
   if (!dbUrl) {
-    pgAvailable = false;
+    return null;
+  }
+
+  if (pgPool) return pgPool;
+
+  // Если при старте системы PostgreSQL еще поднимался, пробуем переподключиться раз в 10 секунд
+  if (pgLastFailAt > 0 && Date.now() - pgLastFailAt < 10_000) {
     return null;
   }
 
   try {
     const pool = new Pool({
       connectionString: dbUrl,
-      connectionTimeoutMillis: 2500,
+      connectionTimeoutMillis: 3000,
+      idleTimeoutMillis: 30_000,
       max: 8,
+    });
+    pool.on('error', () => {
+      pgPool = null;
+      pgLastFailAt = Date.now();
     });
     await pool.query(`
       CREATE TABLE IF NOT EXISTS valuex_app_storage (
@@ -671,12 +682,17 @@ async function getPostgresPool(): Promise<Pool | null> {
       );
     `);
     pgPool = pool;
-    pgAvailable = true;
+    pgLastFailAt = 0;
     return pool;
   } catch {
-    pgAvailable = false;
+    pgLastFailAt = Date.now();
     return null;
   }
+}
+
+export async function getDatabaseBackendStatus(): Promise<'postgres' | 'local_file'> {
+  const pool = await getPostgresPool();
+  return pool ? 'postgres' : 'local_file';
 }
 
 function readLocalFileState(): PersistentState {
@@ -741,11 +757,18 @@ export async function mutateState<T>(
 ): Promise<T> {
   const pool = await getPostgresPool();
   if (!pool) {
-    const state = readLocalFileState();
-    const cloned = structuredClone(state);
-    const result = await mutator(cloned);
-    writeLocalFileState(cloned);
-    return result;
+    // Строгая очередь записи, исключающая гонки при параллельных запросах
+    const runTask = localWriteQueue.then(async () => {
+      const state = readLocalFileState();
+      const cloned = structuredClone(state);
+      const result = await mutator(cloned);
+      cloned.processedWebhooks = cloned.processedWebhooks.slice(-1000);
+      cloned.aiLogs = cloned.aiLogs.slice(0, 100);
+      writeLocalFileState(cloned);
+      return result;
+    });
+    localWriteQueue = runTask.catch(() => undefined);
+    return runTask;
   }
 
   const client = await pool.connect();
@@ -768,6 +791,8 @@ export async function mutateState<T>(
       structuredClone(res.rows[0].payload) as unknown as Record<string, unknown>,
     );
     const result = await mutator(draft);
+    draft.processedWebhooks = draft.processedWebhooks.slice(-1000);
+    draft.aiLogs = draft.aiLogs.slice(0, 100);
 
     await client.query(
       `UPDATE valuex_app_storage SET payload = $1::jsonb, updated_at = NOW() WHERE store_key = 'main'`,
@@ -849,7 +874,7 @@ export function toPublicPredictionDto(
     analysisTeaser: record.analysisTeaser,
     isFeatured: Boolean(record.isFeatured),
     insuredOnLoss: Boolean(record.insuredOnLoss),
-    salesClosed: effectiveStatus === 'FINISHED',
+    salesClosed: effectiveStatus !== 'UPCOMING',
     isLocked: !unlocked,
     isPurchased: isBought,
     accessTier: record.accessTier,
@@ -1282,8 +1307,8 @@ export async function initiateOrderCheckout(params: {
     const matchedPreds = targetIds.map((id) => {
       const p = stateSnap.predictions.find((row) => row.id === id);
       if (!p) throw new Error('Одно из выбранных событий не найдено');
-      if (resolveEffectiveMatchStatus(p) === 'FINISHED') {
-        throw new Error(`Матч ${p.homeTeam} — ${p.awayTeam} уже завершен`);
+      if (resolveEffectiveMatchStatus(p) !== 'UPCOMING') {
+        throw new Error(`Продажа закрыта: матч «${p.homeTeam} — ${p.awayTeam}» уже начался`);
       }
       return p;
     });
@@ -1572,7 +1597,7 @@ export async function createPredictionByAdmin(input: {
       matchStatus: 'UPCOMING',
       stakePercent: stake,
       stakeUnits: stake,
-      bookmakerSource: input.bookmakerSource?.trim() || 'Pinnacle / Фонбет',
+      bookmakerSource: input.bookmakerSource?.trim() || 'Фонбет · Винлайн · Пари',
       analysisTeaser: input.analysisTeaser.trim(),
       isFeatured: Boolean(input.isFeatured),
       authorSource: input.authorSource ?? 'HUMAN',
@@ -1671,25 +1696,34 @@ export async function settlePredictionByAdmin(params: {
     pred.profitUnits = profit;
     pred.profitPercent = profit;
 
-    // Автоматическая страховка покупателей: возврат стоимости на кошелек при минусе или возврате
+    // Автоматическая страховка покупателей: независимый возврат доли каждого матча (включая наборы из 2-3 игр)
     let compensatedUsers = 0;
     if (
       pred.insuredOnLoss &&
       (params.resultStatus === 'LOSS' || params.resultStatus === 'PUSH')
     ) {
       for (const tx of state.transactions) {
-        if (
-          tx.status === 'SUCCEEDED' &&
-          !tx.insuranceCredited &&
-          tx.predictionIds.includes(pred.id)
-        ) {
-          const share = Math.round(tx.amountRub / Math.max(1, tx.predictionIds.length));
-          const buyer = state.users.find((u) => u.id === tx.userId);
-          if (buyer && share > 0) {
-            buyer.balanceRub += share;
-            tx.insuranceCredited = true;
-            compensatedUsers += 1;
-          }
+        if (tx.status !== 'SUCCEEDED' || !tx.predictionIds.includes(pred.id)) {
+          continue;
+        }
+        const alreadyRefundedIds = Array.isArray(tx.insuredRefundedPredictionIds)
+          ? tx.insuredRefundedPredictionIds
+          : tx.insuranceCredited
+            ? [...tx.predictionIds]
+            : [];
+
+        if (alreadyRefundedIds.includes(pred.id)) {
+          continue;
+        }
+
+        const share = Math.round(tx.amountRub / Math.max(1, tx.predictionIds.length));
+        const buyer = state.users.find((u) => u.id === tx.userId);
+        if (buyer && share > 0) {
+          buyer.balanceRub += share;
+          tx.insuredRefundedPredictionIds = [...alreadyRefundedIds, pred.id];
+          tx.insuranceRefundedAmountRub = (tx.insuranceRefundedAmountRub || 0) + share;
+          tx.insuranceCredited = true;
+          compensatedUsers += 1;
         }
       }
     }

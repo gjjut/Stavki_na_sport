@@ -5,9 +5,28 @@ import {
   signSessionToken,
 } from '@/server/auth';
 import { registerUserAccount, toSafeSessionUser } from '@/server/database';
+import { checkRateLimit, extractClientIp } from '@/server/rate-limit';
 
 export async function POST(req: NextRequest) {
   try {
+    const ip = extractClientIp(req.headers);
+    const rl = checkRateLimit({
+      key: `register:${ip}`,
+      limit: 8,
+      windowMs: 15 * 60_000,
+    });
+    if (!rl.allowed) {
+      return NextResponse.json(
+        {
+          error: `Превышен лимит регистраций с одного адреса. Подождите ${rl.retryAfterSec} сек.`,
+        },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(rl.retryAfterSec) },
+        },
+      );
+    }
+
     const body = (await req.json()) as {
       email: string;
       password: string;

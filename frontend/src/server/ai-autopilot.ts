@@ -1298,8 +1298,12 @@ export function evaluateMarketByScore(
   const numMatch = s.match(/\(([+-]?\d+(?:[.,]\d+)?)\)/);
   const lineVal = numMatch ? Number(numMatch[1].replace(',', '.')) : null;
 
-  if (s === 'победа 1' || s === 'п1') return homeScore > awayScore ? 'WIN' : 'LOSS';
-  if (s === 'победа 2' || s === 'п2') return awayScore > homeScore ? 'WIN' : 'LOSS';
+  if (s === 'победа 1' || s === 'п1' || s.startsWith('победа 1 ')) {
+    return homeScore > awayScore ? 'WIN' : 'LOSS';
+  }
+  if (s === 'победа 2' || s === 'п2' || s.startsWith('победа 2 ')) {
+    return awayScore > homeScore ? 'WIN' : 'LOSS';
+  }
   if (s === 'ничья' || s === 'x' || s === 'х') return homeScore === awayScore ? 'WIN' : 'LOSS';
   if (s === '1x' || s === '1х' || s.includes('первая не проиграет')) {
     return homeScore >= awayScore ? 'WIN' : 'LOSS';
@@ -1322,6 +1326,16 @@ export function evaluateMarketByScore(
     }
     if (s.includes('индивидуальный тотал 2 больше') || s.includes('итб2')) {
       if (awayScore > lineVal) return 'WIN';
+      if (awayScore === lineVal) return 'PUSH';
+      return 'LOSS';
+    }
+    if (s.includes('индивидуальный тотал 1 меньше') || s.includes('итм1')) {
+      if (homeScore < lineVal) return 'WIN';
+      if (homeScore === lineVal) return 'PUSH';
+      return 'LOSS';
+    }
+    if (s.includes('индивидуальный тотал 2 меньше') || s.includes('итм2')) {
+      if (awayScore < lineVal) return 'WIN';
       if (awayScore === lineVal) return 'PUSH';
       return 'LOSS';
     }
@@ -1373,18 +1387,36 @@ async function fetchCompletedScoresMap(): Promise<
           id: number | string;
           team1?: string;
           team2?: string;
+          name?: string;
           status?: number;
           score?: string;
           score1?: number;
           score2?: number;
+        }>;
+        sections?: Array<{
+          events?: Array<{
+            id: number | string;
+            team1?: string;
+            team2?: string;
+            name?: string;
+            status?: number;
+            score?: string;
+            score1?: number;
+            score2?: number;
+          }>;
         }>;
       }>(`${baseMirror}&lineDate=${dateStr}`, 4000, {
         Origin: 'https://www.fon.bet',
         Referer: 'https://www.fon.bet/',
       });
 
-      if (!data?.events) continue;
-      for (const ev of data.events) {
+      const allEvents = [
+        ...(data?.events || []),
+        ...(data?.sections?.flatMap((sec) => sec.events || []) || []),
+      ];
+      if (!allEvents.length) continue;
+
+      for (const ev of allEvents) {
         // В Фонбет status === 3 означает завершенный матч
         if (ev.status !== undefined && ev.status !== 3) continue;
         let hs = typeof ev.score1 === 'number' ? ev.score1 : NaN;
@@ -1398,10 +1430,20 @@ async function fetchCompletedScoresMap(): Promise<
           }
         }
 
+        let t1 = ev.team1?.trim() || '';
+        let t2 = ev.team2?.trim() || '';
+        if ((!t1 || !t2) && ev.name) {
+          const parts = ev.name.split(/\s+[—–-]\s+/);
+          if (parts.length === 2) {
+            t1 = parts[0].trim();
+            t2 = parts[1].trim();
+          }
+        }
+
         if (Number.isFinite(hs) && Number.isFinite(as)) {
           map.set(`fonbet_${ev.id}`, { homeScore: hs, awayScore: as });
-          if (ev.team1 && ev.team2) {
-            map.set(normalizeTeamKey(ev.team1, ev.team2), {
+          if (t1 && t2) {
+            map.set(normalizeTeamKey(t1, t2), {
               homeScore: hs,
               awayScore: as,
             });

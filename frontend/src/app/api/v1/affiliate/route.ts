@@ -13,7 +13,8 @@ export async function POST(req: NextRequest) {
           amountRub: number;
           method: 'SBP' | 'CARD' | 'USDT_TRC20';
           requisites: string;
-        };
+        }
+      | { action: 'CONVERT_TO_BALANCE' };
 
     if (body.action === 'CREATE_LINK') {
       const cleanCode = body.code.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
@@ -44,13 +45,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ link: created });
     }
 
+    if (body.action === 'CONVERT_TO_BALANCE') {
+      const transferredRub = await mutateState((state) => {
+        const u = state.users.find((row) => row.id === user.id);
+        if (!u || u.affiliateBalanceRub < 50) {
+          throw new Error('Для перевода на баланс нужно минимум 50 ₽ партнерских начислений');
+        }
+        const amt = u.affiliateBalanceRub;
+        u.affiliateBalanceRub = 0;
+        u.balanceRub += amt;
+        return amt;
+      });
+
+      return NextResponse.json({ transferredRub });
+    }
+
     if (body.action === 'REQUEST_PAYOUT') {
       const amount = Math.round(body.amountRub || 0);
       if (amount < 500) {
-        throw new Error('Минимальная сумма вывода — 500 ₽');
+        throw new Error('Минимальная сумма вывода на карту или СБП — 500 ₽');
       }
       if (!body.requisites?.trim()) {
-        throw new Error('Укажите реквизиты для выплаты');
+        throw new Error('Укажите телефон для СБП (и банк) или номер карты МИР');
       }
 
       const payout = await mutateState((state) => {
@@ -66,7 +82,7 @@ export async function POST(req: NextRequest) {
           userEmail: u.email,
           amountRub: amount,
           method: body.method,
-          requisites: body.requisites.trim(),
+          requisites: body.requisites.trim().slice(0, 160),
           status: 'PENDING' as const,
           createdAt: new Date().toISOString(),
           processedAt: null,

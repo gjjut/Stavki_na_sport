@@ -35,6 +35,9 @@ fi
 if ! grep -q '^DATABASE_URL=' "${ENV_FILE}"; then
   echo "DATABASE_URL=postgresql://tipster_user:strong_postgres_password@127.0.0.1:5432/tipster_db" >> "${ENV_FILE}"
 fi
+if ! grep -q '^NEXT_PUBLIC_SITE_URL=' "${ENV_FILE}"; then
+  echo "NEXT_PUBLIC_SITE_URL=http://${SERVER_IP}" >> "${ENV_FILE}"
+fi
 
 # Очищаем устаревшие демо-заглушки из старого .env, если они остались с v1
 sed -i 's/^TELEGRAM_BOT_TOKEN=.*replace_with.*/TELEGRAM_BOT_TOKEN=/' "${ENV_FILE}" || true
@@ -50,8 +53,8 @@ pm2 restart valuex-web || pm2 start npm --name "valuex-web" -- run start
 pm2 save
 
 # 4. Настройка системного планировщика Cron для ИИ-Автопилота 24/7 (каждые 15 минут)
-if ! command -v cron >/dev/null 2>&1; then
-  apt-get update -y && apt-get install -y cron || true
+if ! command -v cron >/dev/null 2>&1 || [[ ! -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf ]]; then
+  apt-get update -y && apt-get install -y cron fonts-dejavu-core || true
 fi
 if [[ -d /etc/cron.d ]]; then
   cat > /etc/cron.d/valuex-autopilot <<'EOF'
@@ -60,6 +63,11 @@ EOF
   chmod 0644 /etc/cron.d/valuex-autopilot || true
   systemctl enable --now cron >/dev/null 2>&1 || true
 fi
+
+sleep 3
+echo "Проверка здоровья сервиса (/api/health):"
+curl -fsS http://127.0.0.1:3000/api/health || true
+echo ""
 
 echo "=================================================================="
 echo " ГОТОВО! Обновленная версия v4 (с ИИ-Автопилотом 24/7) активна!"
