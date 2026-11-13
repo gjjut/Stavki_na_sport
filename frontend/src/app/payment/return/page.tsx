@@ -3,7 +3,8 @@
 import React, { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { CheckCircle2, Loader2, XCircle } from 'lucide-react';
+import { Check, CheckCircle2, Copy, Loader2, XCircle } from 'lucide-react';
+import { trackMetrikaGoal } from '@/lib/metrika';
 import type { OrderTransaction } from '@/server/types';
 
 function PaymentReturnInner() {
@@ -12,6 +13,23 @@ function PaymentReturnInner() {
   const [order, setOrder] = useState<OrderTransaction | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [savedCreds, setSavedCreds] = useState<{
+    email: string;
+    generatedPassword: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('valuex_new_credentials');
+      if (raw) {
+        setSavedCreds(JSON.parse(raw));
+        sessionStorage.removeItem('valuex_new_credentials');
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   useEffect(() => {
     if (!orderId) {
@@ -32,7 +50,15 @@ function PaymentReturnInner() {
         if (!res.ok || !json.order) {
           throw new Error(json.error || 'Не удалось проверить статус платежа');
         }
-        if (!cancelled) setOrder(json.order);
+        if (!cancelled) {
+          setOrder(json.order);
+          if (json.order.status === 'SUCCEEDED') {
+            trackMetrikaGoal('purchase_success', {
+              amount: json.order.amountRub,
+              kind: json.order.kind,
+            });
+          }
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Ошибка проверки заказа');
@@ -89,6 +115,45 @@ function PaymentReturnInner() {
             {order.title} · {order.amountRub.toLocaleString('ru-RU')} ₽
           </p>
 
+          {savedCreds && (
+            <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50/70 p-3.5 text-left text-xs">
+              <div className="font-extrabold text-slate-900">
+                Сохраните данные вашего автоматически созданного кабинета:
+              </div>
+              <div className="mt-1.5 flex items-center justify-between gap-2 rounded-xl border border-blue-100 bg-white px-3 py-2">
+                <div>
+                  <div className="text-[11px] text-slate-500">
+                    Логин: <strong className="text-slate-900">{savedCreds.email}</strong>
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Пароль:{' '}
+                    <strong className="font-mono text-blue-700">
+                      {savedCreds.generatedPassword}
+                    </strong>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(
+                      `Логин: ${savedCreds.email}\nПароль: ${savedCreds.generatedPassword}`,
+                    );
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800"
+                >
+                  {copied ? (
+                    <Check className="h-3.5 w-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="h-3.5 w-3.5" />
+                  )}
+                  <span>{copied ? 'Скопировано' : 'Скопировать'}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           <Link
             href="/cabinet"
             className="mt-6 inline-block w-full rounded-xl bg-blue-600 py-3.5 text-sm font-bold text-white shadow-md shadow-blue-600/25 hover:bg-blue-700"
@@ -109,7 +174,7 @@ function PaymentReturnInner() {
             href="/cabinet"
             className="mt-6 inline-block w-full rounded-xl bg-slate-900 py-3 text-xs font-bold text-white"
           >
-            Перейти в личный кабинет
+            Проверить в кабинете
           </Link>
         </>
       )}
@@ -119,14 +184,8 @@ function PaymentReturnInner() {
 
 export default function PaymentReturnPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[#F4F6FA] px-4">
-      <Suspense
-        fallback={
-          <div className="text-sm font-medium text-slate-500">
-            Проверка результата платежа...
-          </div>
-        }
-      >
+    <div className="flex min-h-screen items-center justify-center bg-[#F4F6FA] p-4">
+      <Suspense fallback={null}>
         <PaymentReturnInner />
       </Suspense>
     </div>

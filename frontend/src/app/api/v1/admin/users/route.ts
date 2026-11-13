@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { hashPassword } from '@/server/auth';
 import { mutateState, toSafeSessionUser } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
 
@@ -7,10 +8,16 @@ export async function PATCH(req: NextRequest) {
     const admin = await requireAdminAccount();
     const body = (await req.json()) as {
       userId: string;
-      action: 'TOGGLE_BLOCK' | 'ADD_BALANCE' | 'SET_REVSHARE' | 'GRANT_PREDICTION';
+      action:
+        | 'TOGGLE_BLOCK'
+        | 'ADD_BALANCE'
+        | 'SET_REVSHARE'
+        | 'GRANT_PREDICTION'
+        | 'RESET_PASSWORD';
       amountRub?: number;
       revsharePercent?: number;
       predictionId?: string;
+      newPassword?: string;
     };
 
     const updated = await mutateState((state) => {
@@ -33,6 +40,12 @@ export async function PATCH(req: NextRequest) {
         if (!u.purchasedPredictionIds.includes(body.predictionId)) {
           u.purchasedPredictionIds.push(body.predictionId);
         }
+      } else if (body.action === 'RESET_PASSWORD') {
+        const cleanPass = (body.newPassword || '').trim();
+        if (cleanPass.length < 6) {
+          throw new Error('Новый пароль должен содержать минимум 6 символов');
+        }
+        u.passwordHash = hashPassword(cleanPass);
       }
 
       return toSafeSessionUser(u);

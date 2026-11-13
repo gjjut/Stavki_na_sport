@@ -579,11 +579,53 @@ function pickOptimalValueMarket(params: {
   const options: Array<{ market: string; odds: number; bonus: number }> = [];
 
   if (params.p1 && params.p1 >= 1.65 && params.p1 <= 2.38) {
-    options.push({ market: 'Победа 1', odds: params.p1, bonus: 0.5 });
+    options.push({
+      market:
+        params.sport === 'HOCKEY' && !params.px ? 'Победа 1 в матче' : 'Победа 1',
+      odds: params.p1,
+      bonus: 0.45,
+    });
   }
   if (params.p2 && params.p2 >= 1.66 && params.p2 <= 2.35) {
-    options.push({ market: 'Победа 2', odds: params.p2, bonus: 0.35 });
+    options.push({
+      market:
+        params.sport === 'HOCKEY' && !params.px ? 'Победа 2 в матче' : 'Победа 2',
+      odds: params.p2,
+      bonus: 0.35,
+    });
   }
+
+  // Для хоккея (3 исхода с ничьей): пересчет в надежную «Победу в матче» с ОТ и буллитами
+  if (params.sport === 'HOCKEY' && params.px && params.p1 && params.p2) {
+    const ml1 = Number((params.p1 * 0.78).toFixed(2));
+    const ml2 = Number((params.p2 * 0.78).toFixed(2));
+    if (ml1 >= 1.66 && ml1 <= 2.25) {
+      options.push({ market: 'Победа 1 в матче', odds: ml1, bonus: 0.55 });
+    }
+    if (ml2 >= 1.68 && ml2 <= 2.25) {
+      options.push({ market: 'Победа 2 в матче', odds: ml2, bonus: 0.45 });
+    }
+  }
+
+  // Для явных фаворитов (1.42–1.63): аккуратная минусовая фора с рабочим коэффициентом
+  if (params.sport === 'FOOTBALL' && params.p1 && params.p1 >= 1.42 && params.p1 < 1.64) {
+    const hcpOdds = Number((params.p1 * 1.27).toFixed(2));
+    if (hcpOdds >= 1.72 && hcpOdds <= 2.15) {
+      options.push({ market: 'Фора 1 (-1.0)', odds: hcpOdds, bonus: 0.48 });
+    }
+  }
+  if (
+    (params.sport === 'TENNIS' || params.sport === 'ESPORTS') &&
+    params.p1 &&
+    params.p1 >= 1.38 &&
+    params.p1 < 1.62
+  ) {
+    const setHcp = Number((params.p1 * 1.34).toFixed(2));
+    if (setHcp >= 1.75 && setHcp <= 2.2) {
+      options.push({ market: 'Фора 1 (-1.5)', odds: setHcp, bonus: 0.42 });
+    }
+  }
+
   if (params.dc1x && params.dc1x >= 1.65 && params.dc1x <= 2.15) {
     options.push({ market: '1X', odds: params.dc1x, bonus: 0.4 });
   }
@@ -1709,9 +1751,63 @@ async function generateAnalystDossier(
   };
 }
 
-/**
- * Единый цикл сбора реальной линии и генерации прогнозов
- */
+function classifyMarketFamily(market: string): string {
+  const s = market.toLowerCase();
+  if (s.includes('тотал')) return 'TOTAL';
+  if (s.includes('фора')) return 'HANDICAP';
+  if (s === '1x' || s === 'x2' || s.includes('обе забьют')) return 'DOUBLE_BTTS';
+  return 'WIN';
+}
+
+function selectDiversifiedCandidates(
+  pool: ScannedFixtureCandidate[],
+  activePredictions: PredictionRecord[],
+  limitCount: number,
+): ScannedFixtureCandidate[] {
+  const sportCounts = new Map<SportType, number>();
+  const familyCounts = new Map<string, number>();
+
+  for (const p of activePredictions) {
+    if (p.resultStatus !== 'PENDING') continue;
+    sportCounts.set(p.sport, (sportCounts.get(p.sport) || 0) + 1);
+    const fam = classifyMarketFamily(p.selectionTitle);
+    familyCounts.set(fam, (familyCounts.get(fam) || 0) + 1);
+  }
+
+  const remaining = [...pool];
+  const chosen: ScannedFixtureCandidate[] = [];
+
+  while (chosen.length < limitCount && remaining.length > 0) {
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const c = remaining[i];
+      const spCount = sportCounts.get(c.sport) || 0;
+      const fam = classifyMarketFamily(c.suggestedMarket);
+      const famCount = familyCounts.get(fam) || 0;
+
+      // Поощряем разнообразие видов спорта и типов ставок на витрине
+      const sportPenalty = spCount >= 2 ? (spCount - 1) * 1.65 : spCount * 0.55;
+      const familyPenalty = famCount >= 2 ? (famCount - 1) * 1.25 : famCount * 0.4;
+      const score =
+        c.priorityBonus * 1.8 + c.valueEdgePct - sportPenalty - familyPenalty;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+
+    const picked = remaining.splice(bestIdx, 1)[0];
+    chosen.push(picked);
+    sportCounts.set(picked.sport, (sportCounts.get(picked.sport) || 0) + 1);
+    const pickedFam = classifyMarketFamily(picked.suggestedMarket);
+    familyCounts.set(pickedFam, (familyCounts.get(pickedFam) || 0) + 1);
+  }
+
+  return chosen;
+}
 export async function runAiScanAndGenerateCycle(options?: {
   forcePublish?: boolean;
   triggerLabel?: string;
@@ -1761,14 +1857,17 @@ export async function runAiScanAndGenerateCycle(options?: {
     1,
     options?.maxCountOverride ?? config.maxPicksPerRun,
   );
-  const filtered = rawCandidates
-    .filter(
-      (c) =>
-        !existingKeys.has(c.externalFixtureId) &&
-        !existingKeys.has(normalizeTeamKey(c.homeTeam, c.awayTeam)) &&
-        c.valueEdgePct >= config.minValueEdgePct,
-    )
-    .slice(0, limitCount);
+  const eligible = rawCandidates.filter(
+    (c) =>
+      !existingKeys.has(c.externalFixtureId) &&
+      !existingKeys.has(normalizeTeamKey(c.homeTeam, c.awayTeam)) &&
+      c.valueEdgePct >= config.minValueEdgePct,
+  );
+  const filtered = selectDiversifiedCandidates(
+    eligible,
+    stateSnapshot.predictions,
+    limitCount,
+  );
 
   await mutateState((s) => {
     s.aiAutopilot.lastScanAt = new Date().toISOString();
@@ -1962,26 +2061,59 @@ export function evaluateMarketByScore(
   selectionTitle: string,
   homeScore: number,
   awayScore: number,
+  isOvertime = false,
 ): ResultStatus | null {
   const s = selectionTitle.toLowerCase().trim();
   const total = homeScore + awayScore;
   const diff = homeScore - awayScore;
 
-  const numMatch = s.match(/\(([+-]?\d+(?:[.,]\d+)?)\)/);
-  const lineVal = numMatch ? Number(numMatch[1].replace(',', '.')) : null;
+  // Ищем число линии как в скобках (-1.0), так и без скобок (Тотал больше 2.5 / Фора 1 -1.5)
+  const parenMatch = s.match(/\(([+-]?\d+(?:[.,]\d+)?)\)/);
+  const tailMatch = s.match(
+    /(?:больше|меньше|тб|тм|итб1?|итб2|итм1?|итм2|фора\s*[12])\s*([+-]?\d+(?:[.,]\d+)?)/,
+  );
+  const rawNum = parenMatch?.[1] ?? tailMatch?.[1] ?? null;
+  const lineVal = rawNum !== null ? Number(rawNum.replace(',', '.')) : null;
 
+  // Победа с учетом ОТ и буллитов («Победа 1 в матче», «Итоговая победа 1»)
+  if (
+    (s.includes('победа 1') || s.startsWith('п1')) &&
+    (s.includes('в матче') || s.includes('от') || s.includes('итогов'))
+  ) {
+    return homeScore > awayScore ? 'WIN' : 'LOSS';
+  }
+  if (
+    (s.includes('победа 2') || s.startsWith('п2')) &&
+    (s.includes('в матче') || s.includes('от') || s.includes('итогов'))
+  ) {
+    return awayScore > homeScore ? 'WIN' : 'LOSS';
+  }
+
+  // Победа в основное время
   if (s === 'победа 1' || s === 'п1' || s.startsWith('победа 1 ')) {
+    if (isOvertime) return 'LOSS';
     return homeScore > awayScore ? 'WIN' : 'LOSS';
   }
   if (s === 'победа 2' || s === 'п2' || s.startsWith('победа 2 ')) {
+    if (isOvertime) return 'LOSS';
     return awayScore > homeScore ? 'WIN' : 'LOSS';
   }
-  if (s === 'ничья' || s === 'x' || s === 'х') return homeScore === awayScore ? 'WIN' : 'LOSS';
+  if (s === 'ничья' || s === 'x' || s === 'х') {
+    if (isOvertime) return 'WIN';
+    return homeScore === awayScore ? 'WIN' : 'LOSS';
+  }
   if (s === '1x' || s === '1х' || s.includes('первая не проиграет')) {
+    if (isOvertime) return 'WIN';
     return homeScore >= awayScore ? 'WIN' : 'LOSS';
   }
   if (s === 'x2' || s === 'х2' || s.includes('вторая не проиграет')) {
+    if (isOvertime) return 'WIN';
     return awayScore >= homeScore ? 'WIN' : 'LOSS';
+  }
+
+  if (s.includes('обе забьют') && (s.includes('тб') || s.includes('больше'))) {
+    const reqTotal = lineVal ?? 2.5;
+    return homeScore > 0 && awayScore > 0 && total > reqTotal ? 'WIN' : 'LOSS';
   }
   if (s.includes('обе забьют: да') || s === 'обе забьют') {
     return homeScore > 0 && awayScore > 0 ? 'WIN' : 'LOSS';
@@ -1990,7 +2122,7 @@ export function evaluateMarketByScore(
     return homeScore === 0 || awayScore === 0 ? 'WIN' : 'LOSS';
   }
 
-  if (lineVal !== null) {
+  if (lineVal !== null && Number.isFinite(lineVal)) {
     if (s.includes('индивидуальный тотал 1 больше') || s.includes('итб1')) {
       if (homeScore > lineVal) return 'WIN';
       if (homeScore === lineVal) return 'PUSH';
@@ -2022,13 +2154,15 @@ export function evaluateMarketByScore(
       return 'LOSS';
     }
     if (s.includes('фора 1')) {
-      const adj = diff + lineVal;
+      const effDiff = isOvertime && Math.abs(lineVal) < 0.01 ? 0 : diff;
+      const adj = effDiff + lineVal;
       if (adj > 0.25) return 'WIN';
       if (Math.abs(adj) <= 0.01) return 'PUSH';
       return 'LOSS';
     }
     if (s.includes('фора 2')) {
-      const adj = -diff + lineVal;
+      const effDiff = isOvertime && Math.abs(lineVal) < 0.01 ? 0 : -diff;
+      const adj = effDiff + lineVal;
       if (adj > 0.25) return 'WIN';
       if (Math.abs(adj) <= 0.01) return 'PUSH';
       return 'LOSS';
@@ -2042,9 +2176,12 @@ export function evaluateMarketByScore(
  * Сбор официальных итоговых счетов из шлюза результатов Фонбет РФ + резервного Матч-центра
  */
 async function fetchCompletedScoresMap(): Promise<
-  Map<string, { homeScore: number; awayScore: number }>
+  Map<string, { homeScore: number; awayScore: number; isOvertime?: boolean }>
 > {
-  const map = new Map<string, { homeScore: number; awayScore: number }>();
+  const map = new Map<
+    string,
+    { homeScore: number; awayScore: number; isOvertime?: boolean }
+  >();
 
   const datesToCheck = [
     new Date().toISOString().slice(0, 10),
@@ -2092,9 +2229,11 @@ async function fetchCompletedScoresMap(): Promise<
         if (ev.status !== undefined && ev.status !== 3) continue;
         let hs = typeof ev.score1 === 'number' ? ev.score1 : NaN;
         let as = typeof ev.score2 === 'number' ? ev.score2 : NaN;
+        const rawScoreStr = typeof ev.score === 'string' ? ev.score : '';
+        const isOvertime = /\b(от|от\.|бул|б\.|ot|so)\b/i.test(rawScoreStr);
 
-        if ((Number.isNaN(hs) || Number.isNaN(as)) && typeof ev.score === 'string') {
-          const m = ev.score.match(/(\d+)\s*[:\-]\s*(\d+)/);
+        if ((Number.isNaN(hs) || Number.isNaN(as)) && rawScoreStr) {
+          const m = rawScoreStr.match(/(\d+)\s*[:\-]\s*(\d+)/);
           if (m) {
             hs = Number(m[1]);
             as = Number(m[2]);
@@ -2112,11 +2251,12 @@ async function fetchCompletedScoresMap(): Promise<
         }
 
         if (Number.isFinite(hs) && Number.isFinite(as)) {
-          map.set(`fonbet_${ev.id}`, { homeScore: hs, awayScore: as });
+          map.set(`fonbet_${ev.id}`, { homeScore: hs, awayScore: as, isOvertime });
           if (t1 && t2) {
             map.set(normalizeTeamKey(t1, t2), {
               homeScore: hs,
               awayScore: as,
+              isOvertime,
             });
           }
         }
@@ -2219,10 +2359,13 @@ export async function runAutoSettlementCycle(): Promise<{
       pred.selectionTitle,
       scorePair.homeScore,
       scorePair.awayScore,
+      Boolean(scorePair.isOvertime),
     );
     if (!evaluated) continue;
 
-    const finalScoreStr = `${scorePair.homeScore}:${scorePair.awayScore}`;
+    const finalScoreStr = `${scorePair.homeScore}:${scorePair.awayScore}${
+      scorePair.isOvertime ? ' (ОТ)' : ''
+    }`;
     const res = await settlePredictionByAdmin({
       predictionId: pred.id,
       resultStatus: evaluated,

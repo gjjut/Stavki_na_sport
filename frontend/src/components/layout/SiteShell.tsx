@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
+import Script from 'next/script';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   LogOut,
@@ -26,6 +27,7 @@ export interface PublicBrandInfo {
   defaultSinglePriceRub: number;
   bundle2DiscountPct?: number;
   bundle3DiscountPct?: number;
+  yandexMetrikaId?: string;
 }
 
 interface SiteShellProps {
@@ -83,8 +85,33 @@ export const SiteShell: React.FC<SiteShellProps> = ({
     brand.legalInn,
   );
 
+  const metrikaNumericId = Number((brand.yandexMetrikaId || '').replace(/\D/g, ''));
+
+  useEffect(() => {
+    if (metrikaNumericId > 0 && typeof window !== 'undefined') {
+      window.__valuexMetrikaId = metrikaNumericId;
+    }
+  }, [metrikaNumericId]);
+
   return (
     <div className="flex min-h-screen flex-col bg-[#F4F6FA] text-slate-900">
+      {metrikaNumericId > 0 && (
+        <Script
+          id={`ym-counter-${metrikaNumericId}`}
+          strategy="afterInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `
+              window.__valuexMetrikaId = ${metrikaNumericId};
+              (function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
+              m[i].l=1*new Date();
+              for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}
+              k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})
+              (window, document, "script", "https://mc.yandex.ru/metrika/tag.js", "ym");
+              ym(${metrikaNumericId}, "init", { clickmap:true, trackLinks:true, accurateTrackBounce:true, webvisor:true });
+            `,
+          }}
+        />
+      )}
       {/* КОНТРАСТНАЯ ТЕМНАЯ ШАПКА */}
       <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0B0F19]/95 text-white backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">

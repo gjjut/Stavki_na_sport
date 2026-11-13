@@ -177,3 +177,116 @@ export async function sendTelegramChannelAnnouncement(
     };
   }
 }
+
+export async function sendTelegramDirectMessage(
+  settings: PlatformSettings,
+  chatId: string | null | undefined,
+  htmlText: string,
+): Promise<{ sent: boolean; error?: string }> {
+  const token = (settings.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  const cleanChat = (chatId || '').trim();
+  if (!token || !cleanChat || token.includes('replace_with')) {
+    return { sent: false, error: 'Бот или Chat ID не подключены' };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: cleanChat,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        text: htmlText,
+      }),
+    });
+    clearTimeout(timer);
+    const data = (await res.json()) as { ok: boolean; description?: string };
+    if (!data.ok) {
+      return { sent: false, error: data.description || 'Ошибка отправки в Telegram' };
+    }
+    return { sent: true };
+  } catch (err) {
+    return {
+      sent: false,
+      error: err instanceof Error ? err.message : 'Сетевая ошибка Telegram',
+    };
+  }
+}
+
+export async function fetchTelegramBotUsername(
+  botToken: string,
+): Promise<string | null> {
+  const token = (botToken || '').trim();
+  if (!token || token.includes('replace_with')) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+    clearTimeout(timer);
+    const json = (await res.json()) as {
+      ok?: boolean;
+      result?: { username?: string };
+    };
+    if (json.ok && json.result?.username) {
+      return json.result.username.replace(/^@/, '');
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function pollTelegramUpdatesForLinkCode(
+  botToken: string,
+  linkCode: string,
+): Promise<{ chatId: string; username: string | null } | null> {
+  const token = (botToken || '').trim();
+  if (!token || !linkCode || token.includes('replace_with')) return null;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(
+      `https://api.telegram.org/bot${token}/getUpdates?limit=60&allowed_updates=%5B%22message%22%5D`,
+      { signal: controller.signal, cache: 'no-store' },
+    );
+    clearTimeout(timer);
+    const json = (await res.json()) as {
+      ok?: boolean;
+      result?: Array<{
+        message?: {
+          text?: string;
+          chat?: { id?: number | string; username?: string };
+        };
+      }>;
+    };
+    if (!json.ok || !Array.isArray(json.result)) return null;
+
+    for (let i = json.result.length - 1; i >= 0; i--) {
+      const msg = json.result[i]?.message;
+      const text = (msg?.text || '').trim();
+      if (
+        msg?.chat?.id &&
+        (text === `/start ${linkCode}` ||
+          text === linkCode ||
+          text.endsWith(` ${linkCode}`))
+      ) {
+        return {
+          chatId: String(msg.chat.id),
+          username: msg.chat.username ? `@${msg.chat.username}` : null,
+        };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+

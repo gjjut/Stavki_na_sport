@@ -6,12 +6,15 @@ import { useRouter } from 'next/navigation';
 import {
   ArrowRightLeft,
   Banknote,
+  BellRing,
   Check,
   CheckCircle2,
   Copy,
   KeyRound,
+  Loader2,
   PlusCircle,
   Receipt,
+  Send,
   Share2,
   ShieldCheck,
   Sparkles,
@@ -36,6 +39,8 @@ import type {
 
 interface CabinetPayload {
   user: SafeSessionUser;
+  telegramBotUsername?: string;
+  telegramBotConfigured?: boolean;
   purchasedPredictions: PublicPredictionDto[];
   orders: OrderTransaction[];
   affiliateLinks: AffiliateLinkRecord[];
@@ -67,6 +72,35 @@ export default function CabinetPage() {
   const [newPassword, setNewPassword] = useState('');
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileBusy, setProfileBusy] = useState(false);
+  const [tgBusy, setTgBusy] = useState(false);
+
+  const handleTelegramAction = async (
+    action: 'VERIFY_TELEGRAM_LINK' | 'UNLINK_TELEGRAM' | 'TEST_TELEGRAM_DM',
+  ) => {
+    setTgBusy(true);
+    try {
+      const res = await fetch('/api/v1/cabinet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        showToast(json.error || 'Не удалось выполнить операцию Telegram');
+        return;
+      }
+      if (action === 'VERIFY_TELEGRAM_LINK') {
+        showToast('Telegram успешно подключен! Проверьте личные сообщения в боте.');
+      } else if (action === 'TEST_TELEGRAM_DM') {
+        showToast('Тестовое уведомление отправлено в ваш Telegram!');
+      } else {
+        showToast('Уведомления в Telegram отключены');
+      }
+      await loadAll();
+    } finally {
+      setTgBusy(false);
+    }
+  };
 
   const showToast = (msg: string) => {
     setNotice(msg);
@@ -348,6 +382,112 @@ export default function CabinetPage() {
                 </div>
               )}
             </div>
+          </div>
+        </div>
+
+        {/* Личные уведомления покупателя в Telegram */}
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-blue-200/80 bg-white p-5 shadow-xs">
+          <div className="flex items-start gap-3.5">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+              <BellRing className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-sm font-extrabold text-slate-950">
+                  Личные уведомления в Telegram
+                </h2>
+                {cabinet?.user.telegramChatId ? (
+                  <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
+                    Подключено
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
+                    Не подключено
+                  </span>
+                )}
+              </div>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {cabinet?.user.telegramChatId
+                  ? 'Все купленные прогнозы, расчеты матчей и возвраты 100% по страховке мгновенно дублируются вам в личные сообщения.'
+                  : 'Подключите нашего бота в 2 клика — купленные прогнозы и уведомления о возврате страховки на баланс будут приходить прямо в ваш Telegram (плюс мгновенный сброс пароля по коду).'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {cabinet?.user.telegramChatId ? (
+              <>
+                <button
+                  type="button"
+                  disabled={tgBusy}
+                  onClick={() => handleTelegramAction('TEST_TELEGRAM_DM')}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3.5 py-2 text-xs font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+                >
+                  {tgBusy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Send className="h-3.5 w-3.5" />
+                  )}
+                  <span>Проверить сообщение</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={tgBusy}
+                  onClick={() => handleTelegramAction('UNLINK_TELEGRAM')}
+                  className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-50 hover:text-rose-600"
+                >
+                  Отключить
+                </button>
+              </>
+            ) : cabinet?.telegramBotConfigured ? (
+              <>
+                {cabinet.telegramBotUsername ? (
+                  <a
+                    href={`https://t.me/${cabinet.telegramBotUsername}?start=${cabinet.user.telegramLinkCode}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-xs hover:bg-blue-700"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    <span>1. Запустить бота в Telegram</span>
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await navigator.clipboard.writeText(
+                        `/start ${cabinet.user.telegramLinkCode}`,
+                      );
+                      showToast(
+                        `Команда /start ${cabinet.user.telegramLinkCode} скопирована — отправьте её боту и нажмите «Подтвердить»`,
+                      );
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs font-bold text-slate-800 hover:bg-white"
+                  >
+                    <Copy className="h-3.5 w-3.5 text-blue-600" />
+                    <span>Скопировать код /start {cabinet.user.telegramLinkCode}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  disabled={tgBusy}
+                  onClick={() => handleTelegramAction('VERIFY_TELEGRAM_LINK')}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {tgBusy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                  )}
+                  <span>2. Подтвердить привязку</span>
+                </button>
+              </>
+            ) : (
+              <span className="text-xs text-slate-400">
+                Станет активно сразу после подключения Telegram-бота в настройках сайта
+              </span>
+            )}
           </div>
         </div>
 

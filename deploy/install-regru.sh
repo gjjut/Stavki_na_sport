@@ -168,10 +168,12 @@ ufw allow 22/tcp >/dev/null 2>&1 || true
 ufw allow 80/tcp >/dev/null 2>&1 || true
 ufw allow 443/tcp >/dev/null 2>&1 || true
 
-# Настройка системного планировщика Cron для ИИ-Автопилота 24/7
+# Настройка системного планировщика Cron (ИИ-Автопилот каждые 15 мин + ежедневный бэкап БД в 03:30)
+chmod +x "${PROJECT_DIR}/deploy/"*.sh || true
 if [[ -d /etc/cron.d ]]; then
-  cat > /etc/cron.d/valuex-autopilot <<'EOF'
+  cat > /etc/cron.d/valuex-autopilot <<EOF
 */15 * * * * root curl -fsS http://127.0.0.1:3000/api/v1/cron/autopilot >/dev/null 2>&1 || true
+30 3 * * * root bash ${PROJECT_DIR}/deploy/backup-db.sh >/dev/null 2>&1 || true
 EOF
   chmod 0644 /etc/cron.d/valuex-autopilot || true
 fi
@@ -185,8 +187,6 @@ echo "=================================================================="
 echo " ГОТОВО! Платформа успешно запущена на сервере Reg.ru Cloud!"
 echo " Откройте в браузере: http://${SERVER_IP}"
 echo ""
-echo " Чтобы привязать домен и включить бесплатный HTTPS (для ЮKassa):"
-echo "   sed -i 's/server_name _;/server_name ваш-домен.ру www.ваш-домен.ру;/' /etc/nginx/sites-available/valuex"
-echo "   nginx -t && systemctl reload nginx"
-echo "   certbot --nginx -d ваш-домен.ру -d www.ваш-домен.ру"
+echo " Чтобы привязать ваш домен и включить бесплатный HTTPS (для ЮKassa):"
+echo "   bash deploy/setup-domain-ssl.sh ваш-домен.ru ваш@email.ru"
 echo "=================================================================="

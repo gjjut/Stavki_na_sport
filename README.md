@@ -46,6 +46,13 @@ cd /opt/Stavki_na_sport
 bash deploy/install-regru.sh
 ```
 
+### Привязка домена и бесплатный HTTPS SSL (для боевой ЮKassa)
+Направьте A-запись вашего домена на IP сервера в Reg.ru и выполните одну команду:
+```bash
+cd /opt/Stavki_na_sport && bash deploy/setup-domain-ssl.sh ваш-домен.ru ваш@email.ru
+```
+Скрипт сам настроит Nginx, выпустит бесплатный сертификат Let's Encrypt с автопродлением и выведет готовый адрес Webhook для личного кабинета ЮKassa. Ежедневные резервные копии БД сохраняются автоматически в `/var/backups/valuex/`.
+
 ### Стартовый вход администратора
 - Страница входа: `/login`
 - Логин: `admin@valuex.pro`

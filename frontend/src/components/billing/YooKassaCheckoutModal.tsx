@@ -3,14 +3,19 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
+  Check,
   CheckCircle2,
+  Copy,
   CreditCard,
+  KeyRound,
   Loader2,
+  Mail,
   ShieldCheck,
   Tag,
   Wallet,
   X,
 } from 'lucide-react';
+import { trackMetrikaGoal } from '@/lib/metrika';
 import type { OrderTransaction, SafeSessionUser } from '@/server/types';
 
 export interface CheckoutModalTarget {
@@ -45,6 +50,17 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
     subtotalRub: number;
   } | null>(null);
   const [promoMessage, setPromoMessage] = useState<string | null>(null);
+
+  // Поля бесшовной покупки в 1 шаг для гостя
+  const [guestEmail, setGuestEmail] = useState('');
+  const [needPassword, setNeedPassword] = useState(false);
+  const [guestPassword, setGuestPassword] = useState('');
+  const [autoCreatedCreds, setAutoCreatedCreds] = useState<{
+    email: string;
+    generatedPassword: string;
+  } | null>(null);
+  const [copiedPass, setCopiedPass] = useState(false);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [paidOrder, setPaidOrder] = useState<OrderTransaction | null>(null);
@@ -55,6 +71,12 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
     setPromoMessage(null);
     setError(null);
     setPaidOrder(null);
+    setNeedPassword(false);
+    setGuestPassword('');
+    setAutoCreatedCreds(null);
+    if (target) {
+      trackMetrikaGoal('open_checkout', { kind: target.kind, price: target.priceRub });
+    }
   }, [target]);
 
   if (!target) return null;
@@ -100,6 +122,13 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
   };
 
   const handlePay = async () => {
+    if (!viewer && (!guestEmail.trim() || !guestEmail.includes('@'))) {
+      setError(
+        'Введите ваш E-mail — мы отправим туда чек и сразу откроем доступ к прогнозу',
+      );
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
@@ -112,17 +141,39 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
           predictionIds: target.predictionIds,
           promoCode: appliedPromo?.code || undefined,
           topupAmountRub: target.kind === 'BALANCE_TOPUP' ? target.priceRub : undefined,
-          paymentMethod: method,
+          paymentMethod: viewer ? method : 'yookassa',
+          guestEmail: !viewer ? guestEmail.trim() : undefined,
+          guestPassword: !viewer && needPassword ? guestPassword : undefined,
         }),
       });
       const json = (await res.json()) as {
         order?: OrderTransaction;
         paidImmediately?: boolean;
+        autoCreatedAccount?: { email: string; generatedPassword: string } | null;
+        code?: string;
         error?: string;
       };
 
+      if (res.status === 409 && json.code === 'EMAIL_EXISTS_NEED_PASSWORD') {
+        setNeedPassword(true);
+        setError(json.error || 'Введите пароль от существующего кабинета');
+        return;
+      }
+
       if (!res.ok || !json.order) {
         throw new Error(json.error || 'Не удалось создать заказ');
+      }
+
+      if (json.autoCreatedAccount) {
+        setAutoCreatedCreds(json.autoCreatedAccount);
+        try {
+          sessionStorage.setItem(
+            'valuex_new_credentials',
+            JSON.stringify(json.autoCreatedAccount),
+          );
+        } catch {
+          // ignore storage quota
+        }
       }
 
       if (json.order.confirmationUrl) {
@@ -131,6 +182,10 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
       }
 
       if (json.paidImmediately) {
+        trackMetrikaGoal('purchase_success', {
+          amount: json.order.amountRub,
+          kind: json.order.kind,
+        });
         setPaidOrder(json.order);
         await onSuccess();
       }
@@ -149,10 +204,10 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
             <ShieldCheck className="h-4 w-4 text-blue-400" />
             <span className="text-sm font-bold">
               {target.kind === 'BUNDLE_PREDICTIONS'
-                ? 'Покупка пакета событий'
+                ? 'Покупка пакета со скидкой'
                 : target.kind === 'BALANCE_TOPUP'
                   ? 'Пополнение кошелька'
-                  : 'Разовая покупка прогноза'}
+                  : 'Быстрая покупка прогноза'}
             </span>
           </div>
           <button
@@ -187,28 +242,8 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
             </div>
           </div>
 
-          {!viewer ? (
-            <div className="mt-5 space-y-3.5">
-              <p className="text-xs leading-relaxed text-slate-600">
-                Войдите или создайте аккаунт за 15 секунд — приобретенные прогнозы и страховка на баланс закрепятся за вашим кабинетом.
-              </p>
-              <div className="grid grid-cols-2 gap-2.5">
-                <Link
-                  href="/login"
-                  className="rounded-xl border border-slate-200 bg-white py-3 text-center text-sm font-bold text-slate-800 transition hover:bg-slate-50"
-                >
-                  Войти
-                </Link>
-                <Link
-                  href="/register"
-                  className="rounded-xl bg-blue-600 py-3 text-center text-sm font-bold text-white shadow-sm shadow-blue-600/25 transition hover:bg-blue-700"
-                >
-                  Регистрация
-                </Link>
-              </div>
-            </div>
-          ) : paidOrder ? (
-            <div className="mt-6 text-center">
+          {paidOrder ? (
+            <div className="mt-5 text-center">
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600">
                 <CheckCircle2 className="h-6 w-6" />
               </div>
@@ -216,19 +251,123 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                 Доступ успешно открыт!
               </h4>
               <p className="mt-1 text-xs text-slate-500">
-                Исход, зафиксированный коэффициент и аналитический разбор уже разблокированы на карточке и в разделе «Мои покупки».
+                Точный исход, коэффициент и подробный разбор уже разблокированы прямо на карточке матча и в разделе «Мои прогнозы».
               </p>
+
+              {autoCreatedCreds && (
+                <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50/70 p-3.5 text-left text-xs">
+                  <div className="font-extrabold text-slate-900">
+                    Ваш личный кабинет создан автоматически (для страховки и истории):
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between gap-2 rounded-xl border border-blue-100 bg-white px-3 py-2">
+                    <div>
+                      <div className="text-[11px] text-slate-500">
+                        Логин: <strong className="text-slate-900">{autoCreatedCreds.email}</strong>
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Пароль:{' '}
+                        <strong className="font-mono text-blue-700">
+                          {autoCreatedCreds.generatedPassword}
+                        </strong>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(
+                          `Логин: ${autoCreatedCreds.email}\nПароль: ${autoCreatedCreds.generatedPassword}`,
+                        );
+                        setCopiedPass(true);
+                        setTimeout(() => setCopiedPass(false), 2000);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800"
+                    >
+                      {copiedPass ? (
+                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                      )}
+                      <span>{copiedPass ? 'Скопировано' : 'Скопировать'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <button
                 type="button"
                 onClick={onClose}
                 className="mt-5 w-full rounded-xl bg-blue-600 py-3 text-sm font-bold text-white hover:bg-blue-700"
               >
-                Перейти к открытым прогнозам
+                Смотреть открытый прогноз
               </button>
             </div>
           ) : (
-            <div className="mt-4 space-y-4">
+            <div className="mt-4 space-y-3.5">
+              {/* Если покупатель еще не вошел — покупка в 1 шаг по Email без ухода со страницы */}
+              {!viewer && (
+                <div className="space-y-2.5 rounded-2xl border border-blue-100 bg-blue-50/40 p-3.5">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700">
+                      Ваш E-mail (создадим кабинет автоматически и пришлем чек):
+                    </label>
+                    <div className="relative mt-1">
+                      <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="email"
+                        required
+                        value={guestEmail}
+                        onChange={(e) => {
+                          setGuestEmail(e.target.value);
+                          if (needPassword) setNeedPassword(false);
+                        }}
+                        placeholder="name@mail.ru"
+                        className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {needPassword && (
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <label className="block text-[11px] font-bold text-slate-700">
+                          Пароль от вашего кабинета:
+                        </label>
+                        <Link
+                          href="/forgot-password"
+                          className="text-[11px] font-bold text-blue-600 hover:underline"
+                        >
+                          Забыли пароль?
+                        </Link>
+                      </div>
+                      <div className="relative mt-1">
+                        <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="password"
+                          required
+                          value={guestPassword}
+                          onChange={(e) => setGuestPassword(e.target.value)}
+                          placeholder="Введите ваш пароль..."
+                          className="w-full rounded-xl border border-blue-300 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-900 focus:border-blue-600 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {!needPassword && (
+                    <div className="flex items-center justify-between text-[11px] text-slate-500">
+                      <span>Без анкет — прогноз откроется сразу</span>
+                      <button
+                        type="button"
+                        onClick={() => setNeedPassword(true)}
+                        className="font-bold text-blue-600 hover:underline"
+                      >
+                        Уже есть аккаунт?
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Блок ввода промокода (только для событий) */}
               {target.kind !== 'BALANCE_TOPUP' && (
                 <div>
@@ -268,7 +407,7 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                   type="button"
                   onClick={() => setMethod('yookassa')}
                   className={`flex w-full items-center gap-3 rounded-2xl border p-3.5 text-left transition ${
-                    method === 'yookassa'
+                    method === 'yookassa' || !viewer
                       ? 'border-blue-600 bg-blue-50/50 ring-1 ring-blue-600'
                       : 'border-slate-200 bg-white hover:border-slate-300'
                   }`}
@@ -279,12 +418,13 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                       Карта РФ / СБП (ЮKassa)
                     </div>
                     <div className="text-[11px] text-slate-500">
-                      МИР, СБП QR, SberPay, T-Pay · Чек 54-ФЗ на {viewer.email}
+                      МИР, СБП QR, SberPay, T-Pay · Чек 54-ФЗ на{' '}
+                      {viewer?.email || guestEmail || 'ваш E-mail'}
                     </div>
                   </div>
                 </button>
 
-                {target.kind !== 'BALANCE_TOPUP' && (
+                {viewer && target.kind !== 'BALANCE_TOPUP' && (
                   <button
                     type="button"
                     disabled={!canUseBalance}
@@ -335,7 +475,7 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
               </button>
 
               <p className="text-center text-[11px] text-slate-400">
-                Разовый платеж без автосписаний. Условия{' '}
+                Разовый платеж без подписок и автосписаний. Условия{' '}
                 <Link href="/legal/offer" className="underline hover:text-slate-600">
                   публичной оферты
                 </Link>

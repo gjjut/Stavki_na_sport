@@ -1193,6 +1193,32 @@ export default function AdminDashboardPage() {
                       Партнерка {u.revsharePercent}%
                     </button>
 
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const nextPass = window.prompt(
+                          `Задать новый пароль для ${u.email} (минимум 6 символов):`,
+                          'Vx123456',
+                        );
+                        if (!nextPass) return;
+                        const res = await fetch('/api/v1/admin/users', {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            action: 'RESET_PASSWORD',
+                            userId: u.id,
+                            newPassword: nextPass,
+                          }),
+                        });
+                        if (res.ok) {
+                          showToast(`Новый пароль установлен для ${u.email}`);
+                        }
+                      }}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 font-bold text-slate-700 hover:bg-slate-50"
+                    >
+                      Сменить пароль
+                    </button>
+
                     {u.role !== 'ADMIN' && (
                       <button
                         type="button"
@@ -1406,6 +1432,22 @@ export default function AdminDashboardPage() {
                     })
                   }
                   placeholder="770000000000"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="text-[11px] font-bold text-slate-500">
+                  ID счетчика Яндекс.Метрики (для аналитики рекламы и автоцели «purchase_success»)
+                </label>
+                <input
+                  value={settingsDraft.yandexMetrikaId || ''}
+                  onChange={(e) =>
+                    setSettingsDraft({
+                      ...settingsDraft,
+                      yandexMetrikaId: e.target.value.replace(/\D/g, ''),
+                    })
+                  }
+                  placeholder="Например: 98765432 (оставьте пустым, если не используется)"
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
                 />
               </div>

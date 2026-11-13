@@ -2,10 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Pool } from 'pg';
+import { explainMarketInPlainRussian } from '../lib/plain-russian';
 import { hashPassword, verifyPassword } from './auth';
 import {
   createYooKassaLivePayment,
   sendTelegramChannelAnnouncement,
+  sendTelegramDirectMessage,
   verifyYooKassaLivePayment,
 } from './integrations';
 import type {
@@ -81,6 +83,14 @@ function slugifyMatch(home: string, away: string, suffix: string): string {
   return `${raw || 'match'}-${suffix}`;
 }
 
+function makeUserTelegramLinkCode(userId: string): string {
+  const hash = createHash('sha256')
+    .update(`tglink:${userId}`, 'utf8')
+    .digest('hex')
+    .slice(0, 10);
+  return `vx_${hash}`;
+}
+
 function createInitialState(): PersistentState {
   const now = Date.now();
   const adminEmail = (process.env.ADMIN_EMAIL || 'admin@valuex.pro').trim().toLowerCase();
@@ -103,6 +113,8 @@ function createInitialState(): PersistentState {
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
     telegramChannelId:
       process.env.TELEGRAM_CHANNEL_ID || process.env.TELEGRAM_VIP_CHANNEL_ID || '',
+    telegramBotUsername: '',
+    yandexMetrikaId: process.env.NEXT_PUBLIC_YANDEX_METRIKA_ID || '',
   };
 
   const adminUser: UserAccount = {
@@ -116,6 +128,8 @@ function createInitialState(): PersistentState {
     balanceRub: 0,
     referenceBankrollRub: 100_000,
     telegramUsername: '@valuex_admin',
+    telegramChatId: null,
+    telegramLinkCode: makeUserTelegramLinkCode('usr_admin_root'),
     purchasedPredictionIds: [],
     referralCode: 'valuex_official',
     referredByUserId: null,
@@ -605,6 +619,10 @@ function normalizeLoadedState(
     balanceRub: u.balanceRub || 0,
     referenceBankrollRub: u.referenceBankrollRub || 50_000,
     telegramUsername: u.telegramUsername ?? null,
+    telegramChatId: u.telegramChatId ?? null,
+    telegramLinkCode: u.telegramLinkCode || makeUserTelegramLinkCode(u.id),
+    passwordResetCode: u.passwordResetCode ?? null,
+    passwordResetExpiresAt: u.passwordResetExpiresAt ?? null,
     purchasedPredictionIds: Array.isArray(u.purchasedPredictionIds)
       ? u.purchasedPredictionIds
       : [],
@@ -819,6 +837,8 @@ export function toSafeSessionUser(user: UserAccount): SafeSessionUser {
     balanceRub: user.balanceRub,
     referenceBankrollRub: user.referenceBankrollRub,
     telegramUsername: user.telegramUsername,
+    telegramChatId: user.telegramChatId ?? null,
+    telegramLinkCode: user.telegramLinkCode || makeUserTelegramLinkCode(user.id),
     purchasedPredictionIds: user.purchasedPredictionIds,
     referralCode: user.referralCode,
     revsharePercent: user.revsharePercent,
@@ -1199,8 +1219,9 @@ export async function registerUserAccount(params: {
       .slice(0, 12);
     const referralCode = `${baseCode || 'partner'}_${randomUUID().slice(0, 4)}`;
 
+    const newId = `usr_${randomUUID().slice(0, 12)}`;
     const newUser: UserAccount = {
-      id: `usr_${randomUUID().slice(0, 12)}`,
+      id: newId,
       email: cleanEmail,
       passwordHash: hashPassword(params.password),
       displayName: params.displayName.trim() || cleanEmail.split('@')[0],
@@ -1210,6 +1231,8 @@ export async function registerUserAccount(params: {
       balanceRub: 0,
       referenceBankrollRub: 50_000,
       telegramUsername: null,
+      telegramChatId: null,
+      telegramLinkCode: makeUserTelegramLinkCode(newId),
       purchasedPredictionIds: [],
       referralCode,
       referredByUserId,
@@ -1415,12 +1438,20 @@ export async function initiateOrderCheckout(params: {
 export async function fulfillOrderPayment(
   orderIdOrExternalId: string,
 ): Promise<OrderTransaction> {
-  return mutateState((state) => {
+  const result = await mutateState((state) => {
     const tx = state.transactions.find(
       (t) => t.id === orderIdOrExternalId || t.externalPaymentId === orderIdOrExternalId,
     );
     if (!tx) throw new Error('Заказ не найден');
-    if (tx.status === 'SUCCEEDED') return tx;
+    if (tx.status === 'SUCCEEDED') {
+      return {
+        tx,
+        newlySettled: false,
+        buyerChatId: null as string | null,
+        unlockedPreds: [] as PredictionRecord[],
+        settings: state.settings,
+      };
+    }
 
     const buyer = state.users.find((u) => u.id === tx.userId);
     if (!buyer) throw new Error('Покупатель не найден');
@@ -1442,6 +1473,7 @@ export async function fulfillOrderPayment(
       if (promo) promo.usedCount += 1;
     }
 
+    const unlockedPreds: PredictionRecord[] = [];
     if (tx.kind === 'SINGLE_PREDICTION' || tx.kind === 'BUNDLE_PREDICTIONS') {
       const unlockIds = tx.predictionIds.length
         ? tx.predictionIds
@@ -1452,6 +1484,8 @@ export async function fulfillOrderPayment(
         if (!buyer.purchasedPredictionIds.includes(pid)) {
           buyer.purchasedPredictionIds.push(pid);
         }
+        const foundPred = state.predictions.find((p) => p.id === pid);
+        if (foundPred) unlockedPreds.push(foundPred);
       }
     } else if (tx.kind === 'BALANCE_TOPUP') {
       buyer.balanceRub += tx.amountRub;
@@ -1476,8 +1510,51 @@ export async function fulfillOrderPayment(
       }
     }
 
-    return tx;
+    return {
+      tx,
+      newlySettled: true,
+      buyerChatId: buyer.telegramChatId ?? null,
+      unlockedPreds,
+      settings: state.settings,
+    };
   });
+
+  if (
+    result.newlySettled &&
+    result.buyerChatId &&
+    result.unlockedPreds.length > 0
+  ) {
+    for (const p of result.unlockedPreds) {
+      const plain = explainMarketInPlainRussian(
+        p.selectionTitle,
+        p.homeTeam,
+        p.awayTeam,
+      );
+      const dmHtml = [
+        `🔓 <b>Ваш купленный прогноз открыт (${result.settings.brandName})</b>`,
+        ``,
+        `🏆 ${p.leagueName}`,
+        `⚔️ <b>${p.homeTeam} — ${p.awayTeam}</b>`,
+        `🎯 Ставка: <b>${p.selectionTitle}</b>`,
+        `📈 Коэффициент: <b>${p.fixedOdds.toFixed(2)}</b> (${p.stakeUnits.toFixed(1)}% от банка)`,
+        `📍 <b>Где искать в БК:</b> ${plain.whereToFindInBk}`,
+        `✅ <b>Когда выигрыш:</b> ${plain.whenYouWin}`,
+        p.insuredOnLoss
+          ? `🛡 <b>Страховка активна:</b> если не зайдет — 100% суммы вернется на ваш баланс!`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      void sendTelegramDirectMessage(
+        result.settings,
+        result.buyerChatId,
+        dmHtml,
+      ).catch(() => undefined);
+    }
+  }
+
+  return result.tx;
 }
 
 export async function verifyAndSyncOrderFromReturn(
@@ -1698,6 +1775,17 @@ export async function settlePredictionByAdmin(params: {
 
     // Автоматическая страховка покупателей: независимый возврат доли каждого матча (включая наборы из 2-3 игр)
     let compensatedUsers = 0;
+    const refundedDmQueue: Array<{ chatId: string; amountRub: number; newBalance: number }> = [];
+    const winDmChatIds: string[] = [];
+
+    if (params.resultStatus === 'WIN' || params.resultStatus === 'CASHOUT') {
+      for (const u of state.users) {
+        if (u.telegramChatId && u.purchasedPredictionIds.includes(pred.id)) {
+          winDmChatIds.push(u.telegramChatId);
+        }
+      }
+    }
+
     if (
       pred.insuredOnLoss &&
       (params.resultStatus === 'LOSS' || params.resultStatus === 'PUSH')
@@ -1724,12 +1812,56 @@ export async function settlePredictionByAdmin(params: {
           tx.insuranceRefundedAmountRub = (tx.insuranceRefundedAmountRub || 0) + share;
           tx.insuranceCredited = true;
           compensatedUsers += 1;
+          if (buyer.telegramChatId) {
+            refundedDmQueue.push({
+              chatId: buyer.telegramChatId,
+              amountRub: share,
+              newBalance: buyer.balanceRub,
+            });
+          }
         }
       }
     }
 
-    return { prediction: pred, compensatedUsers, settings: state.settings };
+    return {
+      prediction: pred,
+      compensatedUsers,
+      refundedDmQueue,
+      winDmChatIds,
+      settings: state.settings,
+    };
   });
+
+  // Рассылка личных уведомлений покупателям в Telegram
+  if (outcome.refundedDmQueue && outcome.refundedDmQueue.length > 0) {
+    const p = outcome.prediction;
+    for (const item of outcome.refundedDmQueue) {
+      const dm = [
+        `🛡 <b>Сработала страховка 100% (${outcome.settings.brandName})!</b>`,
+        ``,
+        `Матч «<b>${p.homeTeam} — ${p.awayTeam}</b>» завершился со счетом ${p.finalScore || 'не в нашу пользу'}.`,
+        `💰 На ваш кошелек автоматически возвращено: <b>+${item.amountRub.toLocaleString('ru-RU')} ₽</b> (текущий баланс: <b>${item.newBalance.toLocaleString('ru-RU')} ₽</b>).`,
+        `Заходите на витрину и открывайте любой следующий прогноз бесплатно с баланса!`,
+      ].join('\n');
+      void sendTelegramDirectMessage(outcome.settings, item.chatId, dm).catch(
+        () => undefined,
+      );
+    }
+  }
+
+  if (outcome.winDmChatIds && outcome.winDmChatIds.length > 0) {
+    const p = outcome.prediction;
+    for (const chatId of outcome.winDmChatIds) {
+      const dm = [
+        `✅ <b>С победой! Ваш прогноз зашел (${p.finalScore || 'Победа'})</b>`,
+        `⚔️ <b>${p.homeTeam} — ${p.awayTeam}</b>`,
+        `🎯 Исход: <b>${p.selectionTitle}</b> @ <b>${p.fixedOdds.toFixed(2)}</b>`,
+      ].join('\n');
+      void sendTelegramDirectMessage(outcome.settings, chatId, dm).catch(
+        () => undefined,
+      );
+    }
+  }
 
   if (params.pushResultToTelegram && params.resultStatus !== 'PENDING') {
     const p = outcome.prediction;

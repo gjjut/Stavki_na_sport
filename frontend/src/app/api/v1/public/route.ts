@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
       defaultSinglePriceRub: state.settings.defaultSinglePriceRub,
       bundle2DiscountPct: state.settings.bundle2DiscountPct,
       bundle3DiscountPct: state.settings.bundle3DiscountPct,
+      yandexMetrikaId: state.settings.yandexMetrikaId || '',
     },
     viewer: viewer ? toSafeSessionUser(viewer) : null,
     predictions,

@@ -24,6 +24,10 @@ export interface UserAccount {
   balanceRub: number;
   referenceBankrollRub: number;
   telegramUsername: string | null;
+  telegramChatId?: string | null;
+  telegramLinkCode?: string;
+  passwordResetCode?: string | null;
+  passwordResetExpiresAt?: string | null;
   purchasedPredictionIds: string[];
 
   // Партнерская программа (реферальные отчисления с разовых и пакетных покупок)
@@ -48,6 +52,8 @@ export interface SafeSessionUser {
   balanceRub: number;
   referenceBankrollRub: number;
   telegramUsername: string | null;
+  telegramChatId: string | null;
+  telegramLinkCode: string;
   purchasedPredictionIds: string[];
   referralCode: string;
   revsharePercent: number;
@@ -213,6 +219,8 @@ export interface PlatformSettings {
 
   telegramBotToken: string;
   telegramChannelId: string;
+  telegramBotUsername?: string;
+  yandexMetrikaId?: string;
 }
 
 export interface StatsSummary {

@@ -52,13 +52,15 @@ NODE_OPTIONS="--max-old-space-size=1536" npm run build
 pm2 restart valuex-web || pm2 start npm --name "valuex-web" -- run start
 pm2 save
 
-# 4. Настройка системного планировщика Cron для ИИ-Автопилота 24/7 (каждые 15 минут)
+# 4. Настройка системного планировщика Cron (ИИ-Автопилот каждые 15 мин + ежедневный бэкап БД)
+chmod +x "${PROJECT_DIR}/deploy/"*.sh || true
 if ! command -v cron >/dev/null 2>&1 || [[ ! -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf ]]; then
   apt-get update -y && apt-get install -y cron fonts-dejavu-core || true
 fi
 if [[ -d /etc/cron.d ]]; then
-  cat > /etc/cron.d/valuex-autopilot <<'EOF'
+  cat > /etc/cron.d/valuex-autopilot <<EOF
 */15 * * * * root curl -fsS http://127.0.0.1:3000/api/v1/cron/autopilot >/dev/null 2>&1 || true
+30 3 * * * root bash ${PROJECT_DIR}/deploy/backup-db.sh >/dev/null 2>&1 || true
 EOF
   chmod 0644 /etc/cron.d/valuex-autopilot || true
   systemctl enable --now cron >/dev/null 2>&1 || true
