@@ -46,7 +46,7 @@ const PROVIDER_PRESETS: Array<{
     id: 'ORCAROUTER',
     label: 'OrcaRouter.ai',
     baseUrl: 'https://www.orcarouter.ai/v1',
-    defaultModel: 'gemini-2.5-flash',
+    defaultModel: 'deepseek/deepseek-v4.1-flash-free',
   },
   {
     id: 'DEEPSEEK',
@@ -449,7 +449,7 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
 
             {keyResult && (
               <div
-                className={`mt-2.5 rounded-xl border px-3.5 py-2.5 text-[11px] font-semibold ${
+                className={`mt-2.5 whitespace-pre-line rounded-xl border px-3.5 py-2.5 text-[11px] font-semibold ${
                   keyResult.ok
                     ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
                     : 'border-rose-300 bg-rose-50 text-rose-900'

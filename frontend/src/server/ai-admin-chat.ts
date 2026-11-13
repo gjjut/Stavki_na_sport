@@ -3,6 +3,8 @@ import {
   approveAiDraftToStorefront,
   broadcastDailyDigestToTelegram,
   buildCandidateLlmBaseUrls,
+  postLlmChatCompletion,
+  prioritizeModelsFreeFirst,
   replaceDemoWithRealMatches,
   runAiScanAndGenerateCycle,
   runAutoSettlementCycle,
@@ -57,25 +59,21 @@ async function buildPlatformContextSnapshot() {
 
   const activePredictions = state.predictions
     .filter((p) => p.resultStatus === 'PENDING')
-    .slice(0, 15)
+    .slice(0, 8)
     .map((p) => ({
       id: p.id,
       match: `${p.homeTeam} — ${p.awayTeam}`,
       sport: p.sport,
       league: p.leagueName,
-      startsAt: p.matchStartsAt,
       pick: p.selectionTitle,
       odds: p.fixedOdds,
       tier: p.accessTier,
       priceRub: p.singlePriceRub,
-      insured: Boolean(p.insuredOnLoss),
-      featured: Boolean(p.isFeatured),
-      researchSources: p.researchSources ?? [],
     }));
 
   const recentSettled = state.predictions
     .filter((p) => p.resultStatus !== 'PENDING')
-    .slice(0, 10)
+    .slice(0, 6)
     .map((p) => ({
       id: p.id,
       match: `${p.homeTeam} — ${p.awayTeam}`,
@@ -695,135 +693,113 @@ async function callConfiguredLlmWithDiagnostics(
   }
 
   const bases = buildCandidateLlmBaseUrls(cfg.llmBaseUrl, cfg.llmProvider);
-  const configuredModel = cfg.llmModel.trim() || 'gemini-2.5-flash';
+  const configuredModel =
+    cfg.llmModel.trim() || 'deepseek/deepseek-v4.1-flash-free';
 
   let lastStatus = 0;
   let lastUrl = bases[0] || cfg.llmBaseUrl;
   let lastRawError = '';
   let discoveredModelsOnToken: string[] = [];
+  const perModelErrors: string[] = [];
 
   for (const base of bases) {
     lastUrl = `${base}/chat/completions`;
+
+    const primaryOut = await postLlmChatCompletion({
+      baseUrl: base,
+      apiKey: key,
+      model: configuredModel,
+      temperature: 0.25,
+      timeoutMs: 24_000,
+      messages,
+    });
+
+    if (primaryOut.ok && primaryOut.content) {
+      return {
+        ok: true,
+        content: primaryOut.content,
+        modelLabel: `${cfg.llmProvider} · ${
+          primaryOut.returnedModel || configuredModel
+        }`,
+      };
+    }
+
+    lastStatus = primaryOut.status;
+    lastRawError = primaryOut.rawError;
+    perModelErrors.push(
+      `${configuredModel} → HTTP ${primaryOut.status}: ${primaryOut.rawError
+        .replace(/\s+/g, ' ')
+        .slice(0, 110)}`,
+    );
+
+    // Если сам ключ неверный (HTTP 401) — дальше перебирать модели бессмысленно
+    if (primaryOut.status === 401) {
+      break;
+    }
+
+    // При ЛЮБОЙ другой ошибке модели (включая HTTP 403 model_access_denied на orcarouter/auto,
+    // 404, 429, 500, 502, 503) — автоматически загружаем /models и проверяем БЕСПЛАТНЫЕ (-free) модели токена!
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 24_000);
-      const res = await fetch(`${base}/chat/completions`, {
-        method: 'POST',
-        signal: controller.signal,
+      const mRes = await fetch(`${base}/models`, {
         headers: {
-          'Content-Type': 'application/json',
           Accept: 'application/json',
           Authorization: `Bearer ${key}`,
           'User-Agent': GATEWAY_UA,
         },
-        body: JSON.stringify({
-          model: configuredModel,
-          temperature: 0.25,
-          messages,
-        }),
+        signal: AbortSignal.timeout(7500),
+        cache: 'no-store',
       });
-      clearTimeout(timer);
-
-      if (res.ok) {
-        const json = (await res.json()) as {
-          model?: string;
-          choices?: Array<{ message?: { content?: string } }>;
+      if (mRes.ok) {
+        const mJson = (await mRes.json()) as {
+          data?: Array<{ id?: string }>;
         };
-        const content = json.choices?.[0]?.message?.content?.trim();
-        if (content) {
-          return {
-            ok: true,
-            content,
-            modelLabel: `${cfg.llmProvider} · ${json.model || configuredModel}`,
-          };
-        }
-        lastStatus = 200;
-        lastRawError = 'Сервер вернул HTTP 200, но поле choices[0].message.content пустое';
-        continue;
-      }
+        const rawIds = (mJson.data || [])
+          .map((m) => (m.id || '').trim())
+          .filter(Boolean);
+        discoveredModelsOnToken = prioritizeModelsFreeFirst(rawIds);
 
-      lastStatus = res.status;
-      lastRawError = await res.text().catch(() => '');
+        const candidates = discoveredModelsOnToken
+          .filter(
+            (m) =>
+              m !== configuredModel &&
+              m.toLowerCase() !== 'orcarouter/auto',
+          )
+          .slice(0, 7);
 
-      // Если ошибка 400 / 404 / 500 / 503 (например, у токена нет канала для выбранного имени модели) —
-      // АВТОМАТИЧЕСКИ запрашиваем /models на этом токене и пробуем переключиться на живую модель!
-      if ([400, 404, 500, 502, 503].includes(res.status)) {
-        try {
-          const mRes = await fetch(`${base}/models`, {
-            headers: {
-              Accept: 'application/json',
-              Authorization: `Bearer ${key}`,
-              'User-Agent': GATEWAY_UA,
-            },
-            signal: AbortSignal.timeout(7000),
-            cache: 'no-store',
+        for (const altModel of candidates) {
+          const retryOut = await postLlmChatCompletion({
+            baseUrl: base,
+            apiKey: key,
+            model: altModel,
+            temperature: 0.25,
+            timeoutMs: 22_000,
+            messages,
           });
-          if (mRes.ok) {
-            const mJson = (await mRes.json()) as {
-              data?: Array<{ id?: string }>;
+
+          if (retryOut.ok && retryOut.content) {
+            // Автоматически фиксируем рабочую бесплатную модель и канонический URL в базе!
+            await mutateState((s) => {
+              s.aiAutopilot.llmBaseUrl = base;
+              s.aiAutopilot.llmModel = altModel;
+            });
+            return {
+              ok: true,
+              content: retryOut.content,
+              modelLabel: `${cfg.llmProvider} · ${
+                retryOut.returnedModel || altModel
+              } (автоподбор)`,
             };
-            discoveredModelsOnToken = (mJson.data || [])
-              .map((m) => (m.id || '').trim())
-              .filter(Boolean);
-
-            const candidates = discoveredModelsOnToken
-              .filter(
-                (m) =>
-                  m !== configuredModel &&
-                  /gemini|deepseek|gpt-4|claude|qwen|flash|pro/i.test(m),
-              )
-              .slice(0, 3);
-
-            for (const altModel of candidates) {
-              const retryRes = await fetch(`${base}/chat/completions`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Accept: 'application/json',
-                  Authorization: `Bearer ${key}`,
-                  'User-Agent': GATEWAY_UA,
-                },
-                body: JSON.stringify({
-                  model: altModel,
-                  temperature: 0.25,
-                  messages,
-                }),
-                signal: AbortSignal.timeout(22_000),
-              });
-
-              if (retryRes.ok) {
-                const retryJson = (await retryRes.json()) as {
-                  model?: string;
-                  choices?: Array<{ message?: { content?: string } }>;
-                };
-                const retryContent =
-                  retryJson.choices?.[0]?.message?.content?.trim();
-                if (retryContent) {
-                  // Сохраняем рабочую модель в базу, чтобы все следующие сообщения летали мгновенно!
-                  await mutateState((s) => {
-                    s.aiAutopilot.llmBaseUrl = base;
-                    s.aiAutopilot.llmModel = altModel;
-                  });
-                  return {
-                    ok: true,
-                    content: retryContent,
-                    modelLabel: `${cfg.llmProvider} · ${retryJson.model || altModel} (автоподбор)`,
-                  };
-                }
-              }
-            }
           }
-        } catch {
-          // продолжаем формирование точной диагностики
+
+          perModelErrors.push(
+            `${altModel} → HTTP ${retryOut.status}: ${retryOut.rawError
+              .replace(/\s+/g, ' ')
+              .slice(0, 100)}`,
+          );
         }
       }
-
-      if (res.status === 401 || res.status === 403) {
-        break;
-      }
-    } catch (err) {
-      lastRawError =
-        err instanceof Error ? `${err.name}: ${err.message}` : 'Сетевой обрыв';
+    } catch {
+      // переходим к формированию детального отчета
     }
   }
 
@@ -837,6 +813,34 @@ async function callConfiguredLlmWithDiagnostics(
     ? 'Шлюз вернул HTML-страницу защиты Cloudflare вместо JSON-ответа API.'
     : lastRawError.replace(/\s+/g, ' ').trim().slice(0, 260) || 'Нет тела ответа';
 
+  const isModelAccessDenied403 =
+    lastStatus === 403 &&
+    (lastRawError.includes('model_access_denied') ||
+      lastRawError.includes('does not have access to model'));
+
+  const perModelReport =
+    perModelErrors.length > 0
+      ? ` Проверенные модели (${perModelErrors.length} шт.): ${perModelErrors.join(' | ')}`
+      : '';
+
+  if (isModelAccessDenied403) {
+    return {
+      ok: false,
+      content: null,
+      diagnostic: {
+        code: 'MODEL_ACCESS_DENIED_403',
+        title:
+          'Ключ верный, но в настройках ключа на OrcaRouter ограничен доступ к моделям (HTTP 403 model_access_denied)',
+        technicalDetails: `URL: ${lastUrl} ·${perModelReport}`,
+        solutions: [
+          'Откройте настройки вашего API-ключа на https://www.orcarouter.ai/console/token и нажмите «Редактировать / Управление доступом» рядом с ключом.',
+          'В списке разрешенных моделей ключа включите бесплатные модели с пометкой -free (или снимите галочку ограничения по конкретным моделям) и сохраните ключ в консоли OrcaRouter.',
+          'После этого нажмите «Проверить связь и СОХРАНИТЬ» вверху этого чата — рабочая бесплатная модель подхватится автоматически!',
+        ],
+      },
+    };
+  }
+
   if (lastStatus === 401 || lastStatus === 403) {
     return {
       ok: false,
@@ -849,11 +853,11 @@ async function callConfiguredLlmWithDiagnostics(
         technicalDetails: `URL: ${lastUrl} · Модель: ${configuredModel} · Ответ сервера: ${cleanSnippet}`,
         solutions: isHtmlCloudflare
           ? [
-              'В настройках ключа над чатом попробуйте сменить Base URL на https://api.orcarouter.ai/v1 или переключиться на прямой API DeepSeek (https://api.deepseek.com/v1) / OpenRouter (https://openrouter.ai/api/v1).',
+              'Убедитесь, что адрес API Base URL указан строго с www: https://www.orcarouter.ai/v1 (или подключите прямой ключ DeepSeek / OpenRouter).',
             ]
           : [
-              'Проверьте, что скопирован полный ключ вида sk-... со страницы https://www.orcarouter.ai/console/token без лишних символов.',
-              'Убедитесь, что токен включен (статус Enabled / Включен) и не истек срок его действия в личном кабинете шлюза.',
+              'Проверьте, что скопирован полный ключ вида sk-orca-... со страницы https://www.orcarouter.ai/console/token без лишних пробелов.',
+              'Убедитесь, что сам ключ включен (Active) в личном кабинете шлюза.',
             ],
       },
     };
@@ -865,11 +869,11 @@ async function callConfiguredLlmWithDiagnostics(
       content: null,
       diagnostic: {
         code: `QUOTA_HTTP_${lastStatus}`,
-        title: `Исчерпан баланс токена или лимит запросов на шлюзе (HTTP ${lastStatus})`,
-        technicalDetails: `URL: ${lastUrl} · Модель: ${configuredModel} · Ответ шлюза: ${cleanSnippet}`,
+        title: `Исчерпан баланс токена или лимит бесплатных запросов в минуту (HTTP ${lastStatus})`,
+        technicalDetails: `URL: ${lastUrl} ·${perModelReport || ` Ответ шлюза: ${cleanSnippet}`}`,
         solutions: [
-          'Проверьте остаток квоты / баланса на вашем ключе в консоли https://www.orcarouter.ai/console/token (или пополните счет шлюза).',
-          'Либо выберите в списке моделей более легкую/бесплатную модель, доступную на вашей группе токена.',
+          'Если используется бесплатная модель (-free) и вернулся код 429 — подождите 15–30 секунд (лимит бесплатных запросов в минуту) и отправьте сообщение снова.',
+          'Либо выберите в выпадающем списке моделей над чатом другую бесплатную модель (-free) из доступных на вашем ключе.',
         ],
       },
     };
@@ -878,18 +882,18 @@ async function callConfiguredLlmWithDiagnostics(
   if ([400, 404, 500, 502, 503].includes(lastStatus)) {
     const modelsHint =
       discoveredModelsOnToken.length > 0
-        ? `На вашем токене найдены модели (${discoveredModelsOnToken.length} шт.): ${discoveredModelsOnToken.slice(0, 8).join(', ')}`
-        : 'Список моделей /v1/models не вернул активных каналов для этой группы токена.';
+        ? `Модели на вашем токене (${discoveredModelsOnToken.length} шт.): ${discoveredModelsOnToken.join(', ')}.`
+        : '';
     return {
       ok: false,
       content: null,
       diagnostic: {
         code: `MODEL_OR_CHANNEL_HTTP_${lastStatus}`,
-        title: `Выбранная модель «${configuredModel}» недоступна или перегружена на вашем токене (HTTP ${lastStatus})`,
-        technicalDetails: `URL: ${lastUrl} · Ответ шлюза: ${cleanSnippet}. ${modelsHint}`,
+        title: `Модели на токене временно не ответили (HTTP ${lastStatus})`,
+        technicalDetails: `URL: ${lastUrl} · ${modelsHint}${perModelReport || ` Ответ: ${cleanSnippet}`}`,
         solutions: [
-          'Нажмите «Подключить / Проверить ключ API» в шапке этого чата и нажмите «Загрузить модели токена» — выберите из списка ту модель, которая входит в вашу группу (например, для группы google_* выбирайте модели gemini-*).',
-          'Если шлюз пишет «No available channel» для всех моделей — в личном кабинете OrcaRouter проверьте группу (Group) вашего токена (поставьте Default / Auto).',
+          'Убедитесь, что Base URL указан строго с www: https://www.orcarouter.ai/v1 (исправлено автоматически!).',
+          'Нажмите «Проверить связь и СОХРАНИТЬ» вверху чата — система по очереди опросит все бесплатные модели (-free) вашего ключа и сохранит живую.',
         ],
       },
     };

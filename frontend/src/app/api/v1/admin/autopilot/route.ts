@@ -97,8 +97,15 @@ export async function POST(req: NextRequest) {
         llmModel: body.llmModel,
       });
 
-      // Автосохранение ключа и рабочей модели сразу при проверке, чтобы не терялись при переходе в ИИ-Чат!
-      if (body.llmApiKey?.trim() && (result.ok || result.availableModels.length > 0)) {
+      // Автосохранение ключа, канонического www-URL и приоритетной бесплатной (-free) модели при проверке!
+      if (body.llmApiKey?.trim() && !/\s/.test(body.llmApiKey.trim())) {
+        const bestFreeOrFirst =
+          result.availableModels.find((m) => m.toLowerCase().includes('free')) ||
+          result.availableModels.find(
+            (m) => m.toLowerCase() !== 'orcarouter/auto',
+          ) ||
+          body.llmModel.trim();
+
         await mutateState((state) => {
           state.aiAutopilot.llmProvider =
             body.llmProvider === 'BUILTIN_QUANT'
@@ -107,8 +114,9 @@ export async function POST(req: NextRequest) {
           state.aiAutopilot.llmBaseUrl =
             result.resolvedBaseUrl || body.llmBaseUrl.trim();
           state.aiAutopilot.llmApiKey = body.llmApiKey.trim();
-          state.aiAutopilot.llmModel =
-            result.testedModel || body.llmModel.trim();
+          state.aiAutopilot.llmModel = result.ok
+            ? result.testedModel || bestFreeOrFirst
+            : bestFreeOrFirst;
         });
       }
 

@@ -100,7 +100,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         ...draftConfig,
         llmProvider: 'ORCAROUTER',
         llmBaseUrl: 'https://www.orcarouter.ai/v1',
-        llmModel: 'gemini-2.5-flash',
+        llmModel: 'deepseek/deepseek-v4.1-flash-free',
       });
     } else if (provider === 'DEEPSEEK') {
       setDraftConfig({
@@ -888,7 +888,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
 
               {llmCheckStatus && (
                 <div
-                  className={`rounded-xl border p-2.5 text-xs font-semibold ${
+                  className={`whitespace-pre-line rounded-xl border p-2.5 text-xs font-semibold ${
                     llmCheckStatus.ok
                       ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
                       : 'border-amber-200 bg-amber-50 text-amber-900'

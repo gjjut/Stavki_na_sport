@@ -641,9 +641,27 @@ function normalizeLoadedState(
   }));
 
   const rawAi = (raw.aiAutopilot || {}) as Partial<AiAutopilotConfig>;
+  const rawBaseUrl = (rawAi.llmBaseUrl || '').trim();
+  const isOrca =
+    rawAi.llmProvider === 'ORCAROUTER' ||
+    rawBaseUrl.toLowerCase().includes('orcarouter.ai');
+  const healedBaseUrl = isOrca
+    ? 'https://www.orcarouter.ai/v1'
+    : rawBaseUrl || fallback.aiAutopilot.llmBaseUrl;
+  const rawModel = (rawAi.llmModel || '').trim();
+  const healedModel =
+    isOrca &&
+    (!rawModel ||
+      rawModel.toLowerCase() === 'orcarouter/auto' ||
+      rawModel === 'gemini-2.5-flash')
+      ? 'deepseek/deepseek-v4.1-flash-free'
+      : rawModel || fallback.aiAutopilot.llmModel;
+
   const aiAutopilot: AiAutopilotConfig = {
     ...fallback.aiAutopilot,
     ...rawAi,
+    llmBaseUrl: healedBaseUrl,
+    llmModel: healedModel,
     sportsEnabled:
       Array.isArray(rawAi.sportsEnabled) && rawAi.sportsEnabled.length > 0
         ? rawAi.sportsEnabled

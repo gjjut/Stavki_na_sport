@@ -1380,6 +1380,39 @@ function buildQuantitativeFallbackPool(
     }));
 }
 
+const LLM_BROWSER_UA =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+export function stripReasoningThinkTags(raw: string): string {
+  return (raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
+/**
+ * Сортирует список моделей токена так, чтобы БЕСПЛАТНЫЕ модели (-free, :free) шли ПЕРВЫМИ,
+ * а платные маршрутизаторы вроде orcarouter/auto (закрытые на бесплатных ключах 403 model_access_denied) — в самом конце!
+ */
+export function prioritizeModelsFreeFirst(models: string[]): string[] {
+  const scoreModel = (m: string): number => {
+    const low = m.toLowerCase();
+    if (low === 'orcarouter/auto' || low.endsWith('/auto')) return -100;
+    let score = 0;
+    if (low.includes('free')) score += 100;
+    if (low.includes('flash') || low.includes('mini') || low.includes('lite')) {
+      score += 25;
+    }
+    if (/deepseek|gemini|qwen|gpt|claude|llama/i.test(low)) score += 15;
+    if (/embed|whisper|tts|moderation|dall-e|flux|rerank/i.test(low)) {
+      score -= 200;
+    }
+    return score;
+  };
+
+  return [...models].sort((a, b) => {
+    const diff = scoreModel(b) - scoreModel(a);
+    return diff !== 0 ? diff : a.localeCompare(b);
+  });
+}
+
 export function buildCandidateLlmBaseUrls(
   rawBaseUrl: string,
   provider: string,
@@ -1388,17 +1421,24 @@ export function buildCandidateLlmBaseUrls(
   const candidates: string[] = [];
 
   const pushUnique = (u: string) => {
-    const norm = u.replace(/\/+$/, '');
+    let norm = u.replace(/\/+$/, '');
+    // ВАЖНО: https://orcarouter.ai/v1 (без www) отдает 301-редирект на www.orcarouter.ai,
+    // из-за которого стандартный HTTP клиент превращает POST в GET /v1/chat/completions (HTTP 404)!
+    // Поэтому любой адрес orcarouter.ai жестко канонизируем в https://www.orcarouter.ai/v1!
+    if (/^https?:\/\/(www\.|api\.)?orcarouter\.ai(\/|$)/i.test(norm)) {
+      norm = 'https://www.orcarouter.ai/v1';
+    }
     if (norm && !candidates.includes(norm)) candidates.push(norm);
   };
 
-  // Если пользователь вставил ссылку на личный кабинет вида https://www.orcarouter.ai/console/token
   if (cleaned) {
     try {
       const parsed = new URL(
         cleaned.startsWith('http') ? cleaned : `https://${cleaned}`,
       );
-      if (
+      if (parsed.hostname.includes('orcarouter.ai')) {
+        pushUnique('https://www.orcarouter.ai/v1');
+      } else if (
         parsed.pathname.includes('/console') ||
         parsed.pathname === '/' ||
         parsed.pathname === ''
@@ -1411,12 +1451,6 @@ export function buildCandidateLlmBaseUrls(
       } else {
         pushUnique(`${parsed.origin}${parsed.pathname}`);
       }
-
-      if (parsed.hostname.includes('orcarouter.ai')) {
-        pushUnique('https://www.orcarouter.ai/v1');
-        pushUnique('https://api.orcarouter.ai/v1');
-        pushUnique('https://orcarouter.ai/v1');
-      }
     } catch {
       pushUnique(cleaned);
     }
@@ -1424,8 +1458,6 @@ export function buildCandidateLlmBaseUrls(
 
   if (provider === 'ORCAROUTER') {
     pushUnique('https://www.orcarouter.ai/v1');
-    pushUnique('https://api.orcarouter.ai/v1');
-    pushUnique('https://orcarouter.ai/v1');
   }
 
   if (candidates.length === 0) {
@@ -1433,6 +1465,169 @@ export function buildCandidateLlmBaseUrls(
   }
 
   return candidates;
+}
+
+/**
+ * Надежный POST к /chat/completions с сохранением метода POST при 301/302/307/308 редиректах
+ * и автоматическим повтором без system-роли для строгих бесплатных / reasoning моделей.
+ */
+export async function postLlmChatCompletion(params: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+  temperature?: number;
+  maxTokens?: number;
+  timeoutMs?: number;
+}): Promise<{
+  ok: boolean;
+  status: number;
+  content: string;
+  returnedModel?: string;
+  rawError: string;
+}> {
+  const sendOnce = async (
+    targetUrl: string,
+    payloadObj: Record<string, unknown>,
+    redirectsLeft = 3,
+  ): Promise<Response> => {
+    const res = await fetch(targetUrl, {
+      method: 'POST',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(params.timeoutMs ?? 20_000),
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${params.apiKey.trim()}`,
+        'User-Agent': LLM_BROWSER_UA,
+      },
+      body: JSON.stringify(payloadObj),
+      cache: 'no-store',
+    });
+
+    if (
+      redirectsLeft > 0 &&
+      [301, 302, 303, 307, 308].includes(res.status)
+    ) {
+      const loc = res.headers.get('location');
+      if (loc) {
+        const resolvedLoc = new URL(loc, targetUrl).toString();
+        return sendOnce(resolvedLoc, payloadObj, redirectsLeft - 1);
+      }
+    }
+    return res;
+  };
+
+  const endpoint = `${params.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const primaryPayload: Record<string, unknown> = {
+    model: params.model,
+    messages: params.messages,
+  };
+  if (params.temperature !== undefined) {
+    primaryPayload.temperature = params.temperature;
+  }
+  if (params.maxTokens !== undefined) {
+    primaryPayload.max_tokens = params.maxTokens;
+  }
+
+  const extractReplyFromJson = (json: {
+    model?: string;
+    choices?: Array<{
+      message?: {
+        content?: string | Array<{ text?: string }>;
+        reasoning_content?: string;
+      };
+    }>;
+  }): { text: string; returnedModel?: string } => {
+    const msg = json.choices?.[0]?.message;
+    let rawText = '';
+    if (typeof msg?.content === 'string') {
+      rawText = msg.content;
+    } else if (Array.isArray(msg?.content)) {
+      rawText = msg!.content.map((part) => part?.text || '').join('');
+    }
+    const cleaned = stripReasoningThinkTags(rawText);
+    return {
+      text: cleaned || rawText.trim(),
+      returnedModel: json.model,
+    };
+  };
+
+  try {
+    let res = await sendOnce(endpoint, primaryPayload);
+
+    // Если бесплатная / reasoning модель вернула 400 из-за role:"system" или temperature — склеиваем в user без temperature
+    if (res.status === 400 && params.messages.some((m) => m.role === 'system')) {
+      const mergedMessages: Array<{
+        role: 'user' | 'assistant';
+        content: string;
+      }> = [];
+      let sysPrefix = '';
+      for (const m of params.messages) {
+        if (m.role === 'system') {
+          sysPrefix += `${m.content}\n\n`;
+        } else if (m.role === 'user' && sysPrefix) {
+          mergedMessages.push({ role: 'user', content: `${sysPrefix}${m.content}` });
+          sysPrefix = '';
+        } else {
+          mergedMessages.push({
+            role: m.role === 'assistant' ? 'assistant' : 'user',
+            content: m.content,
+          });
+        }
+      }
+      if (mergedMessages.length === 0 && sysPrefix) {
+        mergedMessages.push({ role: 'user', content: sysPrefix });
+      }
+      res = await sendOnce(endpoint, {
+        model: params.model,
+        messages: mergedMessages,
+        ...(params.maxTokens ? { max_tokens: params.maxTokens } : {}),
+      });
+    }
+
+    if (res.ok) {
+      const json = await res.json();
+      const { text, returnedModel } = extractReplyFromJson(json);
+      if (text) {
+        return {
+          ok: true,
+          status: res.status,
+          content: text,
+          returnedModel,
+          rawError: '',
+        };
+      }
+      return {
+        ok: false,
+        status: res.status,
+        content: '',
+        rawError: 'Модель вернула пустой текст ответа',
+      };
+    }
+
+    const errText = await res.text().catch(() => '');
+    return {
+      ok: false,
+      status: res.status,
+      content: '',
+      rawError: errText,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      content: '',
+      rawError: err instanceof Error ? `${err.name}: ${err.message}` : 'Сбой сети',
+    };
+  }
+}
+
+export interface ModelProbeResultItem {
+  model: string;
+  ok: boolean;
+  status: number;
+  detail: string;
 }
 
 export async function testLlmConnectionAndModels(input: {
@@ -1445,6 +1640,7 @@ export async function testLlmConnectionAndModels(input: {
   resolvedBaseUrl: string;
   testedModel: string;
   availableModels: string[];
+  modelProbeResults?: ModelProbeResultItem[];
   latencyMs: number;
   message: string;
 }> {
@@ -1459,7 +1655,7 @@ export async function testLlmConnectionAndModels(input: {
       availableModels: [],
       latencyMs: 0,
       message:
-        'Вставьте секретный ключ (начинается на sk-...) со страницы https://www.orcarouter.ai/console/token — нажмите кнопку «Copy / Копировать» рядом с вашим initial token.',
+        'Вставьте секретный ключ (начинается на sk-...) со страницы https://www.orcarouter.ai/console/token — нажмите кнопку «Copy / Копировать» рядом с вашим ключом.',
     };
   }
 
@@ -1479,23 +1675,19 @@ export async function testLlmConnectionAndModels(input: {
   let resolvedBaseUrl = baseUrls[0];
   let availableModels: string[] = [];
 
-  // 1. Пробуем получить список доступных на этом токене моделей (/v1/models)
+  // 1. Загружаем реальный список моделей токена (/v1/models) и ставим БЕСПЛАТНЫЕ (-free) модели ПЕРВЫМИ!
   for (const base of baseUrls) {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
       const res = await fetch(`${base}/models`, {
         method: 'GET',
-        signal: controller.signal,
+        signal: AbortSignal.timeout(8000),
         headers: {
           Accept: 'application/json',
           Authorization: `Bearer ${key}`,
-          'User-Agent':
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+          'User-Agent': LLM_BROWSER_UA,
         },
         cache: 'no-store',
       });
-      clearTimeout(timer);
 
       if (res.ok) {
         const json = (await res.json()) as {
@@ -1503,10 +1695,10 @@ export async function testLlmConnectionAndModels(input: {
         };
         if (Array.isArray(json?.data) && json.data.length > 0) {
           resolvedBaseUrl = base;
-          availableModels = json.data
+          const rawIds = json.data
             .map((m) => (m.id || '').trim())
-            .filter(Boolean)
-            .sort((a, b) => a.localeCompare(b));
+            .filter(Boolean);
+          availableModels = prioritizeModelsFreeFirst(rawIds);
           break;
         }
       }
@@ -1515,112 +1707,102 @@ export async function testLlmConnectionAndModels(input: {
     }
   }
 
-  // Выбираем модель для проверочного запроса
-  let modelToTest = (input.llmModel || '').trim();
-  if (
-    availableModels.length > 0 &&
-    (!modelToTest || !availableModels.includes(modelToTest))
-  ) {
-    const preferred = [
-      'gemini-2.5-flash',
-      'gemini-2.0-flash',
-      'deepseek-chat',
-      'deepseek-v3',
-      'gpt-4o-mini',
-      'gpt-4.1-mini',
-      'claude-3-5-haiku-latest',
-    ];
-    modelToTest =
-      preferred.find((p) => availableModels.includes(p)) ||
-      availableModels.find((m) =>
-        /gemini|deepseek|gpt-4|claude|qwen/i.test(m),
-      ) ||
-      availableModels[0];
-  }
-  if (!modelToTest) {
-    modelToTest = 'gpt-4o-mini';
-  }
+  // 2. Формируем очередь проверки ВСЕХ моделей ключа:
+  // сначала бесплатные (-free), затем явно указанная пользователем (если это не закрытый orcarouter/auto), затем остальные!
+  const requestedModel = (input.llmModel || '').trim();
+  const modelsToProbe: string[] = [];
 
-  // 2. Делаем реальный тестовый запрос генерации (если первая модель не активна на токене — пробуем запасные из доступного списка)
-  let lastErrorText = 'Не удалось достучаться до сервера API';
-  const urlsToTry = availableModels.length > 0 ? [resolvedBaseUrl] : baseUrls;
-
-  const modelsToProbe: string[] = [modelToTest];
   if (availableModels.length > 0) {
-    const fallbacks = availableModels.filter((m) =>
-      /gemini|deepseek|gpt-4|claude|qwen|flash|pro/i.test(m),
+    const freeOnes = availableModels.filter((m) =>
+      m.toLowerCase().includes('free'),
     );
-    for (const fb of [...fallbacks, ...availableModels]) {
-      if (modelsToProbe.length >= 4) break;
-      if (!modelsToProbe.includes(fb)) modelsToProbe.push(fb);
+    // Если пользователь сам выбрал конкретную модель из списка (кроме orcarouter/auto) — проверяем её первой, затем все бесплатные!
+    if (
+      requestedModel &&
+      availableModels.includes(requestedModel) &&
+      requestedModel.toLowerCase() !== 'orcarouter/auto'
+    ) {
+      modelsToProbe.push(requestedModel);
+    }
+    for (const fm of freeOnes) {
+      if (!modelsToProbe.includes(fm)) modelsToProbe.push(fm);
+    }
+    for (const m of availableModels) {
+      if (modelsToProbe.length >= 10) break;
+      if (!modelsToProbe.includes(m)) modelsToProbe.push(m);
+    }
+  } else {
+    modelsToProbe.push(requestedModel || 'deepseek/deepseek-v4.1-flash-free');
+  }
+
+  const probeResults: ModelProbeResultItem[] = [];
+  let lastErrorText = 'Не удалось достучаться до сервера API';
+
+  for (const candidateModel of modelsToProbe) {
+    const out = await postLlmChatCompletion({
+      baseUrl: resolvedBaseUrl,
+      apiKey: key,
+      model: candidateModel,
+      maxTokens: 64,
+      timeoutMs: 16_000,
+      messages: [{ role: 'user', content: 'Ответь одним словом на русском: Готов' }],
+    });
+
+    if (out.ok) {
+      probeResults.push({
+        model: candidateModel,
+        ok: true,
+        status: out.status,
+        detail: `Ответила: «${out.content.slice(0, 40)}»`,
+      });
+      return {
+        ok: true,
+        resolvedBaseUrl,
+        testedModel: candidateModel,
+        availableModels,
+        modelProbeResults: probeResults,
+        latencyMs: Date.now() - t0,
+        message: `Отлично! Живая модель «${candidateModel}» проверена и СОХРАНЕНА в базу (ответ: «${out.content.slice(
+          0,
+          35,
+        )}», доступно в списке: ${availableModels.length || 1} шт.). Пишите в чат!`,
+      };
+    }
+
+    const cleanSnippet = out.rawError.includes('<html')
+      ? 'HTML-блокировка Cloudflare'
+      : out.rawError.replace(/\s+/g, ' ').trim().slice(0, 150);
+
+    probeResults.push({
+      model: candidateModel,
+      ok: false,
+      status: out.status,
+      detail: `HTTP ${out.status}: ${cleanSnippet}`,
+    });
+    lastErrorText = `HTTP ${out.status} (${candidateModel}): ${cleanSnippet}`;
+
+    // Останавливаем перебор ТОЛЬКО при HTTP 401 (неверный сам ключ sk-...),
+    // а при HTTP 403 model_access_denied (нет доступа к конкретной платной модели) ОБЯЗАТЕЛЬНО идем проверять бесплатные (-free) модели дальше!
+    if (out.status === 401) {
+      break;
     }
   }
 
-  for (const base of urlsToTry) {
-    for (const candidateModel of modelsToProbe) {
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 14_000);
-        const res = await fetch(`${base}/chat/completions`, {
-          method: 'POST',
-          signal: controller.signal,
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-            Authorization: `Bearer ${key}`,
-            'User-Agent':
-              'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-          },
-          body: JSON.stringify({
-            model: candidateModel,
-            max_tokens: 24,
-            messages: [{ role: 'user', content: 'Ответь одним словом: Готов' }],
-          }),
-        });
-        clearTimeout(timer);
-
-        if (res.ok) {
-          return {
-            ok: true,
-            resolvedBaseUrl: base,
-            testedModel: candidateModel,
-            availableModels,
-            latencyMs: Date.now() - t0,
-            message:
-              availableModels.length > 0
-                ? `Токен подключен и СОХРАНЕН! Доступно моделей: ${availableModels.length}. Активна живая модель «${candidateModel}».`
-                : `Токен успешно подключен и СОХРАНЕН! Модель «${candidateModel}» отвечает штатно.`,
-          };
-        }
-
-        const errBody = await res.text().catch(() => '');
-        const cleanErr = errBody.includes('<html')
-          ? 'Шлюз вернул HTML-страницу защиты (Cloudflare) вместо JSON API'
-          : errBody.slice(0, 180);
-        lastErrorText = `HTTP ${res.status} (${candidateModel})${
-          cleanErr ? `: ${cleanErr}` : ''
-        }`;
-
-        // При 401/403 (неверный сам токен) нет смысла перебирать другие модели на этом же URL
-        if (res.status === 401 || res.status === 403) {
-          break;
-        }
-      } catch (e) {
-        lastErrorText = e instanceof Error ? e.message : 'Сбой сети';
-      }
-    }
-  }
+  const summaryPerModel = probeResults
+    .map((r) => `• ${r.model} → ${r.detail}`)
+    .join('\n');
 
   return {
     ok: false,
     resolvedBaseUrl,
-    testedModel: modelToTest,
+    testedModel: modelsToProbe[0] || requestedModel,
     availableModels,
+    modelProbeResults: probeResults,
     latencyMs: Date.now() - t0,
     message:
-      availableModels.length > 0
-        ? `Ключ верный (найдено моделей: ${availableModels.length}), выберите подходящую модель из выпадающего списка ниже (${lastErrorText}).`
-        : `Не удалось выполнить запрос (${lastErrorText}). Проверьте правильность ключа sk-... и баланс на OrcaRouter.`,
+      probeResults.length > 0
+        ? `Проверено моделей на вашем токене: ${probeResults.length} шт., ни одна пока не дала ответ:\n${summaryPerModel}`
+        : `Не удалось выполнить запрос (${lastErrorText}).`,
   };
 }
 
@@ -1694,31 +1876,20 @@ async function selectBestCandidatesWithAiCommittee(
 
   for (const base of candidateBases) {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 16_000);
-      const res = await fetch(`${base}/chat/completions`, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${config.llmApiKey.trim()}`,
-        },
-        body: JSON.stringify({
-          model: config.llmModel.trim() || 'gpt-4o-mini',
-          temperature: 0.15,
-          messages: [
-            { role: 'system', content: committeeSystemPrompt },
-            { role: 'user', content: JSON.stringify(committeePayload) },
-          ],
-        }),
+      const out = await postLlmChatCompletion({
+        baseUrl: base,
+        apiKey: config.llmApiKey.trim(),
+        model: config.llmModel.trim() || 'deepseek/deepseek-v4.1-flash-free',
+        temperature: 0.15,
+        timeoutMs: 18_000,
+        messages: [
+          { role: 'system', content: committeeSystemPrompt },
+          { role: 'user', content: JSON.stringify(committeePayload) },
+        ],
       });
-      clearTimeout(timer);
 
-      if (res.ok) {
-        const json = (await res.json()) as {
-          choices?: Array<{ message?: { content?: string } }>;
-        };
-        const rawText = json.choices?.[0]?.message?.content?.trim() || '';
+      if (out.ok && out.content) {
+        const rawText = out.content;
         const jStart = rawText.indexOf('{');
         const jEnd = rawText.lastIndexOf('}');
         if (jStart >= 0 && jEnd > jStart) {
@@ -1829,31 +2000,20 @@ async function generateAnalystDossier(
 
     for (const base of candidateBases) {
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 18_000);
-        const res = await fetch(`${base}/chat/completions`, {
-          method: 'POST',
-          signal: controller.signal,
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${config.llmApiKey.trim()}`,
-          },
-          body: JSON.stringify({
-            model: config.llmModel.trim() || 'gpt-4o-mini',
-            temperature: 0.3,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userPrompt },
-            ],
-          }),
+        const out = await postLlmChatCompletion({
+          baseUrl: base,
+          apiKey: config.llmApiKey.trim(),
+          model: config.llmModel.trim() || 'deepseek/deepseek-v4.1-flash-free',
+          temperature: 0.3,
+          timeoutMs: 20_000,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
         });
-        clearTimeout(timer);
 
-        if (res.ok) {
-          const json = (await res.json()) as {
-            choices?: Array<{ message?: { content?: string } }>;
-          };
-          const rawText = json.choices?.[0]?.message?.content?.trim() || '';
+        if (out.ok && out.content) {
+          const rawText = out.content;
           const jsonStart = rawText.indexOf('{');
           const jsonEnd = rawText.lastIndexOf('}');
           const slice =
