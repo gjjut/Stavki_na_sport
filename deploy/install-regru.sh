@@ -47,7 +47,9 @@ apt-get install -y sudo curl git ca-certificates gnupg ufw nginx certbot python3
 cd "${PROJECT_DIR}"
 if [[ ! -f .env ]]; then
   cp .env.example .env
-  echo "[3/6] Создан файл .env из шаблона .env.example"
+  RAND_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  sed -i "s/change_this_to_a_long_random_64_char_secret_string/${RAND_SECRET}/" .env || true
+  echo "[3/6] Создан файл .env со случайным SESSION_SECRET"
 fi
 
 if [[ "${MODE}" == "docker" ]]; then
@@ -96,6 +98,7 @@ else
     sudo -u postgres psql -c "CREATE USER tipster_user WITH PASSWORD 'strong_postgres_password';"
   sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='tipster_db'" | grep -q 1 || \
     sudo -u postgres psql -c "CREATE DATABASE tipster_db OWNER tipster_user;"
+  sudo -u postgres psql -d tipster_db -c "GRANT ALL ON SCHEMA public TO tipster_user;" >/dev/null 2>&1 || true
   sudo -u postgres psql -d tipster_db -f "${PROJECT_DIR}/database/schema.sql" >/dev/null 2>&1 || true
 
   echo "[5/6] Сборка фронтенда и серверного API Next.js..."

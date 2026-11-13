@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { processYooKassaWebhookInStore } from '@/server/platformStore';
+import {
+  fulfillOrderPayment,
+  mutateState,
+  readState,
+  refundOrderTransaction,
+} from '@/server/database';
+import { verifyYooKassaLivePayment } from '@/server/integrations';
 
 export async function POST(req: NextRequest) {
   try {
@@ -8,20 +14,43 @@ export async function POST(req: NextRequest) {
       object: { id: string; payment_id?: string };
     };
 
-    const yookassaPaymentId =
-      body.event === 'refund.succeeded' && body.object.payment_id
-        ? body.object.payment_id
-        : body.object.id;
+    const dedupKey = `${body.event}:${body.object.id}`;
+    const state = await readState();
 
-    const result = await processYooKassaWebhookInStore({
-      event: body.event,
-      yookassaPaymentId,
+    if (state.processedWebhooks.includes(dedupKey)) {
+      return NextResponse.json({ received: true, duplicate: true });
+    }
+
+    if (body.event === 'payment.succeeded') {
+      if (state.settings.paymentMode === 'YOOKASSA_LIVE') {
+        const verified = await verifyYooKassaLivePayment(state.settings, body.object.id);
+        if (verified.status !== 'succeeded' || !verified.paid) {
+          return NextResponse.json({ received: true, ignored: true });
+        }
+      }
+      await fulfillOrderPayment(body.object.id);
+    } else if (body.event === 'payment.canceled') {
+      await mutateState((draft) => {
+        const tx = draft.transactions.find((t) => t.externalPaymentId === body.object.id);
+        if (tx && tx.status === 'PENDING') {
+          tx.status = 'CANCELED';
+        }
+      });
+    } else if (body.event === 'refund.succeeded') {
+      const targetId = body.object.payment_id || body.object.id;
+      await refundOrderTransaction(targetId);
+    }
+
+    await mutateState((draft) => {
+      if (!draft.processedWebhooks.includes(dedupKey)) {
+        draft.processedWebhooks.push(dedupKey);
+      }
     });
 
-    return NextResponse.json({ received: true, ...result });
+    return NextResponse.json({ received: true });
   } catch (err) {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Ошибка обработки Webhook ЮKassa' },
+      { error: err instanceof Error ? err.message : 'Ошибка обработки уведомления' },
       { status: 400 },
     );
   }
