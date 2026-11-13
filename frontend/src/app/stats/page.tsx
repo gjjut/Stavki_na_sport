@@ -9,19 +9,19 @@ import { HashVerifyModal } from '@/components/predictions/HashVerifyModal';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
 import type { PublicPredictionDto } from '@/server/types';
 
-const BANKROLL_PRESETS = [30_000, 50_000, 100_000, 250_000];
+const BANKROLL_PRESETS = [10_000, 30_000, 50_000, 100_000];
 
 export default function StatsPage() {
   const { data, reload } = usePublicPlatform();
   const [period, setPeriod] = useState<'WEEK' | 'MONTH' | 'ALL_TIME'>('ALL_TIME');
-  const [bankrollRub, setBankrollRub] = useState<number>(100_000);
+  const [bankrollRub, setBankrollRub] = useState<number>(30_000);
   const [hashItem, setHashItem] = useState<PublicPredictionDto | null>(null);
 
   const stats = data?.statsByPeriod[period];
   const totalProfitPct = stats?.netProfitUnits ?? 0;
   const simulatedProfitRub = Math.round((bankrollRub * totalProfitPct) / 100);
   const simulatedFinalBankRub = bankrollRub + simulatedProfitRub;
-  const onePercentRub = Math.round(bankrollRub / 100);
+  const twoPercentRub = Math.round((bankrollRub * 2) / 100);
 
   const settledPredictions = (data?.predictions ?? []).filter(
     (p) => p.resultStatus !== 'PENDING',
@@ -37,18 +37,18 @@ export default function StatsPage() {
         <div className="mx-auto flex max-w-7xl flex-wrap items-end justify-between gap-4 px-4 sm:px-6 lg:px-8">
           <div>
             <h1 className="text-3xl font-black tracking-tight">
-              Верифицированная статистика
+              Результаты и открытая статистика
             </h1>
             <p className="mt-1.5 text-sm text-slate-300">
-              Прозрачный учет всех рассчитанных событий с открытыми SHA-256 слепками до начала матчей
+              Полная история всех завершенных прогнозов — включая как победы, так и минусы без правок задним числом
             </p>
           </div>
 
           <div className="flex gap-1.5 rounded-xl border border-white/10 bg-white/5 p-1">
             {(
               [
-                ['WEEK', '7 дней'],
-                ['MONTH', '30 дней'],
+                ['WEEK', 'За 7 дней'],
+                ['MONTH', 'За 30 дней'],
                 ['ALL_TIME', 'За всё время'],
               ] as const
             ).map(([key, label]) => (
@@ -70,54 +70,62 @@ export default function StatsPage() {
       </div>
 
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Карточки сводных показателей */}
+        {/* Понятные карточки показателей */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">Чистый профит</div>
+            <div className="text-xs text-slate-500">Прирост к банку</div>
             <div className="mt-1 font-mono text-2xl font-black text-emerald-600">
               {totalProfitPct >= 0 ? '+' : ''}
-              {totalProfitPct.toFixed(2)}%
+              {totalProfitPct.toFixed(1)}%
             </div>
           </div>
+
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">Yield / ROI</div>
+            <div className="text-xs text-slate-500">Доходность с оборота</div>
             <div className="mt-1 font-mono text-2xl font-black text-blue-600">
               {(stats?.yieldPct ?? 0) >= 0 ? '+' : ''}
               {stats?.yieldPct.toFixed(1) ?? '0.0'}%
             </div>
           </div>
+
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">Проходимость</div>
+            <div className="text-xs text-slate-500">Угадано матчей</div>
             <div className="mt-1 font-mono text-2xl font-black text-slate-950">
-              {stats?.winRatePct.toFixed(1) ?? '0.0'}%
+              {stats?.winRatePct.toFixed(0) ?? '0'}%
             </div>
           </div>
+
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">Средний кэф</div>
+            <div className="text-xs text-slate-500">Средний коэфф.</div>
             <div className="mt-1 font-mono text-2xl font-black text-slate-950">
               {stats?.avgOdds.toFixed(2) ?? '1.90'}
             </div>
           </div>
+
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">Макс. просадка</div>
-            <div className="mt-1 font-mono text-2xl font-black text-slate-950">
-              -{stats?.maxDrawdownPct.toFixed(2) ?? '0.00'}%
-            </div>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">Побед / Поражений</div>
+            <div className="text-xs text-slate-500">Побед / Минусов</div>
             <div className="mt-1 font-mono text-2xl font-black text-slate-950">
               {stats?.wins ?? 0} / {stats?.losses ?? 0}
             </div>
           </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-xs text-slate-500">Всего сыграно</div>
+            <div className="mt-1 font-mono text-2xl font-black text-slate-950">
+              {(stats?.wins ?? 0) + (stats?.losses ?? 0) + (stats?.pushes ?? 0)}
+            </div>
+          </div>
         </div>
 
-        {/* График + Калькулятор банка в рублях */}
+        {/* График + Понятный рублевый калькулятор */}
         <div className="mt-6 grid gap-6 lg:grid-cols-12">
           <div className="rounded-2xl border border-slate-200 bg-white p-6 lg:col-span-7">
-            <h2 className="mb-4 text-base font-extrabold text-slate-950">
-              График роста игрового банка (Equity Curve)
+            <h2 className="mb-1 text-base font-extrabold text-slate-950">
+              Как рос игровой банк по месяцам
             </h2>
+            <p className="mb-4 text-xs text-slate-500">
+              100% — это ваш начальный банк. Точки на графике показывают, как он увеличивался на дистанции.
+            </p>
             <EquityCurveChart points={data?.equityCurve ?? []} />
           </div>
 
@@ -125,14 +133,13 @@ export default function StatsPage() {
             <div>
               <div className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
                 <Calculator className="h-3.5 w-3.5" />
-                <span>Калькулятор флэт-дистанции в ₽</span>
+                <span>Калькулятор в рублях</span>
               </div>
               <h2 className="mt-2.5 text-lg font-extrabold text-slate-950">
-                Пересчет дистанции на ваш игровой банк
+                Сколько бы вы заработали со своим банком?
               </h2>
               <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                Укажите ваш рабочий банк — калькулятор покажет размер 1% флэта и фактический результат за выбранный период ({totalProfitPct >= 0 ? '+' : ''}
-                {totalProfitPct.toFixed(2)}%).
+                Выберите комфортную для вас общую сумму на ставки — калькулятор покажет безопасную ставку на 1 матч и чистую прибыль в рублях.
               </p>
 
               <div className="mt-4 flex flex-wrap gap-2">
@@ -147,7 +154,7 @@ export default function StatsPage() {
                         : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-white'
                     }`}
                   >
-                    {(preset / 1000).toFixed(0)}k ₽
+                    {preset.toLocaleString('ru-RU')} ₽
                   </button>
                 ))}
               </div>
@@ -155,19 +162,19 @@ export default function StatsPage() {
               <div className="mt-4">
                 <input
                   type="range"
-                  min={10_000}
-                  max={500_000}
+                  min={5_000}
+                  max={300_000}
                   step={5_000}
                   value={bankrollRub}
                   onChange={(e) => setBankrollRub(Number(e.target.value))}
                   className="w-full accent-blue-600"
                 />
                 <div className="mt-1 flex justify-between font-mono text-[11px] text-slate-400">
-                  <span>10 000 ₽</span>
+                  <span>5 000 ₽</span>
                   <span className="font-bold text-slate-800">
                     Ваш банк: {bankrollRub.toLocaleString('ru-RU')} ₽
                   </span>
-                  <span>500 000 ₽</span>
+                  <span>300 000 ₽</span>
                 </div>
               </div>
             </div>
@@ -175,10 +182,10 @@ export default function StatsPage() {
             <div className="mt-5 grid grid-cols-3 gap-2.5 rounded-2xl border border-slate-100 bg-slate-50 p-3.5">
               <div>
                 <div className="text-[10px] font-semibold uppercase text-slate-400">
-                  Шаг 1% флэта
+                  Ставка на матч (2%)
                 </div>
                 <div className="mt-0.5 font-mono text-sm font-black text-slate-900">
-                  {onePercentRub.toLocaleString('ru-RU')} ₽
+                  {twoPercentRub.toLocaleString('ru-RU')} ₽
                 </div>
               </div>
               <div>
@@ -192,7 +199,7 @@ export default function StatsPage() {
               </div>
               <div>
                 <div className="text-[10px] font-semibold uppercase text-slate-400">
-                  Итоговый банк
+                  Стало на счете
                 </div>
                 <div className="mt-0.5 font-mono text-sm font-black text-blue-600">
                   {simulatedFinalBankRub.toLocaleString('ru-RU')} ₽
@@ -202,11 +209,11 @@ export default function StatsPage() {
           </div>
         </div>
 
-        {/* Реестр всех завершенных матчей */}
+        {/* Открытая таблица всех сыгранных матчей */}
         <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
           <div className="border-b border-slate-200 px-6 py-4">
             <h2 className="text-base font-extrabold text-slate-950">
-              Открытый реестр завершенных прогнозов
+              Архив всех завершившихся матчей
             </h2>
           </div>
           <div className="overflow-x-auto">
@@ -214,12 +221,12 @@ export default function StatsPage() {
               <thead className="border-b border-slate-200 bg-slate-50 text-[11px] uppercase text-slate-500">
                 <tr>
                   <th className="px-5 py-3">Матч</th>
-                  <th className="px-4 py-3">Исход</th>
-                  <th className="px-4 py-3">Кэф</th>
-                  <th className="px-4 py-3">Флэт</th>
-                  <th className="px-4 py-3">Счет</th>
-                  <th className="px-4 py-3">Результат</th>
-                  <th className="px-5 py-3 text-right">SHA-256</th>
+                  <th className="px-4 py-3">Какая была ставка</th>
+                  <th className="px-4 py-3">Коэфф.</th>
+                  <th className="px-4 py-3">Доля банка</th>
+                  <th className="px-4 py-3">Счет игры</th>
+                  <th className="px-4 py-3">Итог</th>
+                  <th className="px-5 py-3 text-right">Проверка</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -253,14 +260,14 @@ export default function StatsPage() {
                       <td className="px-4 py-3.5">
                         {item.resultStatus === 'WIN' ||
                         item.resultStatus === 'CASHOUT' ? (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 font-mono font-bold text-emerald-700">
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 font-bold text-emerald-700">
                             <CheckCircle2 className="h-3.5 w-3.5" />
-                            <span>+{pUnits.toFixed(2)}%</span>
+                            <span>Зашел (+{pUnits.toFixed(1)}%)</span>
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2.5 py-0.5 font-mono font-bold text-rose-600">
+                          <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2.5 py-0.5 font-bold text-rose-600">
                             <XCircle className="h-3.5 w-3.5" />
-                            <span>{pUnits.toFixed(2)}%</span>
+                            <span>Не зашел ({pUnits.toFixed(1)}%)</span>
                           </span>
                         )}
                       </td>
@@ -268,10 +275,10 @@ export default function StatsPage() {
                         <button
                           type="button"
                           onClick={() => setHashItem(item)}
-                          className="inline-flex items-center gap-1 font-mono text-blue-600 hover:underline"
+                          className="inline-flex items-center gap-1 font-semibold text-blue-600 hover:underline"
                         >
                           <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-                          <span>{item.verificationHash.slice(0, 8)}…</span>
+                          <span>Проверить</span>
                         </button>
                       </td>
                     </tr>

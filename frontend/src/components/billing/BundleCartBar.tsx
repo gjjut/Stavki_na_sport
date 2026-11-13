@@ -53,15 +53,15 @@ export const BundleCartBar: React.FC<BundleCartBarProps> = ({
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-2 text-xs font-extrabold">
-                <span>В пакете: {selectedItems.length} шт.</span>
+                <span>Выбрано матчей: {selectedItems.length}</span>
                 {discountPct > 0 ? (
                   <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] font-bold text-emerald-300">
                     <Sparkles className="h-3 w-3" />
-                    <span>Скидка −{discountPct}%</span>
+                    <span>Ваша скидка −{discountPct}%</span>
                   </span>
                 ) : (
                   <span className="text-[11px] font-medium text-blue-300">
-                    +1 событие даст скидку −{bundle2DiscountPct}%
+                    Добавьте еще 1 матч для скидки −{bundle2DiscountPct}%
                   </span>
                 )}
               </div>
@@ -88,7 +88,7 @@ export const BundleCartBar: React.FC<BundleCartBarProps> = ({
               onClick={onCheckoutBundle}
               className="rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-md shadow-blue-600/30 transition hover:bg-blue-500"
             >
-              Оплатить пакет
+              Купить набор
             </button>
 
             <button

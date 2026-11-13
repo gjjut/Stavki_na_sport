@@ -60,15 +60,13 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ points }) =>
           <div className="font-semibold text-slate-700">
             {activePoint.point.label}{' '}
             <span className="text-slate-400">
-              · событий: {activePoint.point.betsCount} · Yield{' '}
-              {activePoint.point.yieldPct >= 0 ? '+' : ''}
-              {activePoint.point.yieldPct.toFixed(1)}%
+              · сыграно матчей: {activePoint.point.betsCount}
             </span>
           </div>
           <div className="font-mono font-black text-blue-600">
-            Банк: {activePoint.point.cumulativeBankPct.toFixed(2)}% (
-            {activePoint.point.profitUnits >= 0 ? '+' : ''}
-            {activePoint.point.profitUnits.toFixed(2)}%)
+            Итог за месяц: {activePoint.point.profitUnits >= 0 ? '+' : ''}
+            {activePoint.point.profitUnits.toFixed(1)}% · Общий банк:{' '}
+            {activePoint.point.cumulativeBankPct.toFixed(1)}%
           </div>
         </div>
       )}

@@ -22,7 +22,7 @@ export default function PredictionsCatalogPage() {
   const [checkoutTarget, setCheckoutTarget] = useState<CheckoutModalTarget | null>(null);
   const [hashModalItem, setHashModalItem] = useState<PublicPredictionDto | null>(null);
 
-  const defaultPrice = data?.brand.defaultSinglePriceRub ?? 890;
+  const defaultPrice = data?.brand.defaultSinglePriceRub ?? 790;
   const bundle2Pct = data?.brand.bundle2DiscountPct ?? 15;
   const bundle3Pct = data?.brand.bundle3DiscountPct ?? 25;
 
@@ -70,7 +70,7 @@ export default function PredictionsCatalogPage() {
 
     setCheckoutTarget({
       kind: 'BUNDLE_PREDICTIONS',
-      title: `Пакет из ${selectedBundleItems.length} событий (−${pct}%)`,
+      title: `Набор из ${selectedBundleItems.length} прогнозов (−${pct}%)`,
       subtitle: selectedBundleItems
         .map((p) => `${p.homeTeam}—${p.awayTeam}`)
         .join(' · '),
@@ -110,23 +110,23 @@ export default function PredictionsCatalogPage() {
     >
       <div className="bg-[#0B0F19] py-10 text-white">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <h1 className="text-3xl font-black tracking-tight">Витрина прогнозов</h1>
+          <h1 className="text-3xl font-black tracking-tight">Прогнозы на матчи</h1>
           <p className="mt-1.5 text-sm text-slate-300">
-            Разовая покупка любого матча или сборка пакета со скидкой до −{bundle3Pct}% без подписок
+            Выберите один интересующий матч или соберите набор из 2–3 игр со скидкой до −{bundle3Pct}% (без подписок)
           </p>
         </div>
       </div>
 
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Фильтры витрины */}
+        {/* Понятные фильтры */}
         <div className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs lg:flex-row lg:items-center">
           <div className="flex flex-wrap gap-1.5">
             {(
               [
-                ['ACTIVE', 'Актуальная линия'],
+                ['ACTIVE', 'Ближайшие матчи'],
                 ['INSURED', 'Со страховкой 100%'],
-                ['FREE', 'Бесплатные разборы'],
-                ['SETTLED', 'Архив результатов'],
+                ['FREE', 'Бесплатные (0 ₽)'],
+                ['SETTLED', 'Завершенные (архив)'],
               ] as const
             ).map(([key, label]) => (
               <button
@@ -156,7 +156,7 @@ export default function PredictionsCatalogPage() {
               <option value="TENNIS">Теннис</option>
               <option value="ESPORTS">Киберспорт</option>
               <option value="BASKETBALL">Баскетбол</option>
-              <option value="MMA">ММА / Бокс</option>
+              <option value="MMA">ММА / UFC</option>
             </select>
 
             <div className="relative">
@@ -165,7 +165,7 @@ export default function PredictionsCatalogPage() {
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Команда или турнир..."
+                placeholder="Найти команду или лигу..."
                 className="rounded-xl border border-slate-200 bg-slate-50 py-2 pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none"
               />
             </div>
@@ -189,7 +189,7 @@ export default function PredictionsCatalogPage() {
 
         {filtered.length === 0 && (
           <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-12 text-center text-sm text-slate-500">
-            По заданным фильтрам событий не найдено.
+            По вашему запросу матчей не найдено — попробуйте переключить фильтр на «Ближайшие матчи».
           </div>
         )}
       </div>

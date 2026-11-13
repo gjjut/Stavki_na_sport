@@ -80,19 +80,19 @@ export default function CabinetPage() {
     >
       <div className="bg-[#0B0F19] py-10 text-white">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <h1 className="text-3xl font-black tracking-tight">Мои покупки</h1>
+          <h1 className="text-3xl font-black tracking-tight">Мои прогнозы и баланс</h1>
           <p className="mt-1 text-sm text-slate-300">
-            Все приобретенные вами события, пакеты, баланс кошелька со страховкой и партнерские начисления
+            Здесь хранятся все открытые вами матчи, баланс для покупок в 1 клик и возвраты по страховке
           </p>
         </div>
       </div>
 
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Верхняя панель: профиль + кошелек + партнерка */}
+        {/* Верхняя панель: профиль + баланс + приглашение друзей */}
         <div className="grid gap-5 lg:grid-cols-3">
           <div className="rounded-2xl border border-slate-200 bg-white p-6">
             <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Аккаунт покупателя
+              Ваш профиль
             </div>
             <div className="mt-1 text-xl font-black text-slate-950">
               {cabinet?.user.displayName ?? '...'}
@@ -100,7 +100,7 @@ export default function CabinetPage() {
             <div className="text-xs text-slate-500">{cabinet?.user.email}</div>
             <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
               <Sparkles className="h-3.5 w-3.5" />
-              <span>Открыто прогнозов: {purchasedPredictions.length}</span>
+              <span>Куплено прогнозов: {purchasedPredictions.length}</span>
             </div>
           </div>
 
@@ -108,13 +108,16 @@ export default function CabinetPage() {
             <div className="flex items-start justify-between">
               <div>
                 <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Кошелек (и выплаты страховки)
+                  Баланс на сайте (и возвраты страховки)
                 </div>
                 <div className="mt-1 font-mono text-3xl font-black text-slate-950">
                   {(cabinet?.user.balanceRub ?? 0).toLocaleString('ru-RU')} ₽
                 </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  С этого счета можно открывать любые прогнозы в 1 клик без ввода карты
+                </p>
               </div>
-              <Wallet className="h-6 w-6 text-blue-600" />
+              <Wallet className="h-6 w-6 shrink-0 text-blue-600" />
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2">
@@ -125,7 +128,7 @@ export default function CabinetPage() {
                   onClick={() =>
                     setCheckoutTarget({
                       kind: 'BALANCE_TOPUP',
-                      title: `Пополнение кошелька на ${amount.toLocaleString('ru-RU')} ₽`,
+                      title: `Пополнение баланса на ${amount.toLocaleString('ru-RU')} ₽`,
                       subtitle: 'Для быстрой оплаты прогнозов в 1 клик',
                       priceRub: amount,
                     })
@@ -143,29 +146,32 @@ export default function CabinetPage() {
             <div className="flex items-start justify-between">
               <div>
                 <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Партнерский доход ({cabinet?.user.revsharePercent ?? 25}% с покупок)
+                  Пригласите друга ({cabinet?.user.revsharePercent ?? 25}% вам)
                 </div>
                 <div className="mt-1 font-mono text-3xl font-black text-blue-600">
                   {(cabinet?.user.affiliateBalanceRub ?? 0).toLocaleString('ru-RU')} ₽
                 </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Отправьте ссылку другу — вы будете получать {cabinet?.user.revsharePercent ?? 25}% с каждой его покупки
+                </p>
               </div>
-              <Share2 className="h-6 w-6 text-slate-400" />
+              <Share2 className="h-6 w-6 shrink-0 text-slate-400" />
             </div>
 
             <button
               type="button"
               onClick={copyPartnerLink}
-              className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-700 hover:border-blue-300 hover:bg-white"
+              className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs font-bold text-slate-700 hover:border-blue-300 hover:bg-white"
             >
               {copiedRef ? (
                 <>
                   <Check className="h-3.5 w-3.5 text-emerald-600" />
-                  <span>Реферальная ссылка скопирована!</span>
+                  <span>Ссылка скопирована — отправьте другу!</span>
                 </>
               ) : (
                 <>
                   <Copy className="h-3.5 w-3.5 text-blue-600" />
-                  <span>Скопировать ссылку ?ref={cabinet?.user.referralCode}</span>
+                  <span>Скопировать ссылку для друзей</span>
                 </>
               )}
             </button>
@@ -175,7 +181,7 @@ export default function CabinetPage() {
         {/* Сетка купленных прогнозов */}
         <div className="mt-8">
           <h2 className="text-xl font-black text-slate-950">
-            Приобретенные прогнозы
+            Открытые вами прогнозы
           </h2>
           {purchasedPredictions.length > 0 ? (
             <div className="mt-4 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
@@ -183,7 +189,7 @@ export default function CabinetPage() {
                 <PredictionCard
                   key={prediction.id}
                   prediction={prediction}
-                  defaultSinglePriceRub={pub?.brand.defaultSinglePriceRub ?? 890}
+                  defaultSinglePriceRub={pub?.brand.defaultSinglePriceRub ?? 790}
                   onBuySingle={() => {}}
                   onVerifyHash={setHashItem}
                 />
@@ -192,13 +198,13 @@ export default function CabinetPage() {
           ) : (
             <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-8 text-center">
               <p className="text-sm text-slate-600">
-                У вас пока нет купленных прогнозов. Выберите интересующий матч или соберите пакет со скидкой на витрине.
+                У вас пока нет купленных прогнозов. Выберите интересующий матч на главной или посмотрите бесплатный прогноз дня.
               </p>
               <Link
                 href="/predictions"
                 className="mt-4 inline-block rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-blue-700"
               >
-                Перейти к витрине событий
+                Выбрать матч
               </Link>
             </div>
           )}
@@ -209,12 +215,12 @@ export default function CabinetPage() {
           <div className="flex items-center gap-2 border-b border-slate-200 px-6 py-4">
             <Receipt className="h-4 w-4 text-blue-600" />
             <h2 className="text-base font-extrabold text-slate-950">
-              История оплат и возвратов по страховке
+              История покупок и возвратов по страховке
             </h2>
           </div>
           <div className="divide-y divide-slate-100">
             {(cabinet?.orders ?? []).length === 0 ? (
-              <div className="p-6 text-xs text-slate-500">Заказов пока нет.</div>
+              <div className="p-6 text-xs text-slate-500">Покупок пока не было.</div>
             ) : (
               (cabinet?.orders ?? []).map((order) => (
                 <div
@@ -226,20 +232,20 @@ export default function CabinetPage() {
                       <span className="font-bold text-slate-900">{order.title}</span>
                       {order.promoCode && (
                         <span className="rounded-md bg-blue-50 px-2 py-0.5 font-mono text-[10px] font-bold text-blue-700">
-                          ПРОМО {order.promoCode}
+                          СКИДКА {order.promoCode}
                         </span>
                       )}
                       {order.insuranceCredited && (
                         <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
                           <ShieldCheck className="h-3 w-3" />
-                          <span>Страховка возвращена на баланс</span>
+                          <span>100% суммы возвращено на баланс</span>
                         </span>
                       )}
                     </div>
                     <div className="mt-0.5 text-slate-400">
                       {new Date(order.createdAt).toLocaleString('ru-RU')}
                       {order.discountRub > 0
-                        ? ` · Экономия ${order.discountRub.toLocaleString('ru-RU')} ₽`
+                        ? ` · Ваша выгода ${order.discountRub.toLocaleString('ru-RU')} ₽`
                         : ''}
                     </div>
                   </div>
@@ -254,7 +260,7 @@ export default function CabinetPage() {
                           ? 'Оплачено'
                           : order.status === 'REFUNDED'
                             ? 'Возврат'
-                            : 'Ожидание'}
+                            : 'В обработке'}
                       </span>
                     </span>
                   </div>
