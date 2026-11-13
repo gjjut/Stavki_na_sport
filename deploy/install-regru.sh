@@ -44,14 +44,26 @@ apt-get update -y
 apt-get install -y sudo curl git cron ca-certificates gnupg ufw nginx certbot python3-certbot-nginx
 systemctl enable --now cron >/dev/null 2>&1 || true
 
-# 3. Подготовка .env файла, если еще не создан
+# 3. Подготовка и актуализация .env файла
 cd "${PROJECT_DIR}"
 if [[ ! -f .env ]]; then
   cp .env.example .env
-  RAND_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  sed -i "s/change_this_to_a_long_random_64_char_secret_string/${RAND_SECRET}/" .env || true
-  echo "[3/6] Создан файл .env со случайным SESSION_SECRET"
 fi
+
+if grep -q 'change_this_to_a_long_random_64_char_secret_string' .env || ! grep -q '^SESSION_SECRET=' .env; then
+  RAND_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  sed -i '/^SESSION_SECRET=/d' .env || true
+  echo "SESSION_SECRET=${RAND_SECRET}" >> .env
+fi
+
+if [[ "${MODE}" != "docker" ]]; then
+  sed -i 's/@postgres:5432/@127.0.0.1:5432/g' .env || true
+  if ! grep -q '^DATABASE_URL=' .env; then
+    echo "DATABASE_URL=postgresql://tipster_user:strong_postgres_password@127.0.0.1:5432/tipster_db" >> .env
+  fi
+fi
+sed -i 's/^TELEGRAM_BOT_TOKEN=.*replace_with.*/TELEGRAM_BOT_TOKEN=/' .env || true
+sed -i 's/^YOOKASSA_SECRET_KEY=.*replace_with.*/YOOKASSA_SECRET_KEY=/' .env || true
 
 if [[ "${MODE}" == "docker" ]]; then
   echo "[4/6] Установка Docker и настройка зеркал Docker Hub для ДЦ в РФ..."
@@ -110,6 +122,7 @@ else
   cd "${PROJECT_DIR}/frontend"
   cp "${PROJECT_DIR}/.env" "${PROJECT_DIR}/frontend/.env.local" || true
   npm ci --no-audit --no-fund
+  rm -rf .next
   NODE_OPTIONS="--max-old-space-size=1536" npm run build
 
   pm2 delete valuex-web >/dev/null 2>&1 || true
