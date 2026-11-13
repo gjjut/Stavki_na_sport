@@ -143,6 +143,7 @@ export async function verifyYooKassaLivePayment(
 export async function sendTelegramChannelAnnouncement(
   settings: PlatformSettings,
   htmlText: string,
+  button?: { text: string; url: string },
 ): Promise<{ sent: boolean; error?: string }> {
   const token = (settings.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '').trim();
   const chatId = (
@@ -155,6 +156,12 @@ export async function sendTelegramChannelAnnouncement(
     return { sent: false, error: 'Токен бота или ID канала не указаны' };
   }
 
+  const canAttachButton =
+    button?.url &&
+    /^https?:\/\//i.test(button.url) &&
+    !button.url.includes('localhost') &&
+    !button.url.includes('127.0.0.1');
+
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
@@ -163,6 +170,13 @@ export async function sendTelegramChannelAnnouncement(
         chat_id: chatId,
         parse_mode: 'HTML',
         text: htmlText,
+        ...(canAttachButton
+          ? {
+              reply_markup: {
+                inline_keyboard: [[{ text: button!.text, url: button!.url }]],
+              },
+            }
+          : {}),
       }),
     });
     const data = (await res.json()) as { ok: boolean; description?: string };

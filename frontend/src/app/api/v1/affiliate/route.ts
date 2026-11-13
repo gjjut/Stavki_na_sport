@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { mutateState } from '@/server/database';
 import { requireAuthenticatedUser } from '@/server/guards';
+import { sendTelegramDirectMessage } from '@/server/integrations';
 
 export async function POST(req: NextRequest) {
   try {
@@ -69,7 +70,7 @@ export async function POST(req: NextRequest) {
         throw new Error('Укажите телефон для СБП (и банк) или номер карты МИР');
       }
 
-      const payout = await mutateState((state) => {
+      const { payout, adminChats, settings } = await mutateState((state) => {
         const u = state.users.find((row) => row.id === user.id);
         if (!u || u.affiliateBalanceRub < amount) {
           throw new Error('Недостаточно партнерских средств для вывода');
@@ -88,8 +89,19 @@ export async function POST(req: NextRequest) {
           processedAt: null,
         };
         state.payouts.unshift(reqRow);
-        return reqRow;
+        const adminChats = state.users
+          .filter((a) => a.role === 'ADMIN' && a.telegramChatId)
+          .map((a) => a.telegramChatId!);
+        return { payout: reqRow, adminChats, settings: state.settings };
       });
+
+      for (const chatId of adminChats) {
+        void sendTelegramDirectMessage(
+          settings,
+          chatId,
+          `🏦 <b>Новая заявка партнера на выплату: ${payout.amountRub.toLocaleString('ru-RU')} ₽</b>\n👤 Партнер: ${payout.userEmail}\n💳 Реквизиты (${payout.method}): <code>${payout.requisites}</code>`,
+        ).catch(() => undefined);
+      }
 
       return NextResponse.json({ payout });
     }

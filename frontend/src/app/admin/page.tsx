@@ -7,7 +7,10 @@ import {
   Bot,
   CheckCircle2,
   Coins,
+  Download,
+  Gift,
   Plus,
+  Search,
   Send,
   Settings,
   ShieldCheck,
@@ -98,6 +101,53 @@ export default function AdminDashboardPage() {
   const [settingsDraft, setSettingsDraft] = useState<PlatformSettings | null>(null);
   const [newAdminEmail, setNewAdminEmail] = useState('');
   const [newAdminPassword, setNewAdminPassword] = useState('');
+  const [userSearch, setUserSearch] = useState('');
+
+  const downloadOrdersCsv = () => {
+    const rows = data?.transactions ?? [];
+    const header = [
+      'ID заказа',
+      'Дата и время',
+      'Email покупателя',
+      'Наименование',
+      'Сумма (RUB)',
+      'Способ оплаты',
+      'Статус',
+      'Промокод',
+      'Возврат по страховке',
+    ];
+    const escapeCell = (v: string | number) =>
+      `"${String(v).replace(/"/g, '""')}"`;
+
+    const lines = [
+      header.map(escapeCell).join(';'),
+      ...rows.map((r) =>
+        [
+          r.id,
+          new Date(r.createdAt).toLocaleString('ru-RU'),
+          r.userEmail,
+          r.title,
+          r.amountRub,
+          r.paymentMethod === 'yookassa' ? 'ЮKassa (Карта/СБП)' : 'Внутренний баланс',
+          r.status,
+          r.promoCode || '',
+          r.insuranceCredited ? 'Да' : 'Нет',
+        ]
+          .map(escapeCell)
+          .join(';'),
+      ),
+    ];
+
+    const blob = new Blob(['\uFEFF' + lines.join('\r\n')], {
+      type: 'text/csv;charset=utf-8;',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `valuex_orders_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const loadOverview = useCallback(async () => {
     const res = await fetch('/api/v1/admin/overview', { cache: 'no-store' });
@@ -1029,10 +1079,18 @@ export default function AdminDashboardPage() {
 
             {/* Реестр заказов */}
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-              <div className="border-b border-slate-200 px-6 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-6 py-4">
                 <h2 className="text-base font-extrabold text-slate-950">
                   Реестр заказов и возвратов страховки
                 </h2>
+                <button
+                  type="button"
+                  onClick={downloadOrdersCsv}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-800 hover:bg-white"
+                >
+                  <Download className="h-3.5 w-3.5 text-blue-600" />
+                  <span>Скачать CSV (Excel / Бухгалтерия)</span>
+                </button>
               </div>
               <div className="divide-y divide-slate-100">
                 {(data?.transactions ?? []).map((order) => (
@@ -1110,8 +1168,28 @@ export default function AdminDashboardPage() {
         {/* ВКЛАДКА 4: ПОЛЬЗОВАТЕЛИ И ПАРТНЕРЫ */}
         {tab === 'USERS' && (
           <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            <div className="border-b border-slate-200 px-6 py-4">
+              <div className="relative max-w-md">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  placeholder="Поиск клиента по Email или имени..."
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs focus:border-blue-600 focus:bg-white focus:outline-none"
+                />
+              </div>
+            </div>
             <div className="divide-y divide-slate-100">
-              {(data?.users ?? []).map((u) => (
+              {(data?.users ?? [])
+                .filter((u) => {
+                  const q = userSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    u.email.toLowerCase().includes(q) ||
+                    u.displayName.toLowerCase().includes(q)
+                  );
+                })
+                .map((u) => (
                 <div
                   key={u.id}
                   className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 text-xs"
@@ -1164,6 +1242,52 @@ export default function AdminDashboardPage() {
                       className="rounded-lg border border-slate-200 px-3 py-1.5 font-bold text-slate-700 hover:bg-slate-50"
                     >
                       + Начислить ₽
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const pending = (data?.predictions ?? []).filter(
+                          (p) =>
+                            p.resultStatus === 'PENDING' &&
+                            !u.purchasedPredictionIds.includes(p.id),
+                        );
+                        if (pending.length === 0) {
+                          showToast('Все актуальные матчи уже открыты у этого клиента');
+                          return;
+                        }
+                        const listStr = pending
+                          .slice(0, 8)
+                          .map((p, idx) => `${idx + 1}. ${p.homeTeam} — ${p.awayTeam}`)
+                          .join('\n');
+                        const choice = Number(
+                          window.prompt(
+                            `Какой матч бесплатно открыть для ${u.email}?\nВведите номер:\n${listStr}`,
+                            '1',
+                          ) || '0',
+                        );
+                        const chosen = pending[choice - 1];
+                        if (!chosen) return;
+                        const res = await fetch('/api/v1/admin/users', {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            action: 'GRANT_PREDICTION',
+                            userId: u.id,
+                            predictionId: chosen.id,
+                          }),
+                        });
+                        if (res.ok) {
+                          showToast(
+                            `Доступ к «${chosen.homeTeam} — ${chosen.awayTeam}» открыт для ${u.email}!`,
+                          );
+                          await loadOverview();
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 font-bold text-blue-700 hover:bg-blue-100"
+                    >
+                      <Gift className="h-3.5 w-3.5" />
+                      <span>Подарить матч</span>
                     </button>
 
                     <button

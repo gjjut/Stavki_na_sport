@@ -1514,10 +1514,30 @@ export async function fulfillOrderPayment(
       tx,
       newlySettled: true,
       buyerChatId: buyer.telegramChatId ?? null,
+      adminChatIds: state.users
+        .filter((u) => u.role === 'ADMIN' && u.telegramChatId && u.id !== buyer.id)
+        .map((u) => u.telegramChatId!),
       unlockedPreds,
       settings: state.settings,
     };
   });
+
+  // Мгновенное уведомление владельцу (администратору) о новой продаже
+  if (result.newlySettled && result.adminChatIds && result.adminChatIds.length > 0) {
+    const adminAlert = [
+      `💸 <b>Новая оплата +${result.tx.amountRub.toLocaleString('ru-RU')} ₽!</b>`,
+      `👤 Покупатель: <b>${result.tx.userEmail}</b>`,
+      `📦 Заказ: ${result.tx.title}`,
+      `💳 Способ: ${
+        result.tx.paymentMethod === 'yookassa' ? 'Карта РФ / СБП' : 'Внутренний баланс'
+      }`,
+    ].join('\n');
+    for (const admChat of result.adminChatIds) {
+      void sendTelegramDirectMessage(result.settings, admChat, adminAlert).catch(
+        () => undefined,
+      );
+    }
+  }
 
   if (
     result.newlySettled &&
@@ -1709,22 +1729,36 @@ export async function createPredictionByAdmin(input: {
   });
 
   if (input.pushToTelegram) {
+    const siteBase = (process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/+$/, '');
+    const matchUrl = siteBase ? `${siteBase}/predictions/${created.pred.slug}` : '';
     const priceLabel =
       created.pred.accessTier === 'FREE'
-        ? 'Открытый бесплатный разбор'
-        : `Разовый доступ: ${created.pred.singlePriceRub} ₽${
-            created.pred.insuredOnLoss ? ' (со страховкой на баланс)' : ''
+        ? '🎁 Открытый бесплатный разбор (0 ₽)'
+        : `🔓 Разовый доступ: ${created.pred.singlePriceRub} ₽${
+            created.pred.insuredOnLoss ? ' (🛡 со страховкой 100% на баланс)' : ''
           }`;
     const msg = [
-      `📊 <b>Новый разбор на ${created.settings.brandName}</b>`,
+      `📊 <b>Новый прогноз на ${created.settings.brandName}</b>`,
       `🏆 ${created.pred.leagueName}`,
       `⚔️ <b>${created.pred.homeTeam} — ${created.pred.awayTeam}</b>`,
-      `💼 Флэт: <b>${created.pred.stakeUnits.toFixed(2)}% банка</b>`,
-      `🔓 ${priceLabel}`,
+      `💼 Рекомендуемая ставка: <b>${created.pred.stakeUnits.toFixed(1)}% от банка</b>`,
+      `${priceLabel}`,
       ``,
       `${created.pred.analysisTeaser}`,
     ].join('\n');
-    await sendTelegramChannelAnnouncement(created.settings, msg);
+    await sendTelegramChannelAnnouncement(
+      created.settings,
+      msg,
+      matchUrl
+        ? {
+            text:
+              created.pred.accessTier === 'FREE'
+                ? '🔥 Смотреть бесплатный прогноз →'
+                : `🔓 Открыть прогноз (${created.pred.singlePriceRub} ₽) →`,
+            url: matchUrl,
+          }
+        : undefined,
+    );
   }
 
   return created.pred;
@@ -1878,13 +1912,19 @@ export async function settlePredictionByAdmin(params: {
                 : ''
             }`;
 
+    const siteBase = (process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/+$/, '');
+    const statsUrl = siteBase ? `${siteBase}/stats` : '';
     const msg = [
       badge,
       `⚽️ <b>${p.homeTeam} — ${p.awayTeam}</b> (${p.leagueName})`,
       `🎯 Исход: <b>${p.selectionTitle}</b> @ <b>${p.fixedOdds.toFixed(2)}</b>`,
-      `🔐 SHA-256: <code>${p.verificationHash.slice(0, 16)}…</code>`,
+      `🔐 Проверка честности: <code>${p.verificationHash.slice(0, 16)}…</code>`,
     ].join('\n');
-    await sendTelegramChannelAnnouncement(outcome.settings, msg);
+    await sendTelegramChannelAnnouncement(
+      outcome.settings,
+      msg,
+      statsUrl ? { text: '📊 Проверить всю статистику →', url: statsUrl } : undefined,
+    );
   }
 
   return {

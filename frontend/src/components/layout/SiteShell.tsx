@@ -5,11 +5,15 @@ import Link from 'next/link';
 import Script from 'next/script';
 import { usePathname, useRouter } from 'next/navigation';
 import {
+  BarChart3,
+  Home,
   LogOut,
   Menu,
   Send,
   Settings,
   ShoppingBag,
+  Trophy,
+  User,
   Wallet,
   X,
 } from 'lucide-react';
@@ -297,7 +301,7 @@ export const SiteShell: React.FC<SiteShellProps> = ({
       <main className="flex-1">{children}</main>
 
       {/* ПОНЯТНЫЙ ЧЕЛОВЕЧЕСКИЙ ПОДВАЛ */}
-      <footer className="mt-20 border-t border-slate-200/90 bg-white py-12 text-xs text-slate-500">
+      <footer className="mt-20 border-t border-slate-200/90 bg-white pb-24 pt-12 text-xs text-slate-500 md:pb-12">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 gap-8 md:grid-cols-4">
             <div className="md:col-span-2">
@@ -380,6 +384,41 @@ export const SiteShell: React.FC<SiteShellProps> = ({
           </div>
         </div>
       </footer>
+
+      {/* МОБИЛЬНАЯ НИЖНЯЯ ПАНЕЛЬ КАК В ПРИЛОЖЕНИИ (удобно одной рукой из Telegram) */}
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-2 py-1.5 backdrop-blur-md md:hidden">
+        <div className="mx-auto grid max-w-md grid-cols-4 gap-1">
+          {[
+            { href: '/', label: 'Витрина', Icon: Home },
+            { href: '/predictions', label: 'Матчи', Icon: Trophy },
+            { href: '/stats', label: 'Результаты', Icon: BarChart3 },
+            {
+              href: viewer ? '/cabinet' : '/login',
+              label: viewer ? `${viewer.balanceRub} ₽` : 'Кабинет',
+              Icon: User,
+            },
+          ].map(({ href, label, Icon }) => {
+            const active =
+              href === '/'
+                ? pathname === '/'
+                : pathname.startsWith(href);
+            return (
+              <Link
+                key={href}
+                href={href}
+                className={`flex flex-col items-center justify-center rounded-xl py-1.5 text-[10px] font-bold transition ${
+                  active
+                    ? 'bg-blue-50 text-blue-600'
+                    : 'text-slate-500 hover:text-slate-900'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                <span className="mt-0.5 truncate">{label}</span>
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
     </div>
   );
 };

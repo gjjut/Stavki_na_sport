@@ -169,6 +169,30 @@ export default function HomePage() {
     activeList[0] ||
     null;
 
+  const readyDayPackItems = activeList
+    .filter((p) => p.accessTier === 'PAID_SINGLE' && p.isLocked && !p.salesClosed)
+    .slice(0, 3);
+
+  const openReadyDayPack = () => {
+    if (readyDayPackItems.length < 2) return;
+    const subtotal = readyDayPackItems.reduce(
+      (acc, p) => acc + (p.singlePriceRub ?? defaultPrice),
+      0,
+    );
+    const pct = readyDayPackItems.length >= 3 ? bundle3Pct : bundle2Pct;
+    const discounted = Math.max(50, Math.round((subtotal * (100 - pct)) / 100));
+    setCheckoutTarget({
+      kind: 'BUNDLE_PREDICTIONS',
+      title: `Готовый набор дня из ${readyDayPackItems.length} прогнозов (−${pct}%)`,
+      subtitle: readyDayPackItems
+        .map((p) => `${p.homeTeam}—${p.awayTeam}`)
+        .join(' · '),
+      priceRub: discounted,
+      originalPriceRub: subtotal,
+      predictionIds: readyDayPackItems.map((p) => p.id),
+    });
+  };
+
   const copyPromo = async () => {
     await navigator.clipboard.writeText('START15');
     setCopiedPromo(true);
@@ -439,6 +463,61 @@ export default function HomePage() {
             )}
           </button>
         </div>
+
+        {/* Выгодный готовый набор дня в 1 клик (рост среднего чека) */}
+        {readyDayPackItems.length >= 3 && (
+          <div className="mb-6 flex flex-col justify-between gap-4 rounded-2xl border border-blue-200 bg-gradient-to-r from-[#0B0F19] via-slate-900 to-blue-950 p-5 text-white shadow-md sm:flex-row sm:items-center">
+            <div>
+              <div className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/20 px-2.5 py-0.5 text-[11px] font-bold text-blue-300">
+                <Sparkles className="h-3.5 w-3.5 text-blue-400" />
+                <span>Выгодный набор дня · Скидка −{bundle3Pct}% + страховка на каждый матч</span>
+              </div>
+              <div className="mt-1.5 text-base font-black sm:text-lg">
+                Заберите сразу 3 лучших прогноза дня дешевле, чем по одному
+              </div>
+              <div className="mt-1 text-xs text-slate-300">
+                В наборе:{' '}
+                {readyDayPackItems
+                  .map((m) => `«${m.homeTeam} — ${m.awayTeam}»`)
+                  .join(' · ')}
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-4">
+              <div className="text-right">
+                <div className="font-mono text-xs text-slate-400 line-through">
+                  {readyDayPackItems
+                    .reduce((a, p) => a + (p.singlePriceRub ?? defaultPrice), 0)
+                    .toLocaleString('ru-RU')}{' '}
+                  ₽
+                </div>
+                <div className="font-mono text-2xl font-black text-emerald-400">
+                  {Math.max(
+                    50,
+                    Math.round(
+                      (readyDayPackItems.reduce(
+                        (a, p) => a + (p.singlePriceRub ?? defaultPrice),
+                        0,
+                      ) *
+                        (100 - bundle3Pct)) /
+                        100,
+                    ),
+                  ).toLocaleString('ru-RU')}{' '}
+                  ₽
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={openReadyDayPack}
+                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-xs font-extrabold text-white shadow-lg shadow-blue-600/30 transition hover:bg-blue-500"
+              >
+                <span>Забрать все 3 матча</span>
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
           <div>

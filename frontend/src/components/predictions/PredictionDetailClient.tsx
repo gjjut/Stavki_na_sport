@@ -4,10 +4,14 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import {
   ArrowLeft,
+  Calculator,
+  Check,
   CheckCircle2,
   Clock,
+  Copy,
   HelpCircle,
   Lock,
+  Share2,
   ShieldCheck,
   Sparkles,
 } from 'lucide-react';
@@ -25,9 +29,32 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
   const { data, reload } = usePublicPlatform();
   const [checkoutTarget, setCheckoutTarget] = useState<CheckoutModalTarget | null>(null);
   const [hashModalItem, setHashModalItem] = useState<PublicPredictionDto | null>(null);
+  const [userBankRub, setUserBankRub] = useState<number>(20_000);
+  const [copiedMatch, setCopiedMatch] = useState(false);
 
   const prediction = (data?.predictions ?? []).find((p) => p.slug === slug) ?? null;
   const defaultPrice = data?.brand.defaultSinglePriceRub ?? 790;
+
+  const copyMatchForBookmaker = async () => {
+    if (!prediction) return;
+    await navigator.clipboard.writeText(`${prediction.homeTeam} ${prediction.awayTeam}`);
+    setCopiedMatch(true);
+    window.setTimeout(() => setCopiedMatch(false), 2000);
+  };
+
+  const shareMatchInTelegram = () => {
+    if (!prediction || typeof window === 'undefined') return;
+    const refSuffix = data?.viewer?.referralCode
+      ? `?ref=${encodeURIComponent(data.viewer.referralCode)}`
+      : '';
+    const pageUrl = `${window.location.origin}/predictions/${prediction.slug}${refSuffix}`;
+    const text = `Разбор матча «${prediction.homeTeam} — ${prediction.awayTeam}» (${prediction.leagueName})`;
+    window.open(
+      `https://t.me/share/url?url=${encodeURIComponent(pageUrl)}&text=${encodeURIComponent(text)}`,
+      '_blank',
+      'noopener,noreferrer',
+    );
+  };
 
   const guide =
     prediction && !prediction.isLocked && prediction.selectionTitle
@@ -164,23 +191,95 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
                             </p>
                           </div>
 
-                          <div className="border-t border-slate-100 pt-2.5 text-[11px] text-slate-500 sm:col-span-2">
-                            <strong className="text-slate-700">
-                              Сколько безопасно поставить ({prediction.stakeUnits.toFixed(1)}% от банка):
-                            </strong>{' '}
-                            при банке 10 000 ₽ →{' '}
-                            <span className="font-mono font-bold text-slate-800">
-                              {Math.round(100 * prediction.stakeUnits)} ₽
-                            </span>{' '}
-                            · при банке 30 000 ₽ →{' '}
-                            <span className="font-mono font-bold text-slate-800">
-                              {Math.round(300 * prediction.stakeUnits)} ₽
-                            </span>{' '}
-                            · при банке 50 000 ₽ →{' '}
-                            <span className="font-mono font-bold text-slate-800">
-                              {Math.round(500 * prediction.stakeUnits)} ₽
-                            </span>
-                            .
+                          <div className="border-t border-slate-100 pt-3 sm:col-span-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 text-xs font-extrabold text-slate-900">
+                                <Calculator className="h-3.5 w-3.5 text-blue-600" />
+                                <span>
+                                  Калькулятор вашей ставки ({prediction.stakeUnits.toFixed(1)}% от вашего банка):
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                {[5000, 10000, 20000, 50000, 100000].map((b) => (
+                                  <button
+                                    key={b}
+                                    type="button"
+                                    onClick={() => setUserBankRub(b)}
+                                    className={`rounded-lg px-2 py-1 font-mono text-[11px] font-bold transition ${
+                                      userBankRub === b
+                                        ? 'bg-blue-600 text-white'
+                                        : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-white'
+                                    }`}
+                                  >
+                                    {(b / 1000).toFixed(0)}к ₽
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            {(() => {
+                              const recBetRub = Math.max(
+                                50,
+                                Math.round((userBankRub * prediction.stakeUnits) / 100),
+                              );
+                              const oddsVal = prediction.fixedOdds ?? 1.85;
+                              const totalPayoutRub = Math.round(recBetRub * oddsVal);
+                              const netWinRub = totalPayoutRub - recBetRub;
+                              return (
+                                <div className="mt-2.5 grid grid-cols-3 gap-2 rounded-xl bg-slate-50 p-2.5 text-center">
+                                  <div>
+                                    <div className="text-[10px] text-slate-500">Сумма ставки</div>
+                                    <div className="font-mono text-sm font-black text-slate-950">
+                                      {recBetRub.toLocaleString('ru-RU')} ₽
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-[10px] text-slate-500">Чистая прибыль</div>
+                                    <div className="font-mono text-sm font-black text-emerald-600">
+                                      +{netWinRub.toLocaleString('ru-RU')} ₽
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-[10px] text-slate-500">Выплата БК</div>
+                                    <div className="font-mono text-sm font-black text-blue-600">
+                                      {totalPayoutRub.toLocaleString('ru-RU')} ₽
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2.5 sm:col-span-2">
+                            <button
+                              type="button"
+                              onClick={copyMatchForBookmaker}
+                              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-bold text-slate-800 hover:bg-white"
+                            >
+                              {copiedMatch ? (
+                                <Check className="h-3.5 w-3.5 text-emerald-600" />
+                              ) : (
+                                <Copy className="h-3.5 w-3.5 text-blue-600" />
+                              )}
+                              <span>
+                                {copiedMatch
+                                  ? 'Скопировано для поиска в БК!'
+                                  : 'Скопировать команды для поиска в БК'}
+                              </span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={shareMatchInTelegram}
+                              className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-700 hover:bg-blue-100"
+                            >
+                              <Share2 className="h-3.5 w-3.5" />
+                              <span>
+                                {data?.viewer
+                                  ? 'Отправить другу (+ваш партнерский бонус)'
+                                  : 'Отправить другу в Telegram'}
+                              </span>
+                            </button>
                           </div>
                         </div>
                       )}

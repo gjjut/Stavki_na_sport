@@ -44,7 +44,7 @@ export const BundleCartBar: React.FC<BundleCartBarProps> = ({
         initial={{ opacity: 0, y: 28 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: 28 }}
-        className="fixed bottom-4 left-1/2 z-40 w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2 rounded-2xl border border-white/15 bg-[#0B0F19]/95 px-4 py-3.5 text-white shadow-2xl backdrop-blur-md sm:px-5"
+        className="fixed bottom-20 left-1/2 z-40 w-[calc(100%-1.5rem)] max-w-2xl -translate-x-1/2 rounded-2xl border border-white/15 bg-[#0B0F19]/95 px-4 py-3.5 text-white shadow-2xl backdrop-blur-md md:bottom-5 sm:px-5"
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
