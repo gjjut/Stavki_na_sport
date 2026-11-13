@@ -123,10 +123,26 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
                 <span>Идет матч</span>
               </span>
             ) : (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
-                <Clock className="h-3 w-3 text-blue-600" />
-                <span>{formatCountdown(prediction.matchStartsAt, nowMs)}</span>
-              </span>
+              (() => {
+                const minsLeft = Math.floor(
+                  (new Date(prediction.matchStartsAt).getTime() - nowMs) / 60_000,
+                );
+                const urgent = minsLeft > 0 && minsLeft <= 120;
+                return (
+                  <span
+                    className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                      urgent
+                        ? 'border border-amber-200 bg-amber-50 font-bold text-amber-800'
+                        : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    <Clock
+                      className={`h-3 w-3 ${urgent ? 'text-amber-600' : 'text-blue-600'}`}
+                    />
+                    <span>{formatCountdown(prediction.matchStartsAt, nowMs)}</span>
+                  </span>
+                );
+              })()
             )
           ) : prediction.resultStatus === 'WIN' || prediction.resultStatus === 'CASHOUT' ? (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">

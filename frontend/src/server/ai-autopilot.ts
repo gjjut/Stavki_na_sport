@@ -5,6 +5,7 @@ import {
   readState,
   settlePredictionByAdmin,
 } from './database';
+import { sendTelegramChannelAnnouncement } from './integrations';
 import type {
   AccessTier,
   AiAutopilotConfig,
@@ -1891,6 +1892,13 @@ export async function runAiScanAndGenerateCycle(options?: {
   const publishImmediately =
     options?.forcePublish === true || config.mode === 'FULL_AUTOPILOT';
 
+  let hasActiveFreeOnStorefront = stateSnapshot.predictions.some(
+    (p) =>
+      p.resultStatus === 'PENDING' &&
+      p.accessTier === 'FREE' &&
+      new Date(p.matchStartsAt).getTime() > Date.now(),
+  );
+
   let createdCount = 0;
 
   for (let idx = 0; idx < filtered.length; idx++) {
@@ -1898,8 +1906,17 @@ export async function runAiScanAndGenerateCycle(options?: {
     const dossier = await generateAnalystDossier(cand, config);
 
     const nextSeq = stateSnapshot.aiAutopilot.totalGeneratedCount + idx + 1;
+    const forceFreeToKeepStorefrontWarm =
+      config.freeEveryNthPick > 0 &&
+      !hasActiveFreeOnStorefront &&
+      filtered.length >= 2 &&
+      idx === filtered.length - 1;
     const isFreeLeadMagnet =
-      config.freeEveryNthPick > 0 && nextSeq % config.freeEveryNthPick === 0;
+      forceFreeToKeepStorefrontWarm ||
+      (config.freeEveryNthPick > 0 && nextSeq % config.freeEveryNthPick === 0);
+    if (isFreeLeadMagnet) {
+      hasActiveFreeOnStorefront = true;
+    }
     const accessTier: AccessTier = isFreeLeadMagnet ? 'FREE' : 'PAID_SINGLE';
     const priceRub = accessTier === 'PAID_SINGLE' ? config.defaultAiPriceRub : null;
     const insured = accessTier === 'PAID_SINGLE' ? config.insureAiPicks : false;
@@ -2007,6 +2024,89 @@ export async function replaceDemoWithRealMatches(): Promise<{
     createdCount: scanRes.createdCount,
     feedSource: scanRes.feedSource,
   };
+}
+
+/**
+ * Публикация продающего дайджеста витрины и верифицированной статистики в Telegram-канал (в 1 клик или по автопилоту)
+ */
+export async function broadcastDailyDigestToTelegram(): Promise<{
+  sent: boolean;
+  error?: string;
+}> {
+  const state = await readState();
+  const settled = state.predictions.filter((p) => p.resultStatus !== 'PENDING');
+  const wins = settled.filter((p) => p.resultStatus === 'WIN').length;
+  const losses = settled.filter((p) => p.resultStatus === 'LOSS').length;
+  const winRate =
+    wins + losses > 0 ? Math.round((wins / (wins + losses)) * 100) : 0;
+
+  let netUnits = 0;
+  for (const p of settled) {
+    if (p.resultStatus === 'WIN') netUnits += p.stakeUnits * (p.fixedOdds - 1);
+    else if (p.resultStatus === 'LOSS') netUnits -= p.stakeUnits;
+  }
+
+  const upcoming = state.predictions
+    .filter(
+      (p) =>
+        p.resultStatus === 'PENDING' &&
+        new Date(p.matchStartsAt).getTime() > Date.now(),
+    )
+    .sort(
+      (a, b) =>
+        new Date(a.matchStartsAt).getTime() - new Date(b.matchStartsAt).getTime(),
+    )
+    .slice(0, 5);
+
+  const upcomingLines =
+    upcoming.length > 0
+      ? upcoming.map((p, idx) => {
+          const tStr = new Date(p.matchStartsAt).toLocaleString('ru-RU', {
+            timeZone: 'Europe/Moscow',
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+          const tag =
+            p.accessTier === 'FREE'
+              ? '🎁 0 ₽ (бесплатно)'
+              : `${p.singlePriceRub ?? state.settings.defaultSinglePriceRub} ₽${
+                  p.insuredOnLoss ? ' · 🛡 страховка' : ''
+                }`;
+          return `${idx + 1}. <b>${p.homeTeam} — ${p.awayTeam}</b> (${tStr} МСК) — ${tag}`;
+        })
+      : ['Свежая линия загружается — следите за витриной!'];
+
+  const siteBase = (process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/+$/, '');
+  const html = [
+    `🔥 <b>Сводка линии и результатов на ${state.settings.brandName}</b>`,
+    ``,
+    `📊 <b>Открытая статистика (защита SHA-256):</b>`,
+    `✅ Побед: <b>${wins}</b> · ❌ Минусов: <b>${losses}</b> (${winRate}% прохода)`,
+    `📈 Прирост к игровому банку: <b>${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(1)}%</b>`,
+    ``,
+    `⚡ <b>Сегодня на витрине:</b>`,
+    ...upcomingLines,
+    ``,
+    `💎 Набор из 3 матчей со скидкой <b>−${state.settings.bundle3DiscountPct}%</b> · Промокод новичкам: <code>START15</code> (−15%)`,
+  ].join('\n');
+
+  const res = await sendTelegramChannelAnnouncement(
+    state.settings,
+    html,
+    siteBase
+      ? { text: '🔥 Открыть витрину матчей →', url: siteBase }
+      : undefined,
+  );
+
+  if (res.sent) {
+    await appendAutopilotLog(
+      'SUCCESS',
+      'PUBLISHER',
+      'В Telegram-канал опубликована сводка актуальных матчей и открытой статистики.',
+    );
+  }
+
+  return res;
 }
 
 /**

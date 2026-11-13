@@ -10,6 +10,7 @@ import {
   Loader2,
   Play,
   Rocket,
+  Send,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -317,6 +318,26 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
     await onRefresh();
   };
 
+  const handleBroadcastDigest = async () => {
+    setBusyAction('DIGEST');
+    try {
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'BROADCAST_DAILY_DIGEST' }),
+      });
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        onToast(json.error || 'Не удалось отправить сводку в Telegram');
+        return;
+      }
+      onToast('Сводка свежих матчей и открытой статистики опубликована в Telegram-канале!');
+      await onRefresh();
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const isFullAutopilot = draftConfig.mode === 'FULL_AUTOPILOT';
 
   return (
@@ -480,6 +501,20 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
               <span>Выпустить сразу на витрину</span>
             </button>
           )}
+
+          <button
+            type="button"
+            disabled={busyAction !== null}
+            onClick={handleBroadcastDigest}
+            className="inline-flex items-center gap-2 rounded-xl border border-blue-400/30 bg-blue-500/15 px-4 py-2.5 text-xs font-bold text-blue-200 hover:bg-blue-500/25 disabled:opacity-50"
+          >
+            {busyAction === 'DIGEST' ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}
+            <span>Сводка дня в Telegram</span>
+          </button>
 
           <button
             type="button"

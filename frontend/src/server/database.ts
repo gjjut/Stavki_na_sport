@@ -1170,9 +1170,12 @@ export function calculateCartPricing(params: {
   };
 }
 
-// =============================================================================
-// БИЗНЕС-ОПЕРАЦИИ (АВТОРИЗАЦИЯ, ОПЛАТЫ, ПРОМОКОДЫ, СТРАХОВКА, АДМИНКА)
-// =============================================================================
+export function computeWalletTopupBonusRub(amountRub: number): number {
+  const clean = Math.round(amountRub || 0);
+  if (clean >= 5000) return Math.round(clean * 0.2); // +20% (от 5 000 ₽ -> +1 000 ₽)
+  if (clean >= 2500) return Math.round(clean * 0.1); // +10% (от 2 500 ₽ -> +250 ₽)
+  return 0;
+}
 
 export async function registerUserAccount(params: {
   email: string;
@@ -1354,7 +1357,11 @@ export async function initiateOrderCheckout(params: {
     }
   } else {
     amountRub = Math.max(100, Math.round(params.topupAmountRub || 1000));
-    title = `Пополнение кошелька кабинета (${userSnap.email})`;
+    const bonusPreview = computeWalletTopupBonusRub(amountRub);
+    title =
+      bonusPreview > 0
+        ? `Пополнение баланса на ${amountRub} ₽ (+бонус ${bonusPreview} ₽)`
+        : `Пополнение баланса кабинета (${userSnap.email})`;
   }
 
   if (params.paymentMethod === 'internal_balance' && userSnap.balanceRub < amountRub) {
@@ -1488,7 +1495,8 @@ export async function fulfillOrderPayment(
         if (foundPred) unlockedPreds.push(foundPred);
       }
     } else if (tx.kind === 'BALANCE_TOPUP') {
-      buyer.balanceRub += tx.amountRub;
+      const bonusRub = computeWalletTopupBonusRub(tx.amountRub);
+      buyer.balanceRub += tx.amountRub + bonusRub;
     }
 
     if (tx.paymentMethod === 'yookassa' && buyer.referredByUserId) {
@@ -1537,6 +1545,27 @@ export async function fulfillOrderPayment(
         () => undefined,
       );
     }
+  }
+
+  if (
+    result.newlySettled &&
+    result.buyerChatId &&
+    result.tx.kind === 'BALANCE_TOPUP'
+  ) {
+    const bonusRub = computeWalletTopupBonusRub(result.tx.amountRub);
+    const creditedTotal = result.tx.amountRub + bonusRub;
+    const topupMsg = [
+      `💳 <b>Баланс успешно пополнен (${result.settings.brandName})!</b>`,
+      `Зачислено на счет: <b>+${creditedTotal.toLocaleString('ru-RU')} ₽</b>${
+        bonusRub > 0 ? ` (включая подарок +${bonusRub.toLocaleString('ru-RU')} ₽)` : ''
+      }`,
+      `Теперь вы можете открывать любые прогнозы на сайте в 1 клик без ввода карты.`,
+    ].join('\n');
+    void sendTelegramDirectMessage(
+      result.settings,
+      result.buyerChatId,
+      topupMsg,
+    ).catch(() => undefined);
   }
 
   if (

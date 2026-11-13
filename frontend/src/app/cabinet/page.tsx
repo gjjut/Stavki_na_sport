@@ -295,23 +295,44 @@ export default function CabinetPage() {
               <Wallet className="h-6 w-6 shrink-0 text-blue-600" />
             </div>
 
-            <div className="mt-4 flex flex-wrap gap-2">
-              {[1000, 2500, 5000].map((amount) => (
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              {[
+                { amount: 1000, bonus: 0, badge: null },
+                { amount: 2500, bonus: 250, badge: '+10% подарок' },
+                { amount: 5000, bonus: 1000, badge: '+1 000 ₽ подарок' },
+              ].map(({ amount, bonus, badge }) => (
                 <button
                   key={amount}
                   type="button"
                   onClick={() =>
                     setCheckoutTarget({
                       kind: 'BALANCE_TOPUP',
-                      title: `Пополнение баланса на ${amount.toLocaleString('ru-RU')} ₽`,
-                      subtitle: 'Для быстрой оплаты прогнозов в 1 клик',
+                      title:
+                        bonus > 0
+                          ? `Пополнение счета: +${(amount + bonus).toLocaleString('ru-RU')} ₽ на баланс`
+                          : `Пополнение баланса на ${amount.toLocaleString('ru-RU')} ₽`,
+                      subtitle:
+                        bonus > 0
+                          ? `К оплате ${amount.toLocaleString('ru-RU')} ₽ · Подарок +${bonus.toLocaleString('ru-RU')} ₽ зачисляется мгновенно (без подписок)`
+                          : 'Разовое пополнение для быстрой оплаты прогнозов в 1 клик',
                       priceRub: amount,
                     })
                   }
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-800 hover:border-blue-300 hover:bg-blue-50"
+                  className={`relative flex flex-col items-center justify-center rounded-xl border px-2 py-2.5 text-center transition ${
+                    bonus >= 1000
+                      ? 'border-blue-300 bg-blue-50/70 text-blue-950 hover:bg-blue-100/70'
+                      : 'border-slate-200 bg-slate-50 text-slate-800 hover:border-blue-300 hover:bg-blue-50'
+                  }`}
                 >
-                  <PlusCircle className="h-3.5 w-3.5 text-blue-600" />
-                  <span>+{amount.toLocaleString('ru-RU')} ₽</span>
+                  {badge && (
+                    <span className="mb-0.5 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[9px] font-extrabold text-white">
+                      {badge}
+                    </span>
+                  )}
+                  <span className="inline-flex items-center gap-1 font-mono text-xs font-black">
+                    <PlusCircle className="h-3 w-3 text-blue-600" />
+                    <span>{amount.toLocaleString('ru-RU')} ₽</span>
+                  </span>
                 </button>
               ))}
             </div>

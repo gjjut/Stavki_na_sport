@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import {
   approveAiDraftToStorefront,
+  broadcastDailyDigestToTelegram,
   replaceDemoWithRealMatches,
   runAiScanAndGenerateCycle,
   runAutopilotDiagnostics,
@@ -73,6 +74,7 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as
       | { action: 'RUN_SCAN_NOW'; forcePublish?: boolean }
       | { action: 'REPLACE_DEMO_WITH_REAL' }
+      | { action: 'BROADCAST_DAILY_DIGEST' }
       | { action: 'RUN_SETTLE_NOW' }
       | { action: 'RUN_DIAGNOSTICS' }
       | {
@@ -105,6 +107,17 @@ export async function POST(req: NextRequest) {
     if (body.action === 'REPLACE_DEMO_WITH_REAL') {
       const res = await replaceDemoWithRealMatches();
       return NextResponse.json(res);
+    }
+
+    if (body.action === 'BROADCAST_DAILY_DIGEST') {
+      const res = await broadcastDailyDigestToTelegram();
+      if (!res.sent) {
+        return NextResponse.json(
+          { error: res.error || 'Укажите токен бота и ID канала во вкладке «ЮKassa, Telegram и Реквизиты»' },
+          { status: 400 },
+        );
+      }
+      return NextResponse.json({ ok: true });
     }
 
     if (body.action === 'RUN_SCAN_NOW') {

@@ -15,8 +15,11 @@ import type { PublicPredictionDto, SportType } from '@/server/types';
 
 export default function PredictionsCatalogPage() {
   const { data, reload } = usePublicPlatform();
-  const [mode, setMode] = useState<'ACTIVE' | 'INSURED' | 'FREE' | 'SETTLED'>('ACTIVE');
+  const [mode, setMode] = useState<'ACTIVE' | 'TODAY' | 'INSURED' | 'FREE' | 'SETTLED'>(
+    'ACTIVE',
+  );
   const [sport, setSport] = useState<SportType | 'ALL'>('ALL');
+  const [sortBy, setSortBy] = useState<'SOONEST' | 'CONFIDENCE' | 'PRICE_ASC'>('SOONEST');
   const [search, setSearch] = useState('');
   const [selectedBundleIds, setSelectedBundleIds] = useState<string[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<CheckoutModalTarget | null>(null);
@@ -83,24 +86,47 @@ export default function PredictionsCatalogPage() {
   const baseItems =
     mode === 'SETTLED'
       ? settledPredictions
-      : mode === 'FREE'
-        ? activePredictions.filter((p) => p.accessTier === 'FREE')
-        : mode === 'INSURED'
-          ? activePredictions.filter((p) => p.insuredOnLoss)
-          : activePredictions;
+      : mode === 'TODAY'
+        ? activePredictions.filter((p) => {
+            const diffHrs =
+              (new Date(p.matchStartsAt).getTime() - Date.now()) / 3_600_000;
+            return diffHrs > -2 && diffHrs <= 18;
+          })
+        : mode === 'FREE'
+          ? activePredictions.filter((p) => p.accessTier === 'FREE')
+          : mode === 'INSURED'
+            ? activePredictions.filter((p) => p.insuredOnLoss)
+            : activePredictions;
 
-  const filtered = baseItems.filter((item) => {
-    if (sport !== 'ALL' && item.sport !== sport) return false;
-    if (search.trim()) {
-      const q = search.toLowerCase();
+  const filtered = baseItems
+    .filter((item) => {
+      if (sport !== 'ALL' && item.sport !== sport) return false;
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        return (
+          item.homeTeam.toLowerCase().includes(q) ||
+          item.awayTeam.toLowerCase().includes(q) ||
+          item.leagueName.toLowerCase().includes(q)
+        );
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      if (mode === 'SETTLED') {
+        return (
+          new Date(b.matchStartsAt).getTime() - new Date(a.matchStartsAt).getTime()
+        );
+      }
+      if (sortBy === 'CONFIDENCE') {
+        return b.stakeUnits - a.stakeUnits;
+      }
+      if (sortBy === 'PRICE_ASC') {
+        return (a.singlePriceRub ?? 0) - (b.singlePriceRub ?? 0);
+      }
       return (
-        item.homeTeam.toLowerCase().includes(q) ||
-        item.awayTeam.toLowerCase().includes(q) ||
-        item.leagueName.toLowerCase().includes(q)
+        new Date(a.matchStartsAt).getTime() - new Date(b.matchStartsAt).getTime()
       );
-    }
-    return true;
-  });
+    });
 
   return (
     <SiteShell
@@ -124,6 +150,7 @@ export default function PredictionsCatalogPage() {
             {(
               [
                 ['ACTIVE', 'Ближайшие матчи'],
+                ['TODAY', '🔥 Матчи сегодня'],
                 ['INSURED', 'Со страховкой 100%'],
                 ['FREE', 'Бесплатные (0 ₽)'],
                 ['SETTLED', 'Завершенные (архив)'],
@@ -145,6 +172,22 @@ export default function PredictionsCatalogPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
+            {mode !== 'SETTLED' && (
+              <select
+                value={sortBy}
+                onChange={(e) =>
+                  setSortBy(
+                    e.target.value as 'SOONEST' | 'CONFIDENCE' | 'PRICE_ASC',
+                  )
+                }
+                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 focus:border-blue-600 focus:outline-none"
+              >
+                <option value="SOONEST">Сначала ближайшие</option>
+                <option value="CONFIDENCE">Выше надежность</option>
+                <option value="PRICE_ASC">Сначала бесплатные / дешевле</option>
+              </select>
+            )}
+
             <select
               value={sport}
               onChange={(e) => setSport(e.target.value as SportType | 'ALL')}

@@ -2,18 +2,19 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { Calculator, CheckCircle2, ShieldCheck, XCircle } from 'lucide-react';
+import { Calculator, CheckCircle2, MinusCircle, ShieldCheck, XCircle } from 'lucide-react';
 import { SiteShell } from '@/components/layout/SiteShell';
 import { EquityCurveChart } from '@/components/stats/EquityCurveChart';
 import { HashVerifyModal } from '@/components/predictions/HashVerifyModal';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
-import type { PublicPredictionDto } from '@/server/types';
+import type { PublicPredictionDto, SportType } from '@/server/types';
 
 const BANKROLL_PRESETS = [10_000, 30_000, 50_000, 100_000];
 
 export default function StatsPage() {
   const { data, reload } = usePublicPlatform();
   const [period, setPeriod] = useState<'WEEK' | 'MONTH' | 'ALL_TIME'>('ALL_TIME');
+  const [sportFilter, setSportFilter] = useState<SportType | 'ALL'>('ALL');
   const [bankrollRub, setBankrollRub] = useState<number>(30_000);
   const [hashItem, setHashItem] = useState<PublicPredictionDto | null>(null);
 
@@ -24,7 +25,9 @@ export default function StatsPage() {
   const twoPercentRub = Math.round((bankrollRub * 2) / 100);
 
   const settledPredictions = (data?.predictions ?? []).filter(
-    (p) => p.resultStatus !== 'PENDING',
+    (p) =>
+      p.resultStatus !== 'PENDING' &&
+      (sportFilter === 'ALL' || p.sport === sportFilter),
   );
 
   return (
@@ -211,10 +214,35 @@ export default function StatsPage() {
 
         {/* Открытая таблица всех сыгранных матчей */}
         <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-          <div className="border-b border-slate-200 px-6 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-6 py-4">
             <h2 className="text-base font-extrabold text-slate-950">
               Архив всех завершившихся матчей
             </h2>
+            <div className="flex flex-wrap gap-1.5">
+              {(
+                [
+                  ['ALL', 'Все виды'],
+                  ['FOOTBALL', 'Футбол'],
+                  ['HOCKEY', 'Хоккей'],
+                  ['TENNIS', 'Теннис'],
+                  ['ESPORTS', 'Киберспорт'],
+                  ['MMA', 'ММА'],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setSportFilter(key)}
+                  className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${
+                    sportFilter === key
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
@@ -263,6 +291,11 @@ export default function StatsPage() {
                           <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 font-bold text-emerald-700">
                             <CheckCircle2 className="h-3.5 w-3.5" />
                             <span>Зашел (+{pUnits.toFixed(1)}%)</span>
+                          </span>
+                        ) : item.resultStatus === 'PUSH' ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 font-bold text-slate-600">
+                            <MinusCircle className="h-3.5 w-3.5" />
+                            <span>Возврат (0%)</span>
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2.5 py-0.5 font-bold text-rose-600">
