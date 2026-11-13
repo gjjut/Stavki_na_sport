@@ -1,0 +1,835 @@
+'use client';
+
+import React, { useEffect, useState } from 'react';
+import {
+  Bot,
+  CheckCircle2,
+  Clock,
+  Cpu,
+  Loader2,
+  Play,
+  Rocket,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  Zap,
+} from 'lucide-react';
+import type {
+  AiAutopilotConfig,
+  AiAutopilotLogEntry,
+  AiAutopilotMode,
+  AiLlmProvider,
+  AiPerformanceStats,
+  AiPredictionDraft,
+  SportType,
+} from '@/server/types';
+
+interface AiAutopilotPanelProps {
+  config: AiAutopilotConfig;
+  drafts: AiPredictionDraft[];
+  logs: AiAutopilotLogEntry[];
+  aiStats: AiPerformanceStats;
+  onRefresh: () => Promise<void>;
+  onToast: (msg: string) => void;
+}
+
+const SPORT_OPTIONS: Array<{ id: SportType; label: string }> = [
+  { id: 'FOOTBALL', label: 'Футбол' },
+  { id: 'HOCKEY', label: 'Хоккей' },
+  { id: 'TENNIS', label: 'Теннис' },
+  { id: 'ESPORTS', label: 'Киберспорт' },
+  { id: 'BASKETBALL', label: 'Баскетбол' },
+  { id: 'MMA', label: 'ММА / UFC' },
+];
+
+export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
+  config,
+  drafts,
+  logs,
+  aiStats,
+  onRefresh,
+  onToast,
+}) => {
+  const [draftConfig, setDraftConfig] = useState<AiAutopilotConfig>(config);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraftConfig(config);
+  }, [config]);
+
+  const saveModeImmediately = async (nextMode: AiAutopilotMode) => {
+    setBusyAction('MODE');
+    try {
+      const updated = { ...draftConfig, mode: nextMode };
+      setDraftConfig(updated);
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: { mode: nextMode } }),
+      });
+      if (res.ok) {
+        onToast(
+          nextMode === 'FULL_AUTOPILOT'
+            ? 'Полный автопилот 24/7 ВКЛЮЧЕН! Платформа сама наполняет витрину и рассчитывает матчи.'
+            : nextMode === 'MODERATION'
+              ? 'Включен режим премодерации черновиков ИИ.'
+              : 'ИИ-Автопилот поставлен на паузу.',
+        );
+        await onRefresh();
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleApplyProviderPreset = (provider: AiLlmProvider) => {
+    if (provider === 'DEEPSEEK') {
+      setDraftConfig({
+        ...draftConfig,
+        llmProvider: 'DEEPSEEK',
+        llmBaseUrl: 'https://api.deepseek.com/v1',
+        llmModel: 'deepseek-chat',
+      });
+    } else if (provider === 'OPENROUTER') {
+      setDraftConfig({
+        ...draftConfig,
+        llmProvider: 'OPENROUTER',
+        llmBaseUrl: 'https://openrouter.ai/api/v1',
+        llmModel: 'deepseek/deepseek-chat',
+      });
+    } else if (provider === 'OPENAI') {
+      setDraftConfig({
+        ...draftConfig,
+        llmProvider: 'OPENAI',
+        llmBaseUrl: 'https://api.openai.com/v1',
+        llmModel: 'gpt-4o-mini',
+      });
+    } else {
+      setDraftConfig({
+        ...draftConfig,
+        llmProvider: 'BUILTIN_QUANT',
+      });
+    }
+  };
+
+  const toggleSport = (sport: SportType) => {
+    const exists = draftConfig.sportsEnabled.includes(sport);
+    const next = exists
+      ? draftConfig.sportsEnabled.filter((s) => s !== sport)
+      : [...draftConfig.sportsEnabled, sport];
+    if (next.length === 0) return;
+    setDraftConfig({ ...draftConfig, sportsEnabled: next });
+  };
+
+  const handleSaveConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusyAction('SAVE');
+    try {
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: draftConfig }),
+      });
+      if (res.ok) {
+        onToast('Параметры ИИ-Автопилота, ключи API и расписание сохранены!');
+        await onRefresh();
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleRunScan = async (forcePublish: boolean) => {
+    setBusyAction(forcePublish ? 'FORCE_PUBLISH' : 'SCAN');
+    try {
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'RUN_SCAN_NOW', forcePublish }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        if (json.createdCount > 0) {
+          onToast(
+            json.publishedDirectly
+              ? `Автопилот сразу выставил ${json.createdCount} новых событий на витрину!`
+              : `ИИ подготовил ${json.createdCount} новых прогнозов в очередь черновиков!`,
+          );
+        } else {
+          onToast('Все подходящие валуйные матчи уже находятся на витрине.');
+        }
+        await onRefresh();
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleRunSettlement = async () => {
+    setBusyAction('SETTLE');
+    try {
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'RUN_SETTLE_NOW' }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        onToast(
+          json.settledCount > 0
+            ? `Авторасчет завершен: рассчитано ${json.settledCount} матчей, возвращено страховок: ${json.compensatedBuyers}.`
+            : `Проверено завершенных матчей: ${json.checkedCount}. Новых официальных счетов для расчета пока нет.`,
+        );
+        await onRefresh();
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleApproveDraft = async (draftId: string) => {
+    setBusyAction(draftId);
+    try {
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'APPROVE_DRAFT', draftId }),
+      });
+      if (res.ok) {
+        onToast('Прогноз ИИ опубликован на витрине и зафиксирован SHA-256!');
+        await onRefresh();
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleDeleteDraft = async (draftId: string) => {
+    await fetch('/api/v1/admin/autopilot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'DELETE_DRAFT', draftId }),
+    });
+    await onRefresh();
+  };
+
+  const isFullAutopilot = draftConfig.mode === 'FULL_AUTOPILOT';
+
+  return (
+    <div className="mt-6 space-y-6">
+      {/* 1. ГЛАВНЫЙ БЛОК ТУМБЛЕРА АВТОПИЛОТА И СТАТИСТИКИ АЛГОРИТМА */}
+      <div className="overflow-hidden rounded-3xl border border-slate-200 bg-[#0B0F19] p-6 text-white shadow-lg sm:p-8">
+        <div className="grid gap-6 lg:grid-cols-12 lg:items-center">
+          <div className="lg:col-span-7">
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-bold text-blue-300">
+              <Bot className="h-4 w-4 text-blue-400" />
+              <span>Автономный ИИ-Аналитик + Авторасчет результатов</span>
+            </div>
+
+            <h2 className="mt-3 text-2xl font-black tracking-tight sm:text-3xl">
+              {isFullAutopilot
+                ? 'Полный автопилот 24/7 активен'
+                : draftConfig.mode === 'MODERATION'
+                  ? 'Режим премодерации черновиков'
+                  : 'ИИ-Автопилот на паузе'}
+            </h2>
+
+            <p className="mt-2 max-w-2xl text-xs leading-relaxed text-slate-300 sm:text-sm">
+              Алгоритм сканирует расписание и коэффициенты, отбирает события с математическим перевесом (EV%), генерирует анонс и глубокую аналитику через API нейросети, выставляет матчи на витрину в{' '}
+              <strong className="text-white">
+                {String(draftConfig.morningHourMsk).padStart(2, '0')}:00
+              </strong>{' '}
+              и{' '}
+              <strong className="text-white">
+                {String(draftConfig.eveningHourMsk).padStart(2, '0')}:00 МСК
+              </strong>
+              , а после игр сам проверяет счет и начисляет страховки покупателям.
+            </p>
+
+            {/* Тумблер 3 режимов */}
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={busyAction === 'MODE'}
+                onClick={() => saveModeImmediately('FULL_AUTOPILOT')}
+                className={`inline-flex items-center gap-2 rounded-xl px-4 py-3 text-xs font-extrabold transition ${
+                  isFullAutopilot
+                    ? 'bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/30'
+                    : 'border border-white/15 bg-white/5 text-slate-200 hover:bg-white/10'
+                }`}
+              >
+                <Rocket className="h-4 w-4" />
+                <span>Полный автопилот 24/7</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={busyAction === 'MODE'}
+                onClick={() => saveModeImmediately('MODERATION')}
+                className={`inline-flex items-center gap-2 rounded-xl px-4 py-3 text-xs font-bold transition ${
+                  draftConfig.mode === 'MODERATION'
+                    ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30'
+                    : 'border border-white/15 bg-white/5 text-slate-200 hover:bg-white/10'
+                }`}
+              >
+                <ShieldCheck className="h-4 w-4" />
+                <span>Премодерация черновиков</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={busyAction === 'MODE'}
+                onClick={() => saveModeImmediately('OFF')}
+                className={`rounded-xl px-4 py-3 text-xs font-bold transition ${
+                  draftConfig.mode === 'OFF'
+                    ? 'bg-rose-600 text-white'
+                    : 'border border-white/15 bg-white/5 text-slate-400 hover:text-white'
+                }`}
+              >
+                Выключен
+              </button>
+            </div>
+          </div>
+
+          {/* Метрики дистанции самого ИИ (для принятия решения о включении тумблера) */}
+          <div className="grid grid-cols-2 gap-3 lg:col-span-5">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+              <div className="text-[11px] text-slate-400">Yield алгоритма ИИ</div>
+              <div
+                className={`mt-1 font-mono text-2xl font-black ${
+                  aiStats.yieldPct >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                }`}
+              >
+                {aiStats.yieldPct >= 0 ? '+' : ''}
+                {aiStats.yieldPct.toFixed(1)}%
+              </div>
+              <div className="mt-0.5 text-[10px] text-slate-400">
+                Показатель перевеса на дистанции
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+              <div className="text-[11px] text-slate-400">Профит ИИ к банку</div>
+              <div className="mt-1 font-mono text-2xl font-black text-white">
+                {aiStats.netProfitUnits >= 0 ? '+' : ''}
+                {aiStats.netProfitUnits.toFixed(2)}%
+              </div>
+              <div className="mt-0.5 text-[10px] text-slate-400">
+                Побед: {aiStats.wins} / Минусов: {aiStats.losses}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+              <div className="text-[11px] text-slate-400">Проходимость ИИ</div>
+              <div className="mt-1 font-mono text-2xl font-black text-blue-400">
+                {aiStats.winRatePct.toFixed(1)}%
+              </div>
+              <div className="mt-0.5 text-[10px] text-slate-400">
+                Рассчитано: {aiStats.settledAiPredictions} шт.
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+              <div className="text-[11px] text-slate-400">Черновиков в очереди</div>
+              <div className="mt-1 font-mono text-2xl font-black text-white">
+                {drafts.length}
+              </div>
+              <div className="mt-0.5 text-[10px] text-slate-400">
+                Всего выпущено ИИ: {aiStats.totalAiPredictions}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Быстрые кнопки ручного запуска цикла прямо сейчас */}
+        <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-white/10 pt-5">
+          <button
+            type="button"
+            disabled={busyAction !== null}
+            onClick={() => handleRunScan(false)}
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-blue-500 disabled:opacity-50"
+          >
+            {busyAction === 'SCAN' ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Play className="h-3.5 w-3.5" />
+            )}
+            <span>
+              {isFullAutopilot
+                ? 'Найти матчи и опубликовать на витрину сейчас'
+                : 'Найти матчи и сгенерировать черновики'}
+            </span>
+          </button>
+
+          {!isFullAutopilot && (
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() => handleRunScan(true)}
+              className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-2.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50"
+            >
+              {busyAction === 'FORCE_PUBLISH' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Zap className="h-3.5 w-3.5" />
+              )}
+              <span>Мгновенный автовыпуск сразу на витрину</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            disabled={busyAction !== null}
+            onClick={handleRunSettlement}
+            className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-xs font-bold text-slate-200 hover:bg-white/10 disabled:opacity-50"
+          >
+            {busyAction === 'SETTLE' ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+            )}
+            <span>Проверить счета матчей и выплатить страховки</span>
+          </button>
+        </div>
+      </div>
+
+      {/* 2. ОЧЕРЕДЬ ЧЕРНОВИКОВ ИИ (если есть подготовленные прогнозы) */}
+      {drafts.length > 0 && (
+        <div className="rounded-2xl border border-blue-200 bg-white p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-extrabold text-slate-950">
+                Подготовленные прогнозы ИИ на проверку ({drafts.length})
+              </h3>
+              <p className="text-xs text-slate-500">
+                Проверьте аргументацию нейросети и опубликуйте подходящие матчи в 1 клик
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                await fetch('/api/v1/admin/autopilot', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ action: 'APPROVE_ALL_DRAFTS' }),
+                });
+                onToast('Все черновики ИИ опубликованы на витрину!');
+                await onRefresh();
+              }}
+              className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700"
+            >
+              Опубликовать все ({drafts.length})
+            </button>
+          </div>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            {drafts.map((d) => (
+              <div
+                key={d.id}
+                className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-slate-50/70 p-4"
+              >
+                <div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold">
+                    <span className="text-slate-500">{d.leagueName}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-mono text-emerald-800">
+                        EV +{d.valueEdgePct.toFixed(1)}%
+                      </span>
+                      <span className="rounded-full bg-blue-100 px-2 py-0.5 font-mono text-blue-800">
+                        Увер. {d.confidencePct}%
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="mt-1.5 text-base font-black text-slate-950">
+                    {d.homeTeam} — {d.awayTeam}
+                  </div>
+
+                  <div className="mt-2 rounded-xl border border-blue-100 bg-white p-2.5 text-xs">
+                    <div className="font-extrabold text-blue-700">
+                      Исход: {d.selectionTitle} @ {d.fixedOdds.toFixed(2)} · Флэт{' '}
+                      {d.stakeUnits.toFixed(1)}%
+                    </div>
+                    <div className="mt-1 text-slate-600">{d.analysisTeaser}</div>
+                  </div>
+
+                  <p className="mt-2 line-clamp-3 text-[11px] leading-relaxed text-slate-500">
+                    {d.analysisFull}
+                  </p>
+                </div>
+
+                <div className="mt-3 flex items-center justify-between border-t border-slate-200/80 pt-3">
+                  <span className="font-mono text-xs font-bold text-slate-700">
+                    {d.accessTier === 'FREE'
+                      ? 'Бесплатный лид-магнит'
+                      : `${d.singlePriceRub} ₽ ${d.insuredOnLoss ? '· Со страховкой' : ''}`}
+                  </span>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={busyAction === d.id}
+                      onClick={() => handleApproveDraft(d.id)}
+                      className="inline-flex items-center gap-1 rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-blue-700"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      <span>На витрину</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteDraft(d.id)}
+                      className="rounded-xl p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 3. НАСТРОЙКИ API НЕЙРОСЕТИ, СПОРТИВНЫХ ДАННЫХ И РАСПИСАНИЯ */}
+      <div className="grid gap-6 lg:grid-cols-12">
+        <form
+          onSubmit={handleSaveConfig}
+          className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 lg:col-span-7"
+        >
+          <div className="flex items-center gap-2">
+            <Cpu className="h-4 w-4 text-blue-600" />
+            <h3 className="text-base font-extrabold text-slate-950">
+              Подключение API нейросети и параметров автопилота
+            </h3>
+          </div>
+
+          {/* Пресеты провайдеров ИИ */}
+          <div>
+            <label className="text-[11px] font-bold text-slate-500">
+              Провайдер ИИ-аналитика (выбор в 1 клик):
+            </label>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {(
+                [
+                  ['DEEPSEEK', 'DeepSeek API (Рекомендуем)'],
+                  ['OPENROUTER', 'OpenRouter (Claude/GPT/Qwen)'],
+                  ['OPENAI', 'OpenAI GPT-4o'],
+                  ['BUILTIN_QUANT', 'Встроенная мат. модель (без ключа)'],
+                ] as const
+              ).map(([prov, label]) => (
+                <button
+                  key={prov}
+                  type="button"
+                  onClick={() => handleApplyProviderPreset(prov)}
+                  className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                    draftConfig.llmProvider === prov
+                      ? 'bg-slate-900 text-white'
+                      : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-white'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {draftConfig.llmProvider !== 'BUILTIN_QUANT' && (
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">
+                  LLM Base URL
+                </label>
+                <input
+                  value={draftConfig.llmBaseUrl}
+                  onChange={(e) =>
+                    setDraftConfig({ ...draftConfig, llmBaseUrl: e.target.value })
+                  }
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">
+                  Модель нейросети
+                </label>
+                <input
+                  value={draftConfig.llmModel}
+                  onChange={(e) =>
+                    setDraftConfig({ ...draftConfig, llmModel: e.target.value })
+                  }
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-slate-500">
+                  API Ключ нейросети
+                </label>
+                <input
+                  type="password"
+                  placeholder="sk-..."
+                  value={draftConfig.llmApiKey}
+                  onChange={(e) =>
+                    setDraftConfig({ ...draftConfig, llmApiKey: e.target.value })
+                  }
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
+                />
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="text-[11px] font-bold text-slate-500">
+              Ключ линии БК The Odds API (опционально — без него работает открытый сканер ESPN)
+            </label>
+            <input
+              type="password"
+              placeholder="Оставьте пустым для бесплатного сканера расписаний или вставьте ключ the-odds-api.com"
+              value={draftConfig.oddsApiKey}
+              onChange={(e) =>
+                setDraftConfig({ ...draftConfig, oddsApiKey: e.target.value })
+              }
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
+            />
+          </div>
+
+          {/* Выбор видов спорта */}
+          <div>
+            <label className="text-[11px] font-bold text-slate-500">
+              Дисциплины для автопоиска:
+            </label>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {SPORT_OPTIONS.map((sp) => {
+                const active = draftConfig.sportsEnabled.includes(sp.id);
+                return (
+                  <button
+                    key={sp.id}
+                    type="button"
+                    onClick={() => toggleSport(sp.id)}
+                    className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${
+                      active
+                        ? 'bg-blue-600 text-white'
+                        : 'border border-slate-200 bg-slate-50 text-slate-500'
+                    }`}
+                  >
+                    {sp.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Расписание и коммерческие правила ИИ */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div>
+              <label className="text-[11px] font-bold text-slate-500">
+                Утренний слот (МСК)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={23}
+                value={draftConfig.morningHourMsk}
+                onChange={(e) =>
+                  setDraftConfig({
+                    ...draftConfig,
+                    morningHourMsk: Number(e.target.value),
+                  })
+                }
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-bold text-slate-500">
+                Вечерний слот (МСК)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={23}
+                value={draftConfig.eveningHourMsk}
+                onChange={(e) =>
+                  setDraftConfig({
+                    ...draftConfig,
+                    eveningHourMsk: Number(e.target.value),
+                  })
+                }
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-bold text-slate-500">
+                Матчей за выпуск
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={8}
+                value={draftConfig.maxPicksPerRun}
+                onChange={(e) =>
+                  setDraftConfig({
+                    ...draftConfig,
+                    maxPicksPerRun: Number(e.target.value),
+                  })
+                }
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-bold text-slate-500">
+                Мин. перевес EV%
+              </label>
+              <input
+                type="number"
+                step="0.5"
+                min={1}
+                max={20}
+                value={draftConfig.minValueEdgePct}
+                onChange={(e) =>
+                  setDraftConfig({
+                    ...draftConfig,
+                    minValueEdgePct: Number(e.target.value),
+                  })
+                }
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] font-bold text-slate-500">
+                Цена платного прогноза ИИ (₽)
+              </label>
+              <input
+                type="number"
+                min={50}
+                value={draftConfig.defaultAiPriceRub}
+                onChange={(e) =>
+                  setDraftConfig({
+                    ...draftConfig,
+                    defaultAiPriceRub: Number(e.target.value),
+                  })
+                }
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-bold text-slate-500">
+                Бесплатный прогрев (каждый N-й, 0 = выкл)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={20}
+                value={draftConfig.freeEveryNthPick}
+                onChange={(e) =>
+                  setDraftConfig({
+                    ...draftConfig,
+                    freeEveryNthPick: Number(e.target.value),
+                  })
+                }
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2 rounded-xl border border-slate-100 bg-slate-50 p-3">
+            <label className="flex items-center gap-2 text-xs font-bold text-emerald-800">
+              <input
+                type="checkbox"
+                checked={draftConfig.insureAiPicks}
+                onChange={(e) =>
+                  setDraftConfig({ ...draftConfig, insureAiPicks: e.target.checked })
+                }
+              />
+              <span>Автоматически включать «Страховку 100% на баланс» для прогнозов ИИ</span>
+            </label>
+
+            <label className="flex items-center gap-2 text-xs font-bold text-slate-800">
+              <input
+                type="checkbox"
+                checked={draftConfig.autoSettleEnabled}
+                onChange={(e) =>
+                  setDraftConfig({
+                    ...draftConfig,
+                    autoSettleEnabled: e.target.checked,
+                  })
+                }
+              />
+              <span>
+                Автоматически проверять счет после матчей, рассчитывать WIN/LOSS и выплачивать страховки
+              </span>
+            </label>
+          </div>
+
+          <button
+            type="submit"
+            disabled={busyAction === 'SAVE'}
+            className="w-full rounded-xl bg-blue-600 py-3 text-xs font-bold text-white shadow-sm hover:bg-blue-700"
+          >
+            Сохранить конфигурацию Автопилота
+          </button>
+        </form>
+
+        {/* Журнал активности ИИ */}
+        <div className="flex flex-col rounded-2xl border border-slate-200 bg-white p-6 lg:col-span-5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Clock className="h-4 w-4 text-blue-600" />
+              <h3 className="text-base font-extrabold text-slate-950">
+                Журнал работы ИИ-Автопилота
+              </h3>
+            </div>
+            {logs.length > 0 && (
+              <button
+                type="button"
+                onClick={async () => {
+                  await fetch('/api/v1/admin/autopilot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'CLEAR_LOGS' }),
+                  });
+                  await onRefresh();
+                }}
+                className="text-[11px] font-semibold text-slate-400 hover:text-slate-700"
+              >
+                Очистить
+              </button>
+            )}
+          </div>
+
+          <div className="mt-4 max-h-[460px] flex-1 space-y-2.5 overflow-y-auto pr-1">
+            {logs.map((log) => (
+              <div
+                key={log.id}
+                className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs"
+              >
+                <div className="flex items-center justify-between text-[10px] font-bold">
+                  <span
+                    className={
+                      log.level === 'SUCCESS'
+                        ? 'text-emerald-600'
+                        : log.level === 'ERROR'
+                          ? 'text-rose-600'
+                          : 'text-blue-600'
+                    }
+                  >
+                    {log.stage}
+                  </span>
+                  <span className="font-mono text-slate-400">
+                    {new Date(log.createdAt).toLocaleString('ru-RU', {
+                      day: '2-digit',
+                      month: '2-digit',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                </div>
+                <p className="mt-1 leading-relaxed text-slate-700">{log.message}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};

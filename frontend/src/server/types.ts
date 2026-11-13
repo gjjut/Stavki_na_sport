@@ -69,6 +69,10 @@ export interface PredictionRecord {
   bookmakerSource: string;
   analysisTeaser: string;
   isFeatured?: boolean;
+  authorSource?: 'HUMAN' | 'AI_AUTOPILOT';
+  externalFixtureId?: string | null;
+  aiConfidencePct?: number | null;
+  aiEdgePct?: number | null;
 
   // Гарантия возврата стоимости на баланс сайта при минусе или возврате (PUSH)
   insuredOnLoss?: boolean;
@@ -249,5 +253,75 @@ export interface EquityPoint {
   profitUnits: number;
   cumulativeBankPct: number;
   betsCount: number;
+  yieldPct: number;
+}
+
+export type AiAutopilotMode = 'OFF' | 'MODERATION' | 'FULL_AUTOPILOT';
+
+export type AiLlmProvider = 'DEEPSEEK' | 'OPENROUTER' | 'OPENAI' | 'BUILTIN_QUANT';
+
+export interface AiAutopilotConfig {
+  mode: AiAutopilotMode;
+  llmProvider: AiLlmProvider;
+  llmBaseUrl: string;
+  llmApiKey: string;
+  llmModel: string;
+  oddsApiKey: string;
+  sportsEnabled: SportType[];
+  morningHourMsk: number; // напр. 9 (09:00 МСК)
+  eveningHourMsk: number; // напр. 18 (18:00 МСК)
+  maxPicksPerRun: number; // сколько событий публиковать за слот (напр. 3)
+  minActiveOnStorefront: number; // минимум активных карточек на витрине (напр. 6)
+  minValueEdgePct: number; // минимальный математический перевес EV% (напр. 3.5)
+  defaultAiPriceRub: number; // цена разового прогноза от ИИ (₽)
+  freeEveryNthPick: number; // 0 = только платные, 4 = каждый 4-й открытый для привлечения
+  insureAiPicks: boolean; // включать ли страховку 100% на баланс при минусе
+  autoSettleEnabled: boolean; // автопроверка счета после матча + выплата страховки
+  cronSecret: string;
+  totalGeneratedCount: number;
+  lastMorningRunDate: string | null;
+  lastEveningRunDate: string | null;
+  lastScanAt: string | null;
+  lastSettleAt: string | null;
+}
+
+export interface AiPredictionDraft {
+  id: string;
+  externalFixtureId: string;
+  sport: SportType;
+  leagueName: string;
+  homeTeam: string;
+  awayTeam: string;
+  matchStartsAt: string;
+  selectionTitle: string;
+  fixedOdds: number;
+  stakeUnits: number;
+  bookmakerSource: string;
+  accessTier: AccessTier;
+  singlePriceRub: number | null;
+  insuredOnLoss: boolean;
+  confidencePct: number;
+  valueEdgePct: number;
+  analysisTeaser: string;
+  analysisFull: string;
+  createdAt: string;
+}
+
+export interface AiAutopilotLogEntry {
+  id: string;
+  createdAt: string;
+  level: 'INFO' | 'SUCCESS' | 'WARN' | 'ERROR';
+  stage: 'SCANNER' | 'LLM_ANALYST' | 'PUBLISHER' | 'SETTLEMENT';
+  message: string;
+}
+
+export interface AiPerformanceStats {
+  totalAiPredictions: number;
+  settledAiPredictions: number;
+  wins: number;
+  losses: number;
+  pushes: number;
+  winRatePct: number;
+  netProfitUnits: number;
   yieldPct: number;
 }

@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
   ArrowLeft,
+  Bot,
   CheckCircle2,
   Coins,
   Plus,
@@ -14,8 +15,13 @@ import {
   Trash2,
   Users,
 } from 'lucide-react';
+import { AiAutopilotPanel } from '@/components/admin/AiAutopilotPanel';
 import type {
   AccessTier,
+  AiAutopilotConfig,
+  AiAutopilotLogEntry,
+  AiPerformanceStats,
+  AiPredictionDraft,
   OrderTransaction,
   PlatformSettings,
   PredictionRecord,
@@ -33,6 +39,10 @@ interface AdminOverviewPayload {
   users: SafeSessionUser[];
   transactions: OrderTransaction[];
   stats: StatsSummary;
+  aiAutopilot: AiAutopilotConfig;
+  aiDrafts: AiPredictionDraft[];
+  aiLogs: AiAutopilotLogEntry[];
+  aiStats: AiPerformanceStats;
 }
 
 const LEAGUE_PRESETS: Array<{ label: string; sport: SportType; league: string }> = [
@@ -50,8 +60,8 @@ export default function AdminDashboardPage() {
   const [data, setData] = useState<AdminOverviewPayload | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [tab, setTab] = useState<
-    'PREDICTIONS' | 'PRICING_PROMOS' | 'FINANCE' | 'USERS' | 'SETTINGS'
-  >('PREDICTIONS');
+    'AUTOPILOT' | 'PREDICTIONS' | 'PRICING_PROMOS' | 'FINANCE' | 'USERS' | 'SETTINGS'
+  >('AUTOPILOT');
   const [notice, setNotice] = useState<string | null>(null);
 
   // Форма нового прогноза
@@ -378,6 +388,7 @@ export default function AdminDashboardPage() {
         <div className="mt-6 flex flex-wrap gap-2">
           {(
             [
+              ['AUTOPILOT', 'ИИ-Автопилот 24/7', Bot],
               ['PREDICTIONS', 'События и расчет', Plus],
               ['PRICING_PROMOS', 'Пакеты и Промокоды', Tag],
               ['FINANCE', 'Чеки и заказы', Coins],
@@ -397,9 +408,28 @@ export default function AdminDashboardPage() {
             >
               <Icon className="h-3.5 w-3.5" />
               <span>{label}</span>
+              {id === 'AUTOPILOT' &&
+                data?.aiAutopilot.mode === 'FULL_AUTOPILOT' && (
+                  <span
+                    className="h-2 w-2 rounded-full bg-emerald-400"
+                    title="Полный автопилот активен"
+                  />
+                )}
             </button>
           ))}
         </div>
+
+        {/* ВКЛАДКА 0: ИИ-АВТОПИЛОТ 24/7 */}
+        {tab === 'AUTOPILOT' && data && (
+          <AiAutopilotPanel
+            config={data.aiAutopilot}
+            drafts={data.aiDrafts}
+            logs={data.aiLogs}
+            aiStats={data.aiStats}
+            onRefresh={loadOverview}
+            onToast={showToast}
+          />
+        )}
 
         {/* ВКЛАДКА 1: СОБЫТИЯ */}
         {tab === 'PREDICTIONS' && (

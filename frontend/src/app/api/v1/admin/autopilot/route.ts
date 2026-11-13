@@ -1,0 +1,111 @@
+import { randomUUID } from 'node:crypto';
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  approveAiDraftToStorefront,
+  runAiScanAndGenerateCycle,
+  runAutoSettlementCycle,
+} from '@/server/ai-autopilot';
+import { mutateState, readState } from '@/server/database';
+import { requireAdminAccount } from '@/server/guards';
+import type { AiAutopilotConfig } from '@/server/types';
+
+export async function PATCH(req: NextRequest) {
+  try {
+    await requireAdminAccount();
+    const body = (await req.json()) as {
+      config: Partial<AiAutopilotConfig>;
+    };
+
+    const nextConfig = await mutateState((state) => {
+      const prevMode = state.aiAutopilot.mode;
+      state.aiAutopilot = {
+        ...state.aiAutopilot,
+        ...body.config,
+      };
+      if (body.config.mode && body.config.mode !== prevMode) {
+        state.aiLogs.unshift({
+          id: `ailog_${randomUUID().slice(0, 8)}`,
+          createdAt: new Date().toISOString(),
+          level: body.config.mode === 'FULL_AUTOPILOT' ? 'SUCCESS' : 'INFO',
+          stage: 'PUBLISHER',
+          message:
+            body.config.mode === 'FULL_AUTOPILOT'
+              ? `Включен режим «ПОЛНЫЙ АВТОПИЛОТ 24/7» (слоты ${state.aiAutopilot.morningHourMsk}:00 и ${state.aiAutopilot.eveningHourMsk}:00 МСК + авторасчет и выплата страховок).`
+              : body.config.mode === 'MODERATION'
+                ? 'Включен режим «Премодерация черновиков».'
+                : 'Модуль ИИ-Автопилота переведен в режим паузы (OFF).',
+        });
+      }
+      return state.aiAutopilot;
+    });
+
+    return NextResponse.json({ aiAutopilot: nextConfig });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Ошибка сохранения автопилота' },
+      { status: 400 },
+    );
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    await requireAdminAccount();
+    const body = (await req.json()) as
+      | { action: 'RUN_SCAN_NOW'; forcePublish?: boolean }
+      | { action: 'RUN_SETTLE_NOW' }
+      | { action: 'APPROVE_DRAFT'; draftId: string }
+      | { action: 'APPROVE_ALL_DRAFTS' }
+      | { action: 'DELETE_DRAFT'; draftId: string }
+      | { action: 'CLEAR_LOGS' };
+
+    if (body.action === 'RUN_SCAN_NOW') {
+      const res = await runAiScanAndGenerateCycle({
+        forcePublish: body.forcePublish,
+        triggerLabel: 'Ручной запуск из админ-панели',
+      });
+      return NextResponse.json(res);
+    }
+
+    if (body.action === 'RUN_SETTLE_NOW') {
+      const res = await runAutoSettlementCycle();
+      return NextResponse.json(res);
+    }
+
+    if (body.action === 'APPROVE_DRAFT') {
+      const created = await approveAiDraftToStorefront(body.draftId);
+      return NextResponse.json({ prediction: created });
+    }
+
+    if (body.action === 'APPROVE_ALL_DRAFTS') {
+      const state = await readState();
+      let count = 0;
+      for (const d of state.aiDrafts) {
+        await approveAiDraftToStorefront(d.id);
+        count += 1;
+      }
+      return NextResponse.json({ approvedCount: count });
+    }
+
+    if (body.action === 'DELETE_DRAFT') {
+      await mutateState((s) => {
+        s.aiDrafts = s.aiDrafts.filter((d) => d.id !== body.draftId);
+      });
+      return NextResponse.json({ ok: true });
+    }
+
+    if (body.action === 'CLEAR_LOGS') {
+      await mutateState((s) => {
+        s.aiLogs = [];
+      });
+      return NextResponse.json({ ok: true });
+    }
+
+    return NextResponse.json({ error: 'Неизвестное действие' }, { status: 400 });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Ошибка выполнения операции ИИ' },
+      { status: 400 },
+    );
+  }
+}

@@ -1,14 +1,22 @@
 import { NextResponse } from 'next/server';
-import { computePlatformAnalytics, readState, toSafeSessionUser } from '@/server/database';
+import { ensureInProcessAutopilotDaemon } from '@/server/ai-autopilot';
+import {
+  computeAiPerformanceStats,
+  computePlatformAnalytics,
+  readState,
+  toSafeSessionUser,
+} from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
+    ensureInProcessAutopilotDaemon();
     await requireAdminAccount();
     const state = await readState();
     const analytics = computePlatformAnalytics(state.predictions);
+    const aiStats = computeAiPerformanceStats(state.predictions);
 
     return NextResponse.json({
       settings: state.settings,
@@ -24,6 +32,10 @@ export async function GET() {
       affiliateLinks: state.affiliateLinks,
       payouts: state.payouts,
       stats: analytics.statsByPeriod.ALL_TIME,
+      aiAutopilot: state.aiAutopilot,
+      aiDrafts: state.aiDrafts,
+      aiLogs: state.aiLogs,
+      aiStats,
     });
   } catch (err) {
     const code = err instanceof Error ? err.message : '';

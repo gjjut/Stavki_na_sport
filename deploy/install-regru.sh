@@ -147,6 +147,14 @@ ufw allow 22/tcp >/dev/null 2>&1 || true
 ufw allow 80/tcp >/dev/null 2>&1 || true
 ufw allow 443/tcp >/dev/null 2>&1 || true
 
+# Настройка системного планировщика Cron для ИИ-Автопилота 24/7
+if [[ -d /etc/cron.d ]]; then
+  cat > /etc/cron.d/valuex-autopilot <<'EOF'
+*/15 * * * * root curl -fsS http://127.0.0.1:3000/api/v1/cron/autopilot >/dev/null 2>&1 || true
+EOF
+  chmod 0644 /etc/cron.d/valuex-autopilot || true
+fi
+
 echo "=================================================================="
 echo " ГОТОВО! Платформа успешно запущена на сервере Reg.ru Cloud!"
 echo " Откройте в браузере: http://${SERVER_IP}"

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ensureInProcessAutopilotDaemon } from '@/server/ai-autopilot';
 import { REF_COOKIE_NAME } from '@/server/auth';
 import {
   computePlatformAnalytics,
@@ -12,6 +13,8 @@ import { getOptionalViewer } from '@/server/guards';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
+  ensureInProcessAutopilotDaemon();
+
   const ref = req.nextUrl.searchParams.get('ref')?.trim();
   if (ref) {
     await recordReferralClick(ref);

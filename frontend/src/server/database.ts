@@ -11,6 +11,10 @@ import {
 import type {
   AccessTier,
   AffiliateLinkRecord,
+  AiAutopilotConfig,
+  AiAutopilotLogEntry,
+  AiPerformanceStats,
+  AiPredictionDraft,
   EquityPoint,
   MatchStatus,
   OrderTransaction,
@@ -37,6 +41,9 @@ export interface PersistentState {
   affiliateLinks: AffiliateLinkRecord[];
   payouts: PayoutRequestRecord[];
   processedWebhooks: string[];
+  aiAutopilot: AiAutopilotConfig;
+  aiDrafts: AiPredictionDraft[];
+  aiLogs: AiAutopilotLogEntry[];
 }
 
 const DATA_DIR = path.join(process.cwd(), '.data');
@@ -463,10 +470,40 @@ function createInitialState(): PersistentState {
     },
   ];
 
+  const aiAutopilot: AiAutopilotConfig = {
+    mode: 'MODERATION',
+    llmProvider: process.env.AI_LLM_API_KEY ? 'DEEPSEEK' : 'BUILTIN_QUANT',
+    llmBaseUrl: process.env.AI_LLM_BASE_URL || 'https://api.deepseek.com/v1',
+    llmApiKey: process.env.AI_LLM_API_KEY || '',
+    llmModel: process.env.AI_LLM_MODEL || 'deepseek-chat',
+    oddsApiKey: process.env.THE_ODDS_API_KEY || '',
+    sportsEnabled: ['FOOTBALL', 'HOCKEY', 'TENNIS', 'BASKETBALL', 'ESPORTS', 'MMA'],
+    morningHourMsk: 9,
+    eveningHourMsk: 18,
+    maxPicksPerRun: 3,
+    minActiveOnStorefront: 6,
+    minValueEdgePct: 3.5,
+    defaultAiPriceRub: settings.defaultSinglePriceRub,
+    freeEveryNthPick: 4,
+    insureAiPicks: true,
+    autoSettleEnabled: true,
+    cronSecret: process.env.AUTOPILOT_CRON_SECRET || 'valuex-autopilot-2026',
+    totalGeneratedCount: 0,
+    lastMorningRunDate: null,
+    lastEveningRunDate: null,
+    lastScanAt: null,
+    lastSettleAt: null,
+  };
+
   return {
     settings,
     users: [adminUser],
-    predictions,
+    predictions: predictions.map((p, idx) => ({
+      ...p,
+      authorSource: idx % 2 === 0 ? 'AI_AUTOPILOT' : 'HUMAN',
+      aiConfidencePct: idx % 2 === 0 ? 72 : null,
+      aiEdgePct: idx % 2 === 0 ? 4.8 : null,
+    })),
     transactions: [],
     promoCodes,
     affiliateLinks: [
@@ -485,6 +522,18 @@ function createInitialState(): PersistentState {
     ],
     payouts: [],
     processedWebhooks: [],
+    aiAutopilot,
+    aiDrafts: [],
+    aiLogs: [
+      {
+        id: 'log_init_1',
+        createdAt: new Date(now).toISOString(),
+        level: 'INFO',
+        stage: 'SCANNER',
+        message:
+          'Модуль ИИ-Автопилота готов к работе. Доступны режимы «Премодерация черновиков» и «Полный автопилот 24/7» (09:00 и 18:00 МСК).',
+      },
+    ],
   };
 }
 
@@ -512,6 +561,10 @@ function normalizeLoadedState(
     const normalizedTier: AccessTier = legacyTier === 'FREE' ? 'FREE' : 'PAID_SINGLE';
     return {
       ...p,
+      authorSource: p.authorSource ?? 'HUMAN',
+      externalFixtureId: p.externalFixtureId ?? null,
+      aiConfidencePct: p.aiConfidencePct ?? null,
+      aiEdgePct: p.aiEdgePct ?? null,
       isFeatured: p.isFeatured ?? idx === 0,
       insuredOnLoss: p.insuredOnLoss ?? normalizedTier === 'PAID_SINGLE',
       accessTier: normalizedTier,
@@ -564,6 +617,16 @@ function normalizeLoadedState(
     lastLoginAt: u.lastLoginAt,
   }));
 
+  const rawAi = (raw.aiAutopilot || {}) as Partial<AiAutopilotConfig>;
+  const aiAutopilot: AiAutopilotConfig = {
+    ...fallback.aiAutopilot,
+    ...rawAi,
+    sportsEnabled:
+      Array.isArray(rawAi.sportsEnabled) && rawAi.sportsEnabled.length > 0
+        ? rawAi.sportsEnabled
+        : fallback.aiAutopilot.sportsEnabled,
+  };
+
   return {
     settings,
     users,
@@ -573,6 +636,9 @@ function normalizeLoadedState(
     affiliateLinks: raw.affiliateLinks || fallback.affiliateLinks,
     payouts: raw.payouts || [],
     processedWebhooks: raw.processedWebhooks || [],
+    aiAutopilot,
+    aiDrafts: Array.isArray(raw.aiDrafts) ? raw.aiDrafts : [],
+    aiLogs: Array.isArray(raw.aiLogs) ? raw.aiLogs.slice(0, 80) : fallback.aiLogs,
   };
 }
 
@@ -1461,6 +1527,10 @@ export async function createPredictionByAdmin(input: {
   singlePriceRub?: number | null;
   isFeatured?: boolean;
   insuredOnLoss?: boolean;
+  authorSource?: 'HUMAN' | 'AI_AUTOPILOT';
+  externalFixtureId?: string | null;
+  aiConfidencePct?: number | null;
+  aiEdgePct?: number | null;
   analysisTeaser: string;
   analysisFull: string;
   pushToTelegram?: boolean;
@@ -1504,6 +1574,10 @@ export async function createPredictionByAdmin(input: {
       bookmakerSource: input.bookmakerSource?.trim() || 'Pinnacle / Фонбет',
       analysisTeaser: input.analysisTeaser.trim(),
       isFeatured: Boolean(input.isFeatured),
+      authorSource: input.authorSource ?? 'HUMAN',
+      externalFixtureId: input.externalFixtureId ?? null,
+      aiConfidencePct: input.aiConfidencePct ?? null,
+      aiEdgePct: input.aiEdgePct ?? null,
       insuredOnLoss:
         input.accessTier === 'PAID_SINGLE' ? Boolean(input.insuredOnLoss ?? true) : false,
       selectionTitle: input.selectionTitle.trim(),
@@ -1558,8 +1632,9 @@ export async function settlePredictionByAdmin(params: {
   resultStatus: ResultStatus;
   finalScore?: string | null;
   cashoutMultiplier?: number | null;
+  pushResultToTelegram?: boolean;
 }): Promise<{ prediction: PredictionRecord; compensatedUsers: number }> {
-  return mutateState((state) => {
+  const outcome = await mutateState((state) => {
     const pred = state.predictions.find((p) => p.id === params.predictionId);
     if (!pred) throw new Error('Событие не найдено');
 
@@ -1573,7 +1648,7 @@ export async function settlePredictionByAdmin(params: {
       pred.profitUnits = null;
       pred.profitPercent = null;
       pred.settledAt = null;
-      return { prediction: pred, compensatedUsers: 0 };
+      return { prediction: pred, compensatedUsers: 0, settings: state.settings };
     }
 
     pred.matchStatus = 'FINISHED';
@@ -1618,6 +1693,70 @@ export async function settlePredictionByAdmin(params: {
       }
     }
 
-    return { prediction: pred, compensatedUsers };
+    return { prediction: pred, compensatedUsers, settings: state.settings };
   });
+
+  if (params.pushResultToTelegram && params.resultStatus !== 'PENDING') {
+    const p = outcome.prediction;
+    const badge =
+      p.resultStatus === 'WIN' || p.resultStatus === 'CASHOUT'
+        ? `✅ <b>ПОБЕДА (${p.finalScore || 'расчет'})</b> · +${(p.profitUnits ?? 0).toFixed(2)}% к банку`
+        : p.resultStatus === 'PUSH'
+          ? `➖ <b>ВОЗВРАТ (${p.finalScore || 'расчет'})</b>${
+              outcome.compensatedUsers > 0 ? ' · Страховка 100% начислена на баланс' : ''
+            }`
+          : `❌ <b>МИНУС (${p.finalScore || 'расчет'})</b>${
+              outcome.compensatedUsers > 0
+                ? ' · 🛡 Страховка 100% возвращена на баланс покупателям'
+                : ''
+            }`;
+
+    const msg = [
+      badge,
+      `⚽️ <b>${p.homeTeam} — ${p.awayTeam}</b> (${p.leagueName})`,
+      `🎯 Исход: <b>${p.selectionTitle}</b> @ <b>${p.fixedOdds.toFixed(2)}</b>`,
+      `🔐 SHA-256: <code>${p.verificationHash.slice(0, 16)}…</code>`,
+    ].join('\n');
+    await sendTelegramChannelAnnouncement(outcome.settings, msg);
+  }
+
+  return {
+    prediction: outcome.prediction,
+    compensatedUsers: outcome.compensatedUsers,
+  };
+}
+
+export function computeAiPerformanceStats(
+  predictions: PredictionRecord[],
+): AiPerformanceStats {
+  const aiItems = predictions.filter((p) => p.authorSource === 'AI_AUTOPILOT');
+  const settled = aiItems.filter((p) => p.resultStatus !== 'PENDING');
+  let wins = 0;
+  let losses = 0;
+  let pushes = 0;
+  let turnover = 0;
+  let netProfit = 0;
+
+  for (const item of settled) {
+    turnover += item.stakeUnits;
+    netProfit += item.profitUnits ?? 0;
+    if (item.resultStatus === 'WIN' || item.resultStatus === 'CASHOUT') wins += 1;
+    else if (item.resultStatus === 'LOSS') losses += 1;
+    else pushes += 1;
+  }
+
+  const decisive = wins + losses;
+  const winRatePct = decisive > 0 ? Number(((wins / decisive) * 100).toFixed(1)) : 0;
+  const yieldPct = turnover > 0 ? Number(((netProfit / turnover) * 100).toFixed(1)) : 0;
+
+  return {
+    totalAiPredictions: aiItems.length,
+    settledAiPredictions: settled.length,
+    wins,
+    losses,
+    pushes,
+    winRatePct,
+    netProfitUnits: Number(netProfit.toFixed(2)),
+    yieldPct,
+  };
 }

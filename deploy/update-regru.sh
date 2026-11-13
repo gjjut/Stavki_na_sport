@@ -49,8 +49,16 @@ NODE_OPTIONS="--max-old-space-size=1536" npm run build
 pm2 restart valuex-web || pm2 start npm --name "valuex-web" -- run start
 pm2 save
 
+# 4. Настройка системного планировщика Cron для ИИ-Автопилота 24/7 (каждые 15 минут)
+if [[ -d /etc/cron.d ]]; then
+  cat > /etc/cron.d/valuex-autopilot <<'EOF'
+*/15 * * * * root curl -fsS http://127.0.0.1:3000/api/v1/cron/autopilot >/dev/null 2>&1 || true
+EOF
+  chmod 0644 /etc/cron.d/valuex-autopilot || true
+fi
+
 echo "=================================================================="
-echo " ГОТОВО! Обновленная коммерческая версия v2 активна!"
+echo " ГОТОВО! Обновленная версия v4 (с ИИ-Автопилотом 24/7) активна!"
 echo " Витрина сайта:  http://${SERVER_IP}"
 echo " Вход в админку: http://${SERVER_IP}/login"
 echo "   Логин:  admin@valuex.pro"
