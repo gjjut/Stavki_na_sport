@@ -34,16 +34,15 @@ ssh root@ВАШ_IP_СЕРВЕРА
 Выполните на сервере:
 
 ```bash
-apt update && apt install -y git
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+apt update -y && apt install -y git
 cd /opt
-git clone -b arena/8795bc2d-stavki-na-sport https://github.com/gjjut/Stavki_na_sport.git
+git clone https://github.com/gjjut/Stavki_na_sport.git
 cd Stavki_na_sport
 
-# Запуск автоматической установки (займет ~2-3 минуты)
+# Запуск автоматической установки (займет ~3-5 минут)
 bash deploy/install-regru.sh
 ```
-
-*(Если после слияния Pull Request вы клонируете основную ветку `main`, просто опустите флаг `-b arena/8795bc2d-stavki-na-sport`).*
 
 **Готово!** Сразу после завершения скрипта откройте в браузере:
 ```text
@@ -175,7 +174,7 @@ Stavki_na_sport/
 ## Локальный запуск для разработки (Windows / macOS / Linux)
 
 ```bash
-git clone -b arena/8795bc2d-stavki-na-sport https://github.com/gjjut/Stavki_na_sport.git
+git clone https://github.com/gjjut/Stavki_na_sport.git
 cd Stavki_na_sport/frontend
 npm install
 npm run dev
