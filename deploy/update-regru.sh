@@ -50,11 +50,15 @@ pm2 restart valuex-web || pm2 start npm --name "valuex-web" -- run start
 pm2 save
 
 # 4. Настройка системного планировщика Cron для ИИ-Автопилота 24/7 (каждые 15 минут)
+if ! command -v cron >/dev/null 2>&1; then
+  apt-get update -y && apt-get install -y cron || true
+fi
 if [[ -d /etc/cron.d ]]; then
   cat > /etc/cron.d/valuex-autopilot <<'EOF'
 */15 * * * * root curl -fsS http://127.0.0.1:3000/api/v1/cron/autopilot >/dev/null 2>&1 || true
 EOF
   chmod 0644 /etc/cron.d/valuex-autopilot || true
+  systemctl enable --now cron >/dev/null 2>&1 || true
 fi
 
 echo "=================================================================="

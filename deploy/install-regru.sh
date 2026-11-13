@@ -36,12 +36,13 @@ else
   echo "[1/6] Swap уже активен — пропускаем."
 fi
 
-# 2. Установка базовых системных пакетов, Nginx и Certbot
-echo "[2/6] Обновление пакетов и установка Nginx + Certbot..."
+# 2. Установка базовых системных пакетов, Cron, Nginx и Certbot
+echo "[2/6] Обновление пакетов и установка Cron + Nginx + Certbot..."
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 apt-get update -y
-apt-get install -y sudo curl git ca-certificates gnupg ufw nginx certbot python3-certbot-nginx
+apt-get install -y sudo curl git cron ca-certificates gnupg ufw nginx certbot python3-certbot-nginx
+systemctl enable --now cron >/dev/null 2>&1 || true
 
 # 3. Подготовка .env файла, если еще не создан
 cd "${PROJECT_DIR}"
@@ -88,6 +89,10 @@ else
       apt-get update -y
       apt-get install -y nodejs npm
     fi
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    apt-get install -y npm
   fi
 
   npm install -g pm2 --no-audit --no-fund

@@ -266,7 +266,6 @@ export interface AiAutopilotConfig {
   llmBaseUrl: string;
   llmApiKey: string;
   llmModel: string;
-  oddsApiKey: string;
   sportsEnabled: SportType[];
   morningHourMsk: number; // напр. 9 (09:00 МСК)
   eveningHourMsk: number; // напр. 18 (18:00 МСК)
@@ -279,10 +278,25 @@ export interface AiAutopilotConfig {
   autoSettleEnabled: boolean; // автопроверка счета после матча + выплата страховки
   cronSecret: string;
   totalGeneratedCount: number;
+  lastFeedSource: string | null;
   lastMorningRunDate: string | null;
   lastEveningRunDate: string | null;
   lastScanAt: string | null;
   lastSettleAt: string | null;
+}
+
+export interface AiConnectorDiagnosticItem {
+  name: string;
+  ok: boolean;
+  latencyMs: number;
+  details: string;
+}
+
+export interface AiDiagnosticsReport {
+  checkedAt: string;
+  mskTimeFormatted: string;
+  nextSlotLabel: string;
+  items: AiConnectorDiagnosticItem[];
 }
 
 export interface AiPredictionDraft {

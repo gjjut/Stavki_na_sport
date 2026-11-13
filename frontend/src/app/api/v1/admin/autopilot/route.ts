@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   approveAiDraftToStorefront,
   runAiScanAndGenerateCycle,
+  runAutopilotDiagnostics,
   runAutoSettlementCycle,
 } from '@/server/ai-autopilot';
 import { mutateState, readState } from '@/server/database';
@@ -30,7 +31,11 @@ export async function PATCH(req: NextRequest) {
           stage: 'PUBLISHER',
           message:
             body.config.mode === 'FULL_AUTOPILOT'
-              ? `Включен режим «ПОЛНЫЙ АВТОПИЛОТ 24/7» (слоты ${state.aiAutopilot.morningHourMsk}:00 и ${state.aiAutopilot.eveningHourMsk}:00 МСК + авторасчет и выплата страховок).`
+              ? `Включен режим «ПОЛНЫЙ АВТОПИЛОТ 24/7» (слоты ${String(
+                  state.aiAutopilot.morningHourMsk,
+                ).padStart(2, '0')}:00 и ${String(
+                  state.aiAutopilot.eveningHourMsk,
+                ).padStart(2, '0')}:00 МСК + автосверка счетов и выплата страховок).`
               : body.config.mode === 'MODERATION'
                 ? 'Включен режим «Премодерация черновиков».'
                 : 'Модуль ИИ-Автопилота переведен в режим паузы (OFF).',
@@ -54,10 +59,16 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as
       | { action: 'RUN_SCAN_NOW'; forcePublish?: boolean }
       | { action: 'RUN_SETTLE_NOW' }
+      | { action: 'RUN_DIAGNOSTICS' }
       | { action: 'APPROVE_DRAFT'; draftId: string }
       | { action: 'APPROVE_ALL_DRAFTS' }
       | { action: 'DELETE_DRAFT'; draftId: string }
       | { action: 'CLEAR_LOGS' };
+
+    if (body.action === 'RUN_DIAGNOSTICS') {
+      const report = await runAutopilotDiagnostics();
+      return NextResponse.json({ report });
+    }
 
     if (body.action === 'RUN_SCAN_NOW') {
       const res = await runAiScanAndGenerateCycle({

@@ -101,7 +101,8 @@ function createInitialState(): PersistentState {
     bundle2DiscountPct: 15,
     bundle3DiscountPct: 25,
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
-    telegramChannelId: process.env.TELEGRAM_VIP_CHANNEL_ID || '',
+    telegramChannelId:
+      process.env.TELEGRAM_CHANNEL_ID || process.env.TELEGRAM_VIP_CHANNEL_ID || '',
   };
 
   const adminUser: UserAccount = {
@@ -476,7 +477,6 @@ function createInitialState(): PersistentState {
     llmBaseUrl: process.env.AI_LLM_BASE_URL || 'https://api.deepseek.com/v1',
     llmApiKey: process.env.AI_LLM_API_KEY || '',
     llmModel: process.env.AI_LLM_MODEL || 'deepseek-chat',
-    oddsApiKey: process.env.THE_ODDS_API_KEY || '',
     sportsEnabled: ['FOOTBALL', 'HOCKEY', 'TENNIS', 'BASKETBALL', 'ESPORTS', 'MMA'],
     morningHourMsk: 9,
     eveningHourMsk: 18,
@@ -489,6 +489,7 @@ function createInitialState(): PersistentState {
     autoSettleEnabled: true,
     cronSecret: process.env.AUTOPILOT_CRON_SECRET || 'valuex-autopilot-2026',
     totalGeneratedCount: 0,
+    lastFeedSource: null,
     lastMorningRunDate: null,
     lastEveningRunDate: null,
     lastScanAt: null,

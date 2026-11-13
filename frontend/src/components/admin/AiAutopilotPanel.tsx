@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import {
+  Activity,
   Bot,
   CheckCircle2,
   Clock,
@@ -12,12 +13,14 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
+  XCircle,
   Zap,
 } from 'lucide-react';
 import type {
   AiAutopilotConfig,
   AiAutopilotLogEntry,
   AiAutopilotMode,
+  AiDiagnosticsReport,
   AiLlmProvider,
   AiPerformanceStats,
   AiPredictionDraft,
@@ -52,6 +55,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
 }) => {
   const [draftConfig, setDraftConfig] = useState<AiAutopilotConfig>(config);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<AiDiagnosticsReport | null>(null);
 
   useEffect(() => {
     setDraftConfig(config);
@@ -70,7 +74,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
       if (res.ok) {
         onToast(
           nextMode === 'FULL_AUTOPILOT'
-            ? 'Полный автопилот 24/7 ВКЛЮЧЕН! Платформа сама наполняет витрину и рассчитывает матчи.'
+            ? 'Полный автопилот 24/7 ВКЛЮЧЕН! Сбор российской линии и авторасчет активны.'
             : nextMode === 'MODERATION'
               ? 'Включен режим премодерации черновиков ИИ.'
               : 'ИИ-Автопилот поставлен на паузу.',
@@ -131,7 +135,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         body: JSON.stringify({ config: draftConfig }),
       });
       if (res.ok) {
-        onToast('Параметры ИИ-Автопилота, ключи API и расписание сохранены!');
+        onToast('Настройки ИИ-Автопилота и расписания сохранены!');
         await onRefresh();
       }
     } finally {
@@ -152,11 +156,11 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         if (json.createdCount > 0) {
           onToast(
             json.publishedDirectly
-              ? `Автопилот сразу выставил ${json.createdCount} новых событий на витрину!`
-              : `ИИ подготовил ${json.createdCount} новых прогнозов в очередь черновиков!`,
+              ? `Выставлено ${json.createdCount} событий на витрину (${json.feedSource})!`
+              : `Подготовлено ${json.createdCount} прогнозов в черновики (${json.feedSource})!`,
           );
         } else {
-          onToast('Все подходящие валуйные матчи уже находятся на витрине.');
+          onToast(`Новых матчей сверх лимита не требуется (${json.feedSource}).`);
         }
         await onRefresh();
       }
@@ -177,10 +181,27 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
       if (res.ok) {
         onToast(
           json.settledCount > 0
-            ? `Авторасчет завершен: рассчитано ${json.settledCount} матчей, возвращено страховок: ${json.compensatedBuyers}.`
-            : `Проверено завершенных матчей: ${json.checkedCount}. Новых официальных счетов для расчета пока нет.`,
+            ? `Рассчитано матчей: ${json.settledCount}, выплачено страховок: ${json.compensatedBuyers}.`
+            : `Проверено завершенных встреч: ${json.checkedCount}. Новых итоговых счетов пока нет.`,
         );
         await onRefresh();
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleRunDiagnostics = async () => {
+    setBusyAction('DIAG');
+    try {
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'RUN_DIAGNOSTICS' }),
+      });
+      const json = await res.json();
+      if (res.ok && json.report) {
+        setDiagnostics(json.report as AiDiagnosticsReport);
       }
     } finally {
       setBusyAction(null);
@@ -223,7 +244,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
           <div className="lg:col-span-7">
             <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-bold text-blue-300">
               <Bot className="h-4 w-4 text-blue-400" />
-              <span>Автономный ИИ-Аналитик + Авторасчет результатов</span>
+              <span>Прямая линия РФ (Фонбет / Леон · 0 ₽/мес) + ИИ-Аналитик</span>
             </div>
 
             <h2 className="mt-3 text-2xl font-black tracking-tight sm:text-3xl">
@@ -235,7 +256,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             </h2>
 
             <p className="mt-2 max-w-2xl text-xs leading-relaxed text-slate-300 sm:text-sm">
-              Алгоритм сканирует расписание и коэффициенты, отбирает события с математическим перевесом (EV%), генерирует анонс и глубокую аналитику через API нейросети, выставляет матчи на витрину в{' '}
+              С вашего российского IP сервер бесплатно собирает прематч-линию РФ (русские команды, РПЛ, КХЛ, еврокубки, ATP, CS2, UFC), фильтрует валуйные котировки, генерирует разбор и сам публикует события в{' '}
               <strong className="text-white">
                 {String(draftConfig.morningHourMsk).padStart(2, '0')}:00
               </strong>{' '}
@@ -243,7 +264,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
               <strong className="text-white">
                 {String(draftConfig.eveningHourMsk).padStart(2, '0')}:00 МСК
               </strong>
-              , а после игр сам проверяет счет и начисляет страховки покупателям.
+              , а после матчей сверяет счет и начисляет страховки на баланс.
             </p>
 
             {/* Тумблер 3 режимов */}
@@ -286,12 +307,12 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                     : 'border border-white/15 bg-white/5 text-slate-400 hover:text-white'
                 }`}
               >
-                Выключен
+                Пауза
               </button>
             </div>
           </div>
 
-          {/* Метрики дистанции самого ИИ (для принятия решения о включении тумблера) */}
+          {/* Метрики дистанции самого ИИ */}
           <div className="grid grid-cols-2 gap-3 lg:col-span-5">
             <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
               <div className="text-[11px] text-slate-400">Yield алгоритма ИИ</div>
@@ -304,7 +325,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                 {aiStats.yieldPct.toFixed(1)}%
               </div>
               <div className="mt-0.5 text-[10px] text-slate-400">
-                Показатель перевеса на дистанции
+                Чистая эффективность на дистанции
               </div>
             </div>
 
@@ -334,15 +355,15 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
               <div className="mt-1 font-mono text-2xl font-black text-white">
                 {drafts.length}
               </div>
-              <div className="mt-0.5 text-[10px] text-slate-400">
-                Всего выпущено ИИ: {aiStats.totalAiPredictions}
+              <div className="mt-0.5 truncate text-[10px] text-slate-400">
+                {config.lastFeedSource || `Выпущено ИИ: ${aiStats.totalAiPredictions}`}
               </div>
             </div>
           </div>
         </div>
 
-        {/* Быстрые кнопки ручного запуска цикла прямо сейчас */}
-        <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-white/10 pt-5">
+        {/* Панель мгновенного управления и самодиагностики */}
+        <div className="mt-6 flex flex-wrap items-center gap-2.5 border-t border-white/10 pt-5">
           <button
             type="button"
             disabled={busyAction !== null}
@@ -356,8 +377,8 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             )}
             <span>
               {isFullAutopilot
-                ? 'Найти матчи и опубликовать на витрину сейчас'
-                : 'Найти матчи и сгенерировать черновики'}
+                ? 'Собрать линию РФ и опубликовать сейчас'
+                : 'Собрать линию РФ в черновики'}
             </span>
           </button>
 
@@ -373,7 +394,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
               ) : (
                 <Zap className="h-3.5 w-3.5" />
               )}
-              <span>Мгновенный автовыпуск сразу на витрину</span>
+              <span>Выпустить сразу на витрину</span>
             </button>
           )}
 
@@ -388,12 +409,63 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             ) : (
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
             )}
-            <span>Проверить счета матчей и выплатить страховки</span>
+            <span>Сверить счета и выплатить страховки</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={busyAction !== null}
+            onClick={handleRunDiagnostics}
+            className="ml-auto inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-xs font-bold text-blue-300 hover:bg-white/10 disabled:opacity-50"
+          >
+            {busyAction === 'DIAG' ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Activity className="h-3.5 w-3.5" />
+            )}
+            <span>Диагностика узлов</span>
           </button>
         </div>
+
+        {/* Блок результатов живой диагностики */}
+        {diagnostics && (
+          <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-bold text-white">
+                Отчет самодиагностики · Серверное время: {diagnostics.mskTimeFormatted}
+              </span>
+              <span className="font-mono text-blue-300">
+                Следующий плановый слот: {diagnostics.nextSlotLabel}
+              </span>
+            </div>
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              {diagnostics.items.map((item) => (
+                <div
+                  key={item.name}
+                  className="flex items-start justify-between gap-2 rounded-xl border border-white/10 bg-slate-950/60 p-3 text-xs"
+                >
+                  <div>
+                    <div className="flex items-center gap-1.5 font-bold text-white">
+                      {item.ok ? (
+                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                      ) : (
+                        <XCircle className="h-3.5 w-3.5 text-amber-400" />
+                      )}
+                      <span>{item.name}</span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-300">{item.details}</p>
+                  </div>
+                  <span className="shrink-0 font-mono text-[11px] text-slate-400">
+                    {item.latencyMs} мс
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* 2. ОЧЕРЕДЬ ЧЕРНОВИКОВ ИИ (если есть подготовленные прогнозы) */}
+      {/* 2. ОЧЕРЕДЬ ЧЕРНОВИКОВ ИИ */}
       {drafts.length > 0 && (
         <div className="rounded-2xl border border-blue-200 bg-white p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -402,7 +474,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                 Подготовленные прогнозы ИИ на проверку ({drafts.length})
               </h3>
               <p className="text-xs text-slate-500">
-                Проверьте аргументацию нейросети и опубликуйте подходящие матчи в 1 клик
+                Проверьте аргументацию и опубликуйте матчи в 1 клик
               </p>
             </div>
             <button
@@ -461,7 +533,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                 <div className="mt-3 flex items-center justify-between border-t border-slate-200/80 pt-3">
                   <span className="font-mono text-xs font-bold text-slate-700">
                     {d.accessTier === 'FREE'
-                      ? 'Бесплатный лид-магнит'
+                      ? 'Бесплатный открытый разбор'
                       : `${d.singlePriceRub} ₽ ${d.insuredOnLoss ? '· Со страховкой' : ''}`}
                   </span>
 
@@ -490,7 +562,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         </div>
       )}
 
-      {/* 3. НАСТРОЙКИ API НЕЙРОСЕТИ, СПОРТИВНЫХ ДАННЫХ И РАСПИСАНИЯ */}
+      {/* 3. НАСТРОЙКИ НЕЙРОСЕТИ И РАСПИСАНИЯ */}
       <div className="grid gap-6 lg:grid-cols-12">
         <form
           onSubmit={handleSaveConfig}
@@ -499,22 +571,27 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
           <div className="flex items-center gap-2">
             <Cpu className="h-4 w-4 text-blue-600" />
             <h3 className="text-base font-extrabold text-slate-950">
-              Подключение API нейросети и параметров автопилота
+              Нейросеть-аналитик и расписание выпусков
             </h3>
+          </div>
+
+          <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/60 p-3 text-xs text-emerald-900">
+            <strong>Сбор линии и результатов (0 ₽/мес):</strong> каскад прямых российских шлюзов{' '}
+            <strong>Фонбет РФ → Леон РФ → Резервный Матч-центр</strong> встроен в ядро и работает автоматически без внешних ключей.
           </div>
 
           {/* Пресеты провайдеров ИИ */}
           <div>
             <label className="text-[11px] font-bold text-slate-500">
-              Провайдер ИИ-аналитика (выбор в 1 клик):
+              Мозг написания аналитики:
             </label>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {(
                 [
-                  ['DEEPSEEK', 'DeepSeek API (Рекомендуем)'],
+                  ['DEEPSEEK', 'DeepSeek API (РФ без VPN)'],
                   ['OPENROUTER', 'OpenRouter (Claude/GPT/Qwen)'],
                   ['OPENAI', 'OpenAI GPT-4o'],
-                  ['BUILTIN_QUANT', 'Встроенная мат. модель (без ключа)'],
+                  ['BUILTIN_QUANT', 'Встроенный мат. аналитик (0 ₽, без ключей)'],
                 ] as const
               ).map(([prov, label]) => (
                 <button
@@ -537,7 +614,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             <div className="grid gap-3 sm:grid-cols-3">
               <div>
                 <label className="text-[11px] font-bold text-slate-500">
-                  LLM Base URL
+                  API URL
                 </label>
                 <input
                   value={draftConfig.llmBaseUrl}
@@ -549,7 +626,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
               </div>
               <div>
                 <label className="text-[11px] font-bold text-slate-500">
-                  Модель нейросети
+                  Модель
                 </label>
                 <input
                   value={draftConfig.llmModel}
@@ -576,25 +653,10 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             </div>
           )}
 
-          <div>
-            <label className="text-[11px] font-bold text-slate-500">
-              Ключ линии БК The Odds API (опционально — без него работает открытый сканер ESPN)
-            </label>
-            <input
-              type="password"
-              placeholder="Оставьте пустым для бесплатного сканера расписаний или вставьте ключ the-odds-api.com"
-              value={draftConfig.oddsApiKey}
-              onChange={(e) =>
-                setDraftConfig({ ...draftConfig, oddsApiKey: e.target.value })
-              }
-              className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs"
-            />
-          </div>
-
           {/* Выбор видов спорта */}
           <div>
             <label className="text-[11px] font-bold text-slate-500">
-              Дисциплины для автопоиска:
+              Дисциплины для автоотбора:
             </label>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {SPORT_OPTIONS.map((sp) => {
@@ -741,7 +803,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                   setDraftConfig({ ...draftConfig, insureAiPicks: e.target.checked })
                 }
               />
-              <span>Автоматически включать «Страховку 100% на баланс» для прогнозов ИИ</span>
+              <span>Включать «Страховку 100% на баланс» для всех платных прогнозов ИИ</span>
             </label>
 
             <label className="flex items-center gap-2 text-xs font-bold text-slate-800">
@@ -756,7 +818,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                 }
               />
               <span>
-                Автоматически проверять счет после матчей, рассчитывать WIN/LOSS и выплачивать страховки
+                Автоматически сверять официальный счет после игр и выплачивать страховки
               </span>
             </label>
           </div>
@@ -766,7 +828,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             disabled={busyAction === 'SAVE'}
             className="w-full rounded-xl bg-blue-600 py-3 text-xs font-bold text-white shadow-sm hover:bg-blue-700"
           >
-            Сохранить конфигурацию Автопилота
+            Сохранить настройки Автопилота
           </button>
         </form>
 
