@@ -692,6 +692,11 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                       Исход: {d.selectionTitle} @ {d.fixedOdds.toFixed(2)} · Флэт{' '}
                       {d.stakeUnits.toFixed(1)}%
                     </div>
+                    {d.researchSources && d.researchSources.length > 0 && (
+                      <div className="mt-1 text-[10px] font-semibold text-emerald-700">
+                        Проверено: {d.researchSources.join(' · ')}
+                      </div>
+                    )}
                     <div className="mt-1 text-slate-600">{d.analysisTeaser}</div>
                   </div>
 
@@ -1034,6 +1039,22 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
           </div>
 
           <div className="space-y-2 rounded-xl border border-slate-100 bg-slate-50 p-3">
+            <label className="flex items-center gap-2 text-xs font-bold text-blue-800">
+              <input
+                type="checkbox"
+                checked={draftConfig.openSourceResearchEnabled !== false}
+                onChange={(e) =>
+                  setDraftConfig({
+                    ...draftConfig,
+                    openSourceResearchEnabled: e.target.checked,
+                  })
+                }
+              />
+              <span>
+                Искать новости, травмы и форму в открытых источниках (СМИ РФ, таблицы) и отсеивать рискованные игры через ИИ-комитет
+              </span>
+            </label>
+
             <label className="flex items-center gap-2 text-xs font-bold text-emerald-800">
               <input
                 type="checkbox"

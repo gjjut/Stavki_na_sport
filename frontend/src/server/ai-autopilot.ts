@@ -5,6 +5,10 @@ import {
   readState,
   settlePredictionByAdmin,
 } from './database';
+import {
+  gatherMatchOpenSourceIntel,
+  type OpenSourceMatchIntel,
+} from './ai-research';
 import { sendTelegramChannelAnnouncement } from './integrations';
 import type {
   AccessTier,
@@ -1360,7 +1364,10 @@ function buildQuantitativeFallbackPool(
       bookmakerSource: 'Фонбет · Винлайн · Пари',
       homeOdds: t.odds,
       drawOdds: t.sport === 'FOOTBALL' ? 3.65 : null,
-      awayOdds: Number((3.8 - t.odds).toFixed(2)),
+      awayOdds:
+        t.sport === 'FOOTBALL'
+          ? Number((1 / Math.max(0.16, 1.05 - 1 / t.odds - 1 / 3.65)).toFixed(2))
+          : Number((1 / Math.max(0.24, 1.05 - 1 / t.odds)).toFixed(2)),
       totalLine: 2.5,
       overOdds: 1.9,
       underOdds: 1.9,
@@ -1373,7 +1380,10 @@ function buildQuantitativeFallbackPool(
     }));
 }
 
-function buildCandidateLlmBaseUrls(rawBaseUrl: string, provider: string): string[] {
+export function buildCandidateLlmBaseUrls(
+  rawBaseUrl: string,
+  provider: string,
+): string[] {
   const cleaned = (rawBaseUrl || '').trim();
   const candidates: string[] = [];
 
@@ -1592,9 +1602,135 @@ export async function testLlmConnectionAndModels(input: {
  * Генерация аналитического досье через API нейросети (OrcaRouter / DeepSeek / OpenRouter / OpenAI)
  * либо встроенный понятный русскоязычный генератор (0 ₽).
  */
+/**
+ * ЭТАП ОТБОРА (ИИ-Комитет): из широкого шортлиста матчей и собранных фактов из открытых источников
+ * нейросеть отсеивает мутные/равные игры и оставляет ТОЛЬКО матчи с максимальной реальной вероятностью захода.
+ */
+async function selectBestCandidatesWithAiCommittee(
+  shortlist: Array<{
+    cand: ScannedFixtureCandidate;
+    intel: OpenSourceMatchIntel;
+  }>,
+  limitCount: number,
+  config: AiAutopilotConfig,
+): Promise<
+  Array<{
+    cand: ScannedFixtureCandidate;
+    intel: OpenSourceMatchIntel;
+  }>
+> {
+  if (shortlist.length <= limitCount) return shortlist;
+
+  // Базовый рейтинг надежности по открытым данным + чистой вероятности БК
+  const sortedByData = [...shortlist].sort(
+    (a, b) =>
+      b.intel.reliabilityScore +
+      b.cand.valueEdgePct * 3 -
+      (a.intel.reliabilityScore + a.cand.valueEdgePct * 3),
+  );
+
+  if (
+    config.llmProvider === 'BUILTIN_QUANT' ||
+    config.llmApiKey.trim().length <= 8
+  ) {
+    return sortedByData.slice(0, limitCount);
+  }
+
+  const candidateBases = buildCandidateLlmBaseUrls(
+    config.llmBaseUrl,
+    config.llmProvider,
+  );
+
+  const committeeSystemPrompt = [
+    'Ты — строгий риск-менеджер и глава аналитического отдела спортивного сервиса VALUEX.',
+    `Перед тобой список из ${shortlist.length} реальных предстоящих матчей с котировками БК РФ и собранной сводкой из открытых источников (новости СМИ, таблица, чистая вероятность без маржи, факторы риска).`,
+    `Твоя задача — НЕ брать игры наобум, а отобрать РОВНО ${limitCount} самых надежных и предсказуемых матчей, которые имеют наибольшие реальные шансы сыграть в плюс.`,
+    'Отбраковывай товарищеские игры, матчи равных непредсказуемых середняков без перевеса и игры, где в новостях указаны серьезные травмы ключевых игроков фаворита.',
+    'Старайся брать разные виды спорта, если среди них есть сильные варианты.',
+    'Верни ответ СТРОГО в чистом JSON формате: {"selectedIds":["id1","id2"],"reason":"короткое объяснение отбора на русском"}',
+  ].join(' ');
+
+  const committeePayload = sortedByData.map(({ cand, intel }) => ({
+    id: cand.externalFixtureId,
+    sport: cand.sport,
+    league: cand.leagueName,
+    match: `${cand.homeTeam} — ${cand.awayTeam}`,
+    odds: {
+      p1: cand.homeOdds,
+      draw: cand.drawOdds,
+      p2: cand.awayOdds,
+      suggestedMarket: cand.suggestedMarket,
+      suggestedOdds: cand.suggestedOdds,
+    },
+    reliabilityScore: intel.reliabilityScore,
+    openSourceFacts: intel.formattedBrief,
+  }));
+
+  for (const base of candidateBases) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 16_000);
+      const res = await fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.llmApiKey.trim()}`,
+        },
+        body: JSON.stringify({
+          model: config.llmModel.trim() || 'gpt-4o-mini',
+          temperature: 0.15,
+          messages: [
+            { role: 'system', content: committeeSystemPrompt },
+            { role: 'user', content: JSON.stringify(committeePayload) },
+          ],
+        }),
+      });
+      clearTimeout(timer);
+
+      if (res.ok) {
+        const json = (await res.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const rawText = json.choices?.[0]?.message?.content?.trim() || '';
+        const jStart = rawText.indexOf('{');
+        const jEnd = rawText.lastIndexOf('}');
+        if (jStart >= 0 && jEnd > jStart) {
+          const parsed = JSON.parse(rawText.slice(jStart, jEnd + 1)) as {
+            selectedIds?: string[];
+            reason?: string;
+          };
+          if (Array.isArray(parsed.selectedIds) && parsed.selectedIds.length > 0) {
+            const picked = sortedByData.filter((item) =>
+              parsed.selectedIds!.includes(item.cand.externalFixtureId),
+            );
+            for (const fallbackItem of sortedByData) {
+              if (picked.length >= limitCount) break;
+              if (!picked.includes(fallbackItem)) picked.push(fallbackItem);
+            }
+            if (parsed.reason) {
+              await appendAutopilotLog(
+                'INFO',
+                'LLM_ANALYST',
+                `ИИ-отбор лучших матчей по открытым источникам: ${parsed.reason.slice(0, 220)}`,
+              );
+            }
+            return picked.slice(0, limitCount);
+          }
+        }
+      }
+    } catch {
+      // пробуем следующее зеркало или сортировку по надежности
+    }
+  }
+
+  return sortedByData.slice(0, limitCount);
+}
+
 async function generateAnalystDossier(
   candidate: ScannedFixtureCandidate,
   config: AiAutopilotConfig,
+  intel?: OpenSourceMatchIntel,
 ): Promise<{
   selectionTitle: string;
   fixedOdds: number;
@@ -1621,12 +1757,14 @@ async function generateAnalystDossier(
     );
     const systemPrompt = [
       'Ты — главный спортивный аналитик российского сервиса прогнозов VALUEX.',
-      'Твоя аудитория — обычные российские любители спорта, которые ставят в Фонбет, Винлайн, Пари и Бетбум. Пиши живым, ясным и убедительным русским языком БЕЗ заумного англоязычного жаргона (не используй слова EV, PPDA, xGA, ростер, вето).',
-      'На основе реальных котировок российской линии выдай точный одиночный прогноз строго в формате чистого JSON (без markdown).',
-      'КРИТИЧЕСКИ ВАЖНО: В поле analysisTeaser (1-2 интересных предложения) ЗАПРЕЩЕНО называть выбранный исход и коэффициент — это открытое описание матча на карточке до покупки!',
-      'В поле selectionTitle используй ТОЛЬКО понятный стандарт: "Победа 1", "Победа 2", "1X", "X2", "Фора 1 (-1.0)", "Фора 2 (+1.5)", "Тотал больше (2.5)", "Тотал меньше (5.5)", "Индивидуальный тотал 1 больше (1.5)" или "Обе забьют: Да". Не используй четвертные азиатские форы вроде -0.75.',
-      'В поле analysisFull напиши понятный и глубокий разбор на 3 коротких абзаца: 1) Текущая форма, составы и мотивация команд; 2) За счет чего именно сыграет выбранная ставка и почему коэффициент выгодный; 3) Простой совет, до какого минимального коэффициента стоит брать ставку и какой процент от банка выделить.',
-      'JSON: {"selectionTitle":"...","fixedOdds":1.90,"stakeUnits":1.5,"confidencePct":73,"valueEdgePct":4.8,"analysisTeaser":"...","analysisFull":"..."}',
+      'Твоя главная задача — дать максимально правдивый, обоснованный и реалистичный прогноз с высокими шансами захода.',
+      'СТРОЖАЙШЕЕ ПРАВИЛО ЧЕСТНОСТИ (АНТИ-ВЫДУМКА): Опирайся ТОЛЬКО на переданные реальные коэффициенты БК РФ и собранные факты из открытых источников (openSourceIntel). КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдумывать несуществующие счета прошлых игр, фамилии травмированных игроков или вымышленную статистику, которых нет во входных данных!',
+      'Если в openSourceIntel указаны конкретные новости СМИ или турнирные показатели — аккуратно используй именно их. Если новостей по матчу мало — опирайся на реальную разницу в классе команд по линии букмекеров, фактор домашнего поля, турнирную мотивацию и математическую оценку вероятности без маржи.',
+      'Пиши живым, понятным обычному человеку русским языком БЕЗ заумного жаргона (не пиши слова EV, PPDA, xGA, ростер, вето).',
+      'КРИТИЧЕСКИ ВАЖНО: В поле analysisTeaser (1-2 интригующих предложения) ЗАПРЕЩЕНО называть выбранную ставку и коэффициент — это открытое превью карточки до покупки!',
+      'Выбирай ТОЛЬКО надежный, подстрахованный рынок из реальной линии (коэффициент строго в диапазоне 1.60–2.25, без авантюрных высоких кэфов!): "Победа 1", "Победа 2", "Победа 1 в матче", "Победа 2 в матче", "1X", "X2", "Фора 1 (0)", "Фора 2 (0)", "Фора 1 (-1.0)", "Фора 2 (+1.5)", "Тотал больше (2.5)", "Тотал меньше (5.5)", "Индивидуальный тотал 1 больше (1.5)" или "Обе забьют: Да".',
+      'В поле analysisFull напиши честный и убедительный разбор на 3 абзаца: 1) Реальная расстановка сил, форма и факты из открытых источников; 2) Почему именно выбранный исход наиболее надежен и защищен от случайностей; 3) Рекомендация по банку и минимально допустимому коэффициенту в Фонбет/Винлайн/Пари.',
+      'JSON: {"selectionTitle":"...","fixedOdds":1.85,"stakeUnits":1.5,"confidencePct":74,"valueEdgePct":4.8,"analysisTeaser":"...","analysisFull":"..."}',
     ].join(' ');
 
     const userPrompt = JSON.stringify({
@@ -1648,6 +1786,18 @@ async function generateAnalystDossier(
         odds: candidate.suggestedOdds,
         edgePct: candidate.valueEdgePct,
       },
+      openSourceIntel: intel
+        ? {
+            reliabilityScore: intel.reliabilityScore,
+            fairHomeProbPct: intel.fairHomeProbPct,
+            fairDrawProbPct: intel.fairDrawProbPct,
+            fairAwayProbPct: intel.fairAwayProbPct,
+            newsHeadlines: intel.newsHeadlines,
+            teamRecordsAndForm: intel.teamRecordsAndForm,
+            webSnippets: intel.webSnippets,
+            riskFlags: intel.riskFlags,
+          }
+        : null,
       notes: candidate.contextNotes,
     });
 
@@ -1745,8 +1895,16 @@ async function generateAnalystDossier(
     valueEdgePct: candidate.valueEdgePct,
     analysisTeaser: `Детальный разбор матча «${candidate.homeTeam} — ${candidate.awayTeam}» (${candidate.leagueName}): нашли выгодный коэффициент в российской линии БК с запасом прочности.`,
     analysisFull: [
-      `1. Почему этот матч интересен: ${candidate.contextNotes}`,
-      `2. Почему выбран именно этот исход: В линии российских букмекеров (${candidate.bookmakerSource}) на вариант «${candidate.suggestedMarket}» сейчас дают завышенный коэффициент ${candidate.suggestedOdds.toFixed(2)}, хотя реальные шансы команд заметно выше оценки букмекера.`,
+      `1. Реальная расстановка сил и данные открытых источников: ${
+        intel?.newsHeadlines?.[0]
+          ? `${candidate.contextNotes} Свежая сводка СМИ: «${intel.newsHeadlines[0]}».`
+          : candidate.contextNotes
+      }`,
+      `2. Почему выбран именно этот исход: В линии российских букмекеров (${candidate.bookmakerSource}) на вариант «${candidate.suggestedMarket}» сейчас дают выгодный коэффициент ${candidate.suggestedOdds.toFixed(2)}${
+        intel?.fairHomeProbPct !== null && intel?.fairHomeProbPct !== undefined
+          ? ` (чистая математическая оценка рынка без маржи: Хозяева ${intel.fairHomeProbPct}% / Гости ${intel.fairAwayProbPct}%)`
+          : ''
+      }.`,
       `3. Как лучше поставить: Спокойная одиночная ставка на сумму ${recommendedStake.toFixed(1)}% от вашего игрового банка (выгодно брать при коэффициенте не ниже ${Math.max(1.55, candidate.suggestedOdds - 0.08).toFixed(2)}).`,
     ].join('\n\n'),
   };
@@ -1862,12 +2020,17 @@ export async function runAiScanAndGenerateCycle(options?: {
     (c) =>
       !existingKeys.has(c.externalFixtureId) &&
       !existingKeys.has(normalizeTeamKey(c.homeTeam, c.awayTeam)) &&
-      c.valueEdgePct >= config.minValueEdgePct,
+      c.valueEdgePct >= config.minValueEdgePct &&
+      !c.leagueName.toLowerCase().includes('товарищ') &&
+      !c.leagueName.toLowerCase().includes('friendly'),
   );
-  const filtered = selectDiversifiedCandidates(
+
+  // Шаг 1: формируем расширенный шортлист из реальной линии разных видов спорта
+  const shortlistSize = Math.min(10, Math.max(limitCount * 3, 6));
+  const shortlist = selectDiversifiedCandidates(
     eligible,
     stateSnapshot.predictions,
-    limitCount,
+    shortlistSize,
   );
 
   await mutateState((s) => {
@@ -1875,7 +2038,7 @@ export async function runAiScanAndGenerateCycle(options?: {
     s.aiAutopilot.lastFeedSource = feedSource;
   });
 
-  if (filtered.length === 0) {
+  if (shortlist.length === 0) {
     await appendAutopilotLog(
       'INFO',
       'SCANNER',
@@ -1889,6 +2052,49 @@ export async function runAiScanAndGenerateCycle(options?: {
     };
   }
 
+  // Шаг 2: собираем реальные новости, травмы, таблицу и превью из открытых источников по каждому кандидату
+  const doResearch = config.openSourceResearchEnabled !== false;
+  const shortlistWithIntel = await Promise.all(
+    shortlist.map(async (cand) => {
+      const intel = doResearch
+        ? await gatherMatchOpenSourceIntel({
+            sport: cand.sport,
+            leagueName: cand.leagueName,
+            homeTeam: cand.homeTeam,
+            awayTeam: cand.awayTeam,
+            homeOdds: cand.homeOdds,
+            drawOdds: cand.drawOdds,
+            awayOdds: cand.awayOdds,
+            existingNotes: cand.contextNotes,
+          })
+        : {
+            homeTeam: cand.homeTeam,
+            awayTeam: cand.awayTeam,
+            leagueName: cand.leagueName,
+            sport: cand.sport,
+            fairHomeProbPct: null,
+            fairDrawProbPct: null,
+            fairAwayProbPct: null,
+            bookmakerMarginPct: null,
+            newsHeadlines: [],
+            webSnippets: [],
+            teamRecordsAndForm: [cand.contextNotes],
+            sourcesChecked: ['Котировки линии БК РФ'],
+            reliabilityScore: 70,
+            riskFlags: [],
+            formattedBrief: cand.contextNotes,
+          };
+      return { cand, intel };
+    }),
+  );
+
+  // Шаг 3: ИИ-Комитет отбраковывает сомнительные матчи и выбирает ТОЛЬКО игры с максимальным шансом захода
+  const selectedWithIntel = await selectBestCandidatesWithAiCommittee(
+    shortlistWithIntel,
+    limitCount,
+    config,
+  );
+
   const publishImmediately =
     options?.forcePublish === true || config.mode === 'FULL_AUTOPILOT';
 
@@ -1901,16 +2107,16 @@ export async function runAiScanAndGenerateCycle(options?: {
 
   let createdCount = 0;
 
-  for (let idx = 0; idx < filtered.length; idx++) {
-    const cand = filtered[idx];
-    const dossier = await generateAnalystDossier(cand, config);
+  for (let idx = 0; idx < selectedWithIntel.length; idx++) {
+    const { cand, intel } = selectedWithIntel[idx];
+    const dossier = await generateAnalystDossier(cand, config, intel);
 
     const nextSeq = stateSnapshot.aiAutopilot.totalGeneratedCount + idx + 1;
     const forceFreeToKeepStorefrontWarm =
       config.freeEveryNthPick > 0 &&
       !hasActiveFreeOnStorefront &&
-      filtered.length >= 2 &&
-      idx === filtered.length - 1;
+      selectedWithIntel.length >= 2 &&
+      idx === selectedWithIntel.length - 1;
     const isFreeLeadMagnet =
       forceFreeToKeepStorefrontWarm ||
       (config.freeEveryNthPick > 0 && nextSeq % config.freeEveryNthPick === 0);
@@ -1940,6 +2146,8 @@ export async function runAiScanAndGenerateCycle(options?: {
         externalFixtureId: cand.externalFixtureId,
         aiConfidencePct: dossier.confidencePct,
         aiEdgePct: dossier.valueEdgePct,
+        researchSummary: intel.formattedBrief,
+        researchSources: intel.sourcesChecked,
         analysisTeaser: dossier.analysisTeaser,
         analysisFull: dossier.analysisFull,
         pushToTelegram: true,
@@ -1969,6 +2177,8 @@ export async function runAiScanAndGenerateCycle(options?: {
         valueEdgePct: dossier.valueEdgePct,
         analysisTeaser: dossier.analysisTeaser,
         analysisFull: dossier.analysisFull,
+        researchSummary: intel.formattedBrief,
+        researchSources: intel.sourcesChecked,
         createdAt: new Date().toISOString(),
       };
 
@@ -2136,6 +2346,8 @@ export async function approveAiDraftToStorefront(
     externalFixtureId: draft.externalFixtureId,
     aiConfidencePct: draft.confidencePct,
     aiEdgePct: draft.valueEdgePct,
+    researchSummary: draft.researchSummary ?? null,
+    researchSources: draft.researchSources ?? [],
     analysisTeaser: draft.analysisTeaser,
     analysisFull: draft.analysisFull,
     pushToTelegram: true,

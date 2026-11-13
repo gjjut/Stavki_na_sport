@@ -1,4 +1,5 @@
 import type { MetadataRoute } from 'next';
+import { SEO_LEAGUE_PAGES } from '@/lib/seo-leagues';
 import { readState } from '@/server/database';
 
 export const dynamic = 'force-dynamic';
@@ -43,6 +44,13 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     },
   ];
 
+  const leagueRoutes: MetadataRoute.Sitemap = SEO_LEAGUE_PAGES.map((lg) => ({
+    url: `${baseUrl}/leagues/${lg.slug}`,
+    lastModified: new Date(),
+    changeFrequency: 'hourly',
+    priority: 0.88,
+  }));
+
   const matchRoutes: MetadataRoute.Sitemap = state.predictions
     .slice(0, 200)
     .map((pred) => ({
@@ -52,5 +60,5 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       priority: pred.resultStatus === 'PENDING' ? 0.85 : 0.65,
     }));
 
-  return [...staticRoutes, ...matchRoutes];
+  return [...staticRoutes, ...leagueRoutes, ...matchRoutes];
 }

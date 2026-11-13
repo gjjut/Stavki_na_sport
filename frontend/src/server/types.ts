@@ -79,6 +79,8 @@ export interface PredictionRecord {
   externalFixtureId?: string | null;
   aiConfidencePct?: number | null;
   aiEdgePct?: number | null;
+  researchSummary?: string | null;
+  researchSources?: string[];
 
   // Гарантия возврата стоимости на баланс сайта при минусе или возврате (PUSH)
   insuredOnLoss?: boolean;
@@ -293,6 +295,7 @@ export interface AiAutopilotConfig {
   freeEveryNthPick: number; // 0 = только платные, 4 = каждый 4-й открытый для привлечения
   insureAiPicks: boolean; // включать ли страховку 100% на баланс при минусе
   autoSettleEnabled: boolean; // автопроверка счета после матча + выплата страховки
+  openSourceResearchEnabled?: boolean; // сбор новостей, травм, турнирной таблицы и формы из открытых источников перед отбором
   cronSecret: string;
   totalGeneratedCount: number;
   lastFeedSource: string | null;
@@ -345,6 +348,22 @@ export interface AiPredictionDraft {
   valueEdgePct: number;
   analysisTeaser: string;
   analysisFull: string;
+  researchSummary?: string;
+  researchSources?: string[];
+  createdAt: string;
+}
+
+export interface AiChatExecutedAction {
+  tool: string;
+  summary: string;
+  ok: boolean;
+}
+
+export interface AiChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  executedActions?: AiChatExecutedAction[];
   createdAt: string;
 }
 

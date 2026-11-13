@@ -15,6 +15,7 @@ import type {
   AffiliateLinkRecord,
   AiAutopilotConfig,
   AiAutopilotLogEntry,
+  AiChatMessage,
   AiPerformanceStats,
   AiPredictionDraft,
   EquityPoint,
@@ -46,6 +47,7 @@ export interface PersistentState {
   aiAutopilot: AiAutopilotConfig;
   aiDrafts: AiPredictionDraft[];
   aiLogs: AiAutopilotLogEntry[];
+  aiChatMessages: AiChatMessage[];
 }
 
 const DATA_DIR = path.join(process.cwd(), '.data');
@@ -501,6 +503,7 @@ function createInitialState(): PersistentState {
     freeEveryNthPick: 4,
     insureAiPicks: true,
     autoSettleEnabled: true,
+    openSourceResearchEnabled: true,
     cronSecret: process.env.AUTOPILOT_CRON_SECRET || 'valuex-autopilot-2026',
     totalGeneratedCount: 0,
     lastFeedSource: null,
@@ -549,6 +552,7 @@ function createInitialState(): PersistentState {
           'Модуль ИИ-Автопилота готов к работе. Доступны режимы «Премодерация черновиков» и «Полный автопилот 24/7» (09:00 и 18:00 МСК).',
       },
     ],
+    aiChatMessages: [],
   };
 }
 
@@ -660,6 +664,9 @@ function normalizeLoadedState(
     aiAutopilot,
     aiDrafts: Array.isArray(raw.aiDrafts) ? raw.aiDrafts : [],
     aiLogs: Array.isArray(raw.aiLogs) ? raw.aiLogs.slice(0, 100) : fallback.aiLogs,
+    aiChatMessages: Array.isArray(raw.aiChatMessages)
+      ? raw.aiChatMessages.slice(-60)
+      : [],
   };
 }
 
@@ -1683,6 +1690,8 @@ export async function createPredictionByAdmin(input: {
   externalFixtureId?: string | null;
   aiConfidencePct?: number | null;
   aiEdgePct?: number | null;
+  researchSummary?: string | null;
+  researchSources?: string[];
   analysisTeaser: string;
   analysisFull: string;
   pushToTelegram?: boolean;
@@ -1730,6 +1739,8 @@ export async function createPredictionByAdmin(input: {
       externalFixtureId: input.externalFixtureId ?? null,
       aiConfidencePct: input.aiConfidencePct ?? null,
       aiEdgePct: input.aiEdgePct ?? null,
+      researchSummary: input.researchSummary ?? null,
+      researchSources: input.researchSources ?? [],
       insuredOnLoss:
         input.accessTier === 'PAID_SINGLE' ? Boolean(input.insuredOnLoss ?? true) : false,
       selectionTitle: input.selectionTitle.trim(),

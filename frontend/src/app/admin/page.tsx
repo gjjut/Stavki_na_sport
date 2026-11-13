@@ -9,20 +9,24 @@ import {
   Coins,
   Download,
   Gift,
+  MessageSquareText,
   Plus,
   Search,
   Send,
   Settings,
   ShieldCheck,
+  Smartphone,
   Tag,
   Trash2,
   Users,
 } from 'lucide-react';
+import { AdminAiChatPanel } from '@/components/admin/AdminAiChatPanel';
 import { AiAutopilotPanel } from '@/components/admin/AiAutopilotPanel';
 import type {
   AccessTier,
   AiAutopilotConfig,
   AiAutopilotLogEntry,
+  AiChatMessage,
   AiPerformanceStats,
   AiPredictionDraft,
   OrderTransaction,
@@ -47,6 +51,7 @@ interface AdminOverviewPayload {
   aiAutopilot: AiAutopilotConfig;
   aiDrafts: AiPredictionDraft[];
   aiLogs: AiAutopilotLogEntry[];
+  aiChatMessages?: AiChatMessage[];
   aiStats: AiPerformanceStats;
 }
 
@@ -65,7 +70,13 @@ export default function AdminDashboardPage() {
   const [data, setData] = useState<AdminOverviewPayload | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [tab, setTab] = useState<
-    'AUTOPILOT' | 'PREDICTIONS' | 'PRICING_PROMOS' | 'FINANCE' | 'USERS' | 'SETTINGS'
+    | 'AUTOPILOT'
+    | 'AI_CHAT'
+    | 'PREDICTIONS'
+    | 'PRICING_PROMOS'
+    | 'FINANCE'
+    | 'USERS'
+    | 'SETTINGS'
   >('AUTOPILOT');
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -464,6 +475,7 @@ export default function AdminDashboardPage() {
           {(
             [
               ['AUTOPILOT', 'ИИ-Автопилот 24/7', Bot],
+              ['AI_CHAT', 'ИИ-Чат и Управление', MessageSquareText],
               ['PREDICTIONS', 'События и расчет', Plus],
               ['PRICING_PROMOS', 'Пакеты и Промокоды', Tag],
               ['FINANCE', 'Чеки и выплаты', Coins],
@@ -513,6 +525,21 @@ export default function AdminDashboardPage() {
             aiStats={data.aiStats}
             onRefresh={loadOverview}
             onToast={showToast}
+          />
+        )}
+
+        {/* ВКЛАДКА 0.5: ЖИВОЙ ЧАТ С ИИ-УПРАВЛЯЮЩИМ И ПОЛНОЕ УПРАВЛЕНИЕ САЙТОМ */}
+        {tab === 'AI_CHAT' && data && (
+          <AdminAiChatPanel
+            initialMessages={data.aiChatMessages ?? []}
+            llmProvider={data.aiAutopilot.llmProvider}
+            llmModel={data.aiAutopilot.llmModel}
+            hasApiKey={
+              data.aiAutopilot.llmProvider !== 'BUILTIN_QUANT' &&
+              data.aiAutopilot.llmApiKey.trim().length > 8
+            }
+            onRefresh={loadOverview}
+            onSwitchToAutopilotSettings={() => setTab('AUTOPILOT')}
           />
         )}
 
@@ -1449,14 +1476,40 @@ export default function AdminDashboardPage() {
                 <span className="text-xs font-extrabold text-slate-900">
                   Интеграция с Telegram-каналом и контакты поддержки
                 </span>
-                <button
-                  type="button"
-                  onClick={handleTestTelegram}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-50"
-                >
-                  <Send className="h-3 w-3" />
-                  <span>Отправить тестовый пост в канал</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const res = await fetch('/api/v1/admin/settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'INSTALL_MINI_APP' }),
+                      });
+                      const json = (await res.json()) as {
+                        message?: string;
+                        error?: string;
+                      };
+                      showToast(
+                        res.ok
+                          ? json.message || 'Telegram Mini App установлен!'
+                          : json.error || 'Ошибка установки Mini App',
+                      );
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100"
+                  >
+                    <Smartphone className="h-3 w-3" />
+                    <span>Установить кнопку Mini App в бота</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleTestTelegram}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-50"
+                  >
+                    <Send className="h-3 w-3" />
+                    <span>Отправить тестовый пост в канал</span>
+                  </button>
+                </div>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
@@ -1621,6 +1674,18 @@ export default function AdminDashboardPage() {
           </form>
         )}
       </main>
+
+      {/* Быстрая плавающая кнопка вызова ИИ-Управляющего из любой вкладки админки */}
+      {tab !== 'AI_CHAT' && (
+        <button
+          type="button"
+          onClick={() => setTab('AI_CHAT')}
+          className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-3 text-xs font-extrabold text-white shadow-xl shadow-blue-600/35 transition hover:bg-blue-500"
+        >
+          <MessageSquareText className="h-4 w-4" />
+          <span>Чат с ИИ-Управляющим</span>
+        </button>
+      )}
     </div>
   );
 }

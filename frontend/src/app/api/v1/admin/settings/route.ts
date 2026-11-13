@@ -4,6 +4,7 @@ import { mutateState, readState } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
 import {
   fetchTelegramBotUsername,
+  installTelegramMiniAppAndWebhook,
   sendTelegramChannelAnnouncement,
 } from '@/server/integrations';
 import type { PlatformSettings } from '@/server/types';
@@ -54,10 +55,26 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
-export async function POST() {
+export async function POST(req: NextRequest) {
   try {
     await requireAdminAccount();
+    const body = (await req.json().catch(() => ({}))) as {
+      action?: 'TEST_CHANNEL' | 'INSTALL_MINI_APP';
+    };
     const state = await readState();
+
+    if (body.action === 'INSTALL_MINI_APP') {
+      const origin = new URL(req.url).origin;
+      const result = await installTelegramMiniAppAndWebhook(
+        state.settings,
+        origin,
+      );
+      if (!result.ok) {
+        return NextResponse.json({ error: result.message }, { status: 400 });
+      }
+      return NextResponse.json({ ok: true, message: result.message });
+    }
+
     const res = await sendTelegramChannelAnnouncement(
       state.settings,
       `✅ <b>${state.settings.brandName}</b>: подключение Telegram-бота для публикации анонсов успешно проверено!`,

@@ -35,6 +35,7 @@ export async function GET() {
       aiAutopilot: state.aiAutopilot,
       aiDrafts: state.aiDrafts,
       aiLogs: state.aiLogs,
+      aiChatMessages: state.aiChatMessages,
       aiStats,
     });
   } catch (err) {

@@ -304,3 +304,84 @@ export async function pollTelegramUpdatesForLinkCode(
   }
 }
 
+export async function installTelegramMiniAppAndWebhook(
+  settings: PlatformSettings,
+  originUrl: string,
+): Promise<{ ok: boolean; message: string }> {
+  const token = (
+    settings.telegramBotToken ||
+    process.env.TELEGRAM_BOT_TOKEN ||
+    ''
+  ).trim();
+  if (!token || token.includes('replace_with')) {
+    return {
+      ok: false,
+      message: 'Сначала укажите и сохраните Telegram Bot Token (@BotFather)',
+    };
+  }
+
+  const base = (process.env.NEXT_PUBLIC_SITE_URL || originUrl).replace(/\/+$/, '');
+  if (!base.startsWith('https://')) {
+    return {
+      ok: false,
+      message: `Telegram Mini App и Webhook требуют HTTPS-домен (сейчас адрес ${base}). Привяжите домен командой: bash deploy/setup-domain-ssl.sh ваш-домен.ru ваш@email.ru — и кнопка установится за 1 секунду!`,
+    };
+  }
+
+  try {
+    const whRes = await fetch(
+      `https://api.telegram.org/bot${token}/setWebhook`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: `${base}/api/v1/webhooks/telegram`,
+          allowed_updates: ['message'],
+        }),
+      },
+    );
+    const whJson = (await whRes.json()) as { ok?: boolean; description?: string };
+
+    const menuRes = await fetch(
+      `https://api.telegram.org/bot${token}/setChatMenuButton`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          menu_button: {
+            type: 'web_app',
+            text: '🔥 Витрина прогнозов',
+            web_app: { url: `${base}/tg-app` },
+          },
+        }),
+      },
+    );
+    const menuJson = (menuRes.ok
+      ? await menuRes.json()
+      : { ok: false, description: 'Ошибка установки кнопки меню' }) as {
+      ok?: boolean;
+      description?: string;
+    };
+
+    if (!whJson.ok || !menuJson.ok) {
+      return {
+        ok: false,
+        message:
+          menuJson.description ||
+          whJson.description ||
+          'Ошибка ответа Telegram API',
+      };
+    }
+
+    return {
+      ok: true,
+      message: `Готово! В вашего Telegram-бота установлена кнопка Mini App («🔥 Витрина прогнозов» → ${base}/tg-app) и активирован Webhook уведомлений!`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : 'Сетевая ошибка Telegram',
+    };
+  }
+}
+

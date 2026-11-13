@@ -322,6 +322,24 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                   {brand.legalSellerName} · {brand.legalInn}
                 </p>
               )}
+              <div className="mt-4 flex flex-wrap gap-1.5">
+                {[
+                  ['Прогнозы на РПЛ', '/leagues/rpl'],
+                  ['Прогнозы на КХЛ', '/leagues/khl'],
+                  ['Лига чемпионов', '/leagues/champions-league'],
+                  ['Теннис ATP / WTA', '/leagues/tennis-atp-wta'],
+                  ['Киберспорт CS2', '/leagues/cs2-dota2'],
+                  ['Бои UFC', '/leagues/ufc-mma'],
+                ].map(([title, href]) => (
+                  <Link
+                    key={href}
+                    href={href}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:border-blue-300 hover:text-blue-600"
+                  >
+                    {title}
+                  </Link>
+                ))}
+              </div>
             </div>
 
             <div>
