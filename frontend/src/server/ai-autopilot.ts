@@ -1387,11 +1387,68 @@ export function stripReasoningThinkTags(raw: string): string {
   return (raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
+export const PLUSVIBE_RECOMMENDED_MODELS = [
+  'deepseek-v4.1-flash-1017',
+  'gpt-6-luna',
+  'gemini-3.8-flash',
+  'qwen3.8-max',
+  'gpt-6.1-sol',
+  'claude-sonnet-5.5',
+  'claude-opus-5.5',
+];
+
+export function isNonChatModelId(id: string, typeField?: string): boolean {
+  const t = (typeField || '').toLowerCase();
+  if (
+    t &&
+    t !== 'chat' &&
+    t !== 'text' &&
+    t !== 'llm' &&
+    t !== 'language'
+  ) {
+    return true;
+  }
+  return /embed|rerank|whisper|speech-to-text|tts|elevenlabs|flux|midjourney|dall-e|imagen|sora|kling|veo|runway|suno|udio|moderation/i.test(
+    id,
+  );
+}
+
 /**
- * Сортирует список моделей токена так, чтобы БЕСПЛАТНЫЕ модели (-free, :free) шли ПЕРВЫМИ,
- * а платные маршрутизаторы вроде orcarouter/auto (закрытые на бесплатных ключах 403 model_access_denied) — в самом конце!
+ * Сортирует список моделей токена под конкретный шлюз:
+ * - Для платного PlusVibeAPI (РФ, ₽) ставит вперед оптимальные платные модели (deepseek-v4.1-flash-1017 за 2₽, gpt-6-luna, gemini-3.8-flash, qwen3.8-max, gpt-6.1-sol, claude-sonnet-5.5) и убирает :free.
+ * - Для OrcaRouter / OpenRouter ставит БЕСПЛАТНЫЕ (-free, :free) модели первыми.
  */
-export function prioritizeModelsFreeFirst(models: string[]): string[] {
+export function prioritizeModelsFreeFirst(
+  models: string[],
+  options?: { isPlusVibe?: boolean },
+): string[] {
+  const isPlusVibe = Boolean(options?.isPlusVibe);
+  const filtered = models.filter((m) => {
+    if (!m || isNonChatModelId(m)) return false;
+    if (isPlusVibe && (m.endsWith(':free') || m.endsWith('-free'))) {
+      return false;
+    }
+    return true;
+  });
+
+  if (isPlusVibe) {
+    const scorePv = (m: string): number => {
+      const low = m.toLowerCase();
+      const idx = PLUSVIBE_RECOMMENDED_MODELS.findIndex(
+        (rec) => low === rec || low.endsWith(`/${rec}`),
+      );
+      if (idx !== -1) return 500 - idx * 20;
+      let s = 0;
+      if (/deepseek|gpt-6|gemini-3|qwen3|claude/i.test(low)) s += 40;
+      if (/flash|luna|mini/i.test(low)) s += 20;
+      return s;
+    };
+    return [...filtered].sort((a, b) => {
+      const diff = scorePv(b) - scorePv(a);
+      return diff !== 0 ? diff : a.localeCompare(b);
+    });
+  }
+
   const scoreModel = (m: string): number => {
     const low = m.toLowerCase();
     if (low === 'orcarouter/auto' || low.endsWith('/auto')) return -100;
@@ -1401,23 +1458,65 @@ export function prioritizeModelsFreeFirst(models: string[]): string[] {
       score += 25;
     }
     if (/deepseek|gemini|qwen|gpt|claude|llama/i.test(low)) score += 15;
-    if (/embed|whisper|tts|moderation|dall-e|flux|rerank/i.test(low)) {
-      score -= 200;
-    }
     return score;
   };
 
-  return [...models].sort((a, b) => {
+  return [...filtered].sort((a, b) => {
     const diff = scoreModel(b) - scoreModel(a);
     return diff !== 0 ? diff : a.localeCompare(b);
   });
 }
 
+export async function fetchPlusVibeBalanceRub(
+  apiKey: string,
+  preferredBaseUrl?: string,
+): Promise<number | null> {
+  const key = (apiKey || '').trim();
+  if (!key) return null;
+
+  const bases = [
+    preferredBaseUrl?.replace(/\/+$/, ''),
+    'https://plusvibeapi.ru/v1',
+    'https://gw.plusvibeapi.ru/v1',
+  ].filter((v, idx, arr): v is string => Boolean(v) && arr.indexOf(v) === idx);
+
+  for (const base of bases) {
+    try {
+      const res = await fetch(`${base}/balance`, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${key}`,
+          'User-Agent': LLM_BROWSER_UA,
+        },
+        signal: AbortSignal.timeout(4500),
+        cache: 'no-store',
+      });
+      if (!res.ok) continue;
+      const json = (await res.json()) as {
+        balance_rub?: number | string;
+        balance?: number | string;
+      };
+      const rawVal = json.balance_rub ?? json.balance;
+      const num = typeof rawVal === 'string' ? Number(rawVal) : rawVal;
+      if (typeof num === 'number' && Number.isFinite(num)) {
+        return Number(num.toFixed(2));
+      }
+    } catch {
+      // пробуем резервный шлюз
+    }
+  }
+  return null;
+}
+
 export function buildCandidateLlmBaseUrls(
   rawBaseUrl: string,
   provider: string,
+  apiKey?: string,
 ): string[] {
   const cleaned = (rawBaseUrl || '').trim();
+  const key = (apiKey || '').trim();
+  const isPlusVibeKey = key.startsWith('sk-pv-');
   const candidates: string[] = [];
 
   const pushUnique = (u: string) => {
@@ -1426,16 +1525,33 @@ export function buildCandidateLlmBaseUrls(
       norm = 'https://www.orcarouter.ai/v1';
     } else if (/^https?:\/\/(www\.)?ollama\.com\/?$/i.test(norm)) {
       norm = 'https://ollama.com/v1';
+    } else if (/^https?:\/\/(www\.)?plusvibeapi\.ru(\/|$)/i.test(norm)) {
+      norm = 'https://plusvibeapi.ru/v1';
+    } else if (/^https?:\/\/gw\.plusvibeapi\.ru\/?$/i.test(norm)) {
+      norm = 'https://gw.plusvibeapi.ru/v1';
     }
     if (norm && !candidates.includes(norm)) candidates.push(norm);
   };
+
+  if (isPlusVibeKey && !cleaned.includes('127.0.0.1') && !cleaned.includes('localhost')) {
+    pushUnique('https://plusvibeapi.ru/v1');
+    pushUnique('https://gw.plusvibeapi.ru/v1');
+  }
 
   if (cleaned) {
     try {
       const parsed = new URL(
         cleaned.startsWith('http') ? cleaned : `https://${cleaned}`,
       );
-      if (parsed.hostname.includes('orcarouter.ai')) {
+      if (parsed.hostname.includes('plusvibeapi.ru')) {
+        if (parsed.hostname.startsWith('gw.')) {
+          pushUnique('https://gw.plusvibeapi.ru/v1');
+          pushUnique('https://plusvibeapi.ru/v1');
+        } else {
+          pushUnique('https://plusvibeapi.ru/v1');
+          pushUnique('https://gw.plusvibeapi.ru/v1');
+        }
+      } else if (parsed.hostname.includes('orcarouter.ai')) {
         pushUnique('https://www.orcarouter.ai/v1');
       } else if (parsed.hostname.includes('ollama.com')) {
         if (parsed.pathname === '/' || parsed.pathname === '') {
@@ -1449,6 +1565,7 @@ export function buildCandidateLlmBaseUrls(
         }
       } else if (
         parsed.pathname.includes('/console') ||
+        parsed.pathname.includes('/dashboard') ||
         parsed.pathname === '/' ||
         parsed.pathname === ''
       ) {
@@ -1465,14 +1582,17 @@ export function buildCandidateLlmBaseUrls(
     }
   }
 
-  if (provider === 'OLLAMA') {
+  if (provider === 'PLUSVIBE') {
+    pushUnique('https://plusvibeapi.ru/v1');
+    pushUnique('https://gw.plusvibeapi.ru/v1');
+  } else if (provider === 'OLLAMA') {
     pushUnique('https://ollama.com/v1');
   } else if (provider === 'ORCAROUTER') {
     pushUnique('https://www.orcarouter.ai/v1');
   }
 
   if (candidates.length === 0) {
-    pushUnique('https://ollama.com/v1');
+    pushUnique('https://plusvibeapi.ru/v1');
   }
 
   return candidates;
@@ -1576,6 +1696,17 @@ export async function postLlmChatCompletion(params: {
   try {
     let res = await sendOnce(endpoint, primaryPayload);
 
+    // При превышении лимита частоты (HTTP 429 с Retry-After <= 4 сек) повторяем один раз с паузой
+    if (res.status === 429) {
+      const retryAfterRaw = Number(res.headers.get('retry-after') || '1.5');
+      const waitMs = Math.min(
+        4000,
+        Math.max(800, (Number.isFinite(retryAfterRaw) ? retryAfterRaw : 1.5) * 1000),
+      );
+      await new Promise((r) => setTimeout(r, waitMs));
+      res = await sendOnce(endpoint, primaryPayload);
+    }
+
     // Если бесплатная / reasoning модель вернула 400 из-за role:"system" или temperature — склеиваем в user без temperature
     if (res.status === 400 && params.messages.some((m) => m.role === 'system')) {
       const mergedMessages: Array<{
@@ -1657,9 +1788,11 @@ export async function testLlmConnectionAndModels(input: {
   llmModel: string;
 }): Promise<{
   ok: boolean;
+  detectedProvider?: AiAutopilotConfig['llmProvider'];
   resolvedBaseUrl: string;
   testedModel: string;
   availableModels: string[];
+  balanceRub?: number | null;
   modelProbeResults?: ModelProbeResultItem[];
   latencyMs: number;
   message: string;
@@ -1675,7 +1808,7 @@ export async function testLlmConnectionAndModels(input: {
       availableModels: [],
       latencyMs: 0,
       message:
-        'Вставьте ваш API-ключ (например токен Ollama Cloud или ключ вида sk-...) и нажмите «Проверить и сохранить».',
+        'Вставьте ваш API-ключ (например платный ключ PlusVibe sk-pv-... или токен Ollama Cloud) и нажмите «Проверить и сохранить».',
     };
   }
 
@@ -1687,15 +1820,32 @@ export async function testLlmConnectionAndModels(input: {
       availableModels: [],
       latencyMs: 0,
       message:
-        'В поле ключа указан текст с пробелами (название ключа), а нужен сам секретный токен без пробелов.',
+        'В поле ключа указан текст с пробелами (название ключа), а нужен сам секретный токен без пробелов (например sk-pv-...).',
     };
   }
 
-  const baseUrls = buildCandidateLlmBaseUrls(input.llmBaseUrl, input.llmProvider);
+  const isPlusVibe =
+    key.startsWith('sk-pv-') ||
+    input.llmProvider === 'PLUSVIBE' ||
+    input.llmBaseUrl.toLowerCase().includes('plusvibeapi.ru');
+
+  const effectiveProvider: AiAutopilotConfig['llmProvider'] = isPlusVibe
+    ? 'PLUSVIBE'
+    : (input.llmProvider as AiAutopilotConfig['llmProvider']);
+
+  const baseUrls = buildCandidateLlmBaseUrls(
+    input.llmBaseUrl,
+    effectiveProvider,
+    key,
+  );
   let resolvedBaseUrl = baseUrls[0];
   let availableModels: string[] = [];
 
-  // 1. Загружаем список моделей (/v1/models или /api/tags)
+  const balancePromise = isPlusVibe
+    ? fetchPlusVibeBalanceRub(key, resolvedBaseUrl)
+    : Promise.resolve(null);
+
+  // 1. Загружаем список моделей (/v1/models или /api/tags), отсеивая эмбеддинги и медиа
   for (const base of baseUrls) {
     try {
       const res = await fetch(`${base}/models`, {
@@ -1711,17 +1861,19 @@ export async function testLlmConnectionAndModels(input: {
 
       if (res.ok) {
         const json = (await res.json()) as {
-          data?: Array<{ id?: string }>;
+          data?: Array<{ id?: string; type?: string }>;
           models?: Array<{ name?: string; model?: string }>;
         };
         const rawIds = [
-          ...(json.data || []).map((m) => (m.id || '').trim()),
+          ...(json.data || [])
+            .filter((m) => !isNonChatModelId(m.id || '', m.type))
+            .map((m) => (m.id || '').trim()),
           ...(json.models || []).map((m) => (m.name || m.model || '').trim()),
         ].filter(Boolean);
 
         if (rawIds.length > 0) {
           resolvedBaseUrl = base;
-          availableModels = prioritizeModelsFreeFirst(rawIds);
+          availableModels = prioritizeModelsFreeFirst(rawIds, { isPlusVibe });
           break;
         }
       }
@@ -1730,18 +1882,30 @@ export async function testLlmConnectionAndModels(input: {
     }
   }
 
-  // Для Ollama Cloud гарантируем наличие deepseek-v4.1-flash в начале списка
-  if (
-    (input.llmProvider === 'OLLAMA' || resolvedBaseUrl.includes('ollama.com')) &&
+  if (isPlusVibe) {
+    for (const rec of [...PLUSVIBE_RECOMMENDED_MODELS].reverse()) {
+      if (!availableModels.includes(rec)) {
+        availableModels.unshift(rec);
+      }
+    }
+  } else if (
+    (effectiveProvider === 'OLLAMA' || resolvedBaseUrl.includes('ollama.com')) &&
     !availableModels.includes('deepseek-v4.1-flash')
   ) {
     availableModels = ['deepseek-v4.1-flash', ...availableModels];
   }
 
-  // 2. Формируем очередь проверки моделей:
-  // ВСЕГДА первой проверяем явно выбранную пользователем модель (например deepseek-v4.1-flash),
-  // кроме закрытого роутера orcarouter/auto, а следом — бесплатные/остальные модели списка!
-  const requestedModel = (input.llmModel || '').trim();
+  // 2. Формируем очередь проверки моделей
+  const rawRequested = (input.llmModel || '').trim();
+  const requestedModel =
+    isPlusVibe &&
+    (!rawRequested ||
+      rawRequested.toLowerCase() === 'orcarouter/auto' ||
+      rawRequested.toLowerCase().includes('free') ||
+      rawRequested === 'deepseek-v4.1-flash')
+      ? 'deepseek-v4.1-flash-1017'
+      : rawRequested;
+
   const modelsToProbe: string[] = [];
 
   if (requestedModel && requestedModel.toLowerCase() !== 'orcarouter/auto') {
@@ -1749,18 +1913,22 @@ export async function testLlmConnectionAndModels(input: {
   }
 
   if (availableModels.length > 0) {
-    const freeOnes = availableModels.filter((m) =>
-      m.toLowerCase().includes('free'),
-    );
-    for (const fm of freeOnes) {
-      if (!modelsToProbe.includes(fm)) modelsToProbe.push(fm);
+    if (!isPlusVibe) {
+      const freeOnes = availableModels.filter((m) =>
+        m.toLowerCase().includes('free'),
+      );
+      for (const fm of freeOnes) {
+        if (!modelsToProbe.includes(fm)) modelsToProbe.push(fm);
+      }
     }
     for (const m of availableModels) {
-      if (modelsToProbe.length >= 10) break;
+      if (modelsToProbe.length >= 8) break;
       if (!modelsToProbe.includes(m)) modelsToProbe.push(m);
     }
   } else if (modelsToProbe.length === 0) {
-    modelsToProbe.push('deepseek-v4.1-flash');
+    modelsToProbe.push(
+      isPlusVibe ? 'deepseek-v4.1-flash-1017' : 'deepseek-v4.1-flash',
+    );
   }
 
   const probeResults: ModelProbeResultItem[] = [];
@@ -1776,6 +1944,10 @@ export async function testLlmConnectionAndModels(input: {
     });
 
     if (out.ok) {
+      const balanceRub = await balancePromise;
+      const balanceBadge =
+        balanceRub !== null ? ` · Баланс PlusVibe: ${balanceRub.toFixed(2)} ₽` : '';
+
       probeResults.push({
         model: candidateModel,
         ok: true,
@@ -1784,15 +1956,17 @@ export async function testLlmConnectionAndModels(input: {
       });
       return {
         ok: true,
+        detectedProvider: effectiveProvider,
         resolvedBaseUrl,
         testedModel: candidateModel,
         availableModels,
+        balanceRub,
         modelProbeResults: probeResults,
         latencyMs: Date.now() - t0,
         message: `Отлично! Живая модель «${candidateModel}» проверена и СОХРАНЕНА в базу (ответ: «${out.content.slice(
           0,
           35,
-        )}», доступно в списке: ${availableModels.length || 1} шт.). Пишите в чат!`,
+        )}»${balanceBadge}, доступно моделей: ${availableModels.length || 1} шт.).`,
       };
     }
 
@@ -1808,11 +1982,27 @@ export async function testLlmConnectionAndModels(input: {
     });
     lastErrorText = `HTTP ${out.status} (${candidateModel}): ${cleanSnippet}`;
 
-    // Останавливаем перебор ТОЛЬКО при HTTP 401 (неверный сам ключ sk-...),
-    // а при HTTP 403 model_access_denied (нет доступа к конкретной платной модели) ОБЯЗАТЕЛЬНО идем проверять бесплатные (-free) модели дальше!
-    if (out.status === 401) {
+    // Останавливаем перебор при HTTP 401 (неверный ключ) или HTTP 402 (нулевой рублевый баланс на платном ключе)
+    if (out.status === 401 || out.status === 402) {
       break;
     }
+  }
+
+  const balanceRub = await balancePromise;
+  if (probeResults.some((r) => r.status === 402)) {
+    return {
+      ok: false,
+      detectedProvider: effectiveProvider,
+      resolvedBaseUrl,
+      testedModel: modelsToProbe[0] || requestedModel,
+      availableModels,
+      balanceRub,
+      modelProbeResults: probeResults,
+      latencyMs: Date.now() - t0,
+      message: `Ключ верный, но на балансе недостаточно средств${
+        balanceRub !== null ? ` (текущий баланс: ${balanceRub.toFixed(2)} ₽)` : ''
+      }. Пополните баланс картой РФ в кабинете https://plusvibeapi.ru/dashboard и повторите проверку.`,
+    };
   }
 
   const summaryPerModel = probeResults
@@ -1821,9 +2011,11 @@ export async function testLlmConnectionAndModels(input: {
 
   return {
     ok: false,
+    detectedProvider: effectiveProvider,
     resolvedBaseUrl,
     testedModel: modelsToProbe[0] || requestedModel,
     availableModels,
+    balanceRub,
     modelProbeResults: probeResults,
     latencyMs: Date.now() - t0,
     message:
@@ -2265,8 +2457,11 @@ export async function runAiScanAndGenerateCycle(options?: {
     };
   }
 
-  // Шаг 2: собираем реальные новости, травмы, таблицу и превью из открытых источников по каждому кандидату
+  // Шаг 2: собираем реальные новости, травмы, таблицу и превью из открытых источников (и PlusVibe RU Web Search при наличии ключа sk-pv-)
   const doResearch = config.openSourceResearchEnabled !== false;
+  const pvKey = config.llmApiKey?.trim().startsWith('sk-pv-')
+    ? config.llmApiKey.trim()
+    : undefined;
   const shortlistWithIntel = await Promise.all(
     shortlist.map(async (cand) => {
       const intel = doResearch
@@ -2279,6 +2474,7 @@ export async function runAiScanAndGenerateCycle(options?: {
             drawOdds: cand.drawOdds,
             awayOdds: cand.awayOdds,
             existingNotes: cand.contextNotes,
+            plusVibeApiKey: pvKey,
           })
         : {
             homeTeam: cand.homeTeam,

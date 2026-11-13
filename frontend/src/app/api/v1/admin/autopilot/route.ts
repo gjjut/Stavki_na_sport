@@ -97,28 +97,38 @@ export async function POST(req: NextRequest) {
         llmModel: body.llmModel,
       });
 
-      // Автосохранение ключа, URL и проверенной модели при проверке!
+      // Автосохранение ключа, URL, провайдера (включая авто-распознавание sk-pv- -> PLUSVIBE) и модели при проверке!
       if (body.llmApiKey?.trim() && !/\s/.test(body.llmApiKey.trim())) {
+        const trimmedKey = body.llmApiKey.trim();
+        const isPlusVibe =
+          trimmedKey.startsWith('sk-pv-') ||
+          result.detectedProvider === 'PLUSVIBE' ||
+          body.llmProvider === 'PLUSVIBE';
+
         const bestFallback =
           body.llmModel?.trim() &&
-          body.llmModel.trim().toLowerCase() !== 'orcarouter/auto'
+          body.llmModel.trim().toLowerCase() !== 'orcarouter/auto' &&
+          !(isPlusVibe && body.llmModel.trim().toLowerCase().includes('free'))
             ? body.llmModel.trim()
-            : result.availableModels.find((m) =>
-                m.toLowerCase().includes('free'),
-              ) ||
-              result.availableModels.find(
-                (m) => m.toLowerCase() !== 'orcarouter/auto',
-              ) ||
-              'deepseek-v4.1-flash';
+            : isPlusVibe
+              ? result.availableModels[0] || 'deepseek-v4.1-flash-1017'
+              : result.availableModels.find((m) =>
+                  m.toLowerCase().includes('free'),
+                ) ||
+                result.availableModels.find(
+                  (m) => m.toLowerCase() !== 'orcarouter/auto',
+                ) ||
+                'deepseek-v4.1-flash';
 
         await mutateState((state) => {
-          state.aiAutopilot.llmProvider =
-            body.llmProvider === 'BUILTIN_QUANT'
+          state.aiAutopilot.llmProvider = isPlusVibe
+            ? 'PLUSVIBE'
+            : body.llmProvider === 'BUILTIN_QUANT'
               ? 'OLLAMA'
               : (body.llmProvider as AiAutopilotConfig['llmProvider']);
           state.aiAutopilot.llmBaseUrl =
             result.resolvedBaseUrl || body.llmBaseUrl.trim();
-          state.aiAutopilot.llmApiKey = body.llmApiKey.trim();
+          state.aiAutopilot.llmApiKey = trimmedKey;
           state.aiAutopilot.llmModel = result.ok
             ? result.testedModel || bestFallback
             : bestFallback;

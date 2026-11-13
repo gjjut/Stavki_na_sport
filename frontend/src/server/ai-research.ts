@@ -81,6 +81,83 @@ export function computeFairMarketProbabilities(params: {
 }
 
 /**
+ * 0. Коммерческий веб-поиск РФ через PlusVibeAPI (POST /api/search · Turbo 0.13 ₽ · регион ru)
+ * Автоматически включается, если у владельца задан платный ключ sk-pv-...
+ */
+async function fetchPlusVibeRussianSearch(
+  query: string,
+  plusVibeApiKey?: string,
+  maxItems = 5,
+): Promise<{ headlines: string[]; snippets: string[]; sourceTag: string | null }> {
+  const key = (plusVibeApiKey || process.env.PLUSVIBE_API_KEY || '').trim();
+  if (!key.startsWith('sk-pv-')) {
+    return { headlines: [], snippets: [], sourceTag: null };
+  }
+
+  const endpoints = [
+    process.env.PLUSVIBE_SEARCH_URL || 'https://plusvibeapi.ru/api/search',
+    'https://gw.plusvibeapi.ru/api/search',
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${key}`,
+          'User-Agent': BROWSER_UA,
+        },
+        body: JSON.stringify({
+          query: query.slice(0, 500),
+          num: maxItems,
+          region: 'ru',
+        }),
+        signal: AbortSignal.timeout(5000),
+        cache: 'no-store',
+      });
+
+      if (!res.ok) continue;
+      const json = (await res.json()) as {
+        ok?: boolean;
+        results?: Array<{ title?: string; url?: string; snippet?: string }>;
+      };
+      if (json.ok === false || !Array.isArray(json.results)) continue;
+
+      const headlines: string[] = [];
+      const snippets: string[] = [];
+
+      for (const item of json.results.slice(0, maxItems)) {
+        const title = decodeXmlEntities(item.title || '');
+        const snippet = decodeXmlEntities(item.snippet || '');
+        if (title.length > 12 && !headlines.includes(title)) {
+          headlines.push(title);
+        }
+        if (snippet.length > 25) {
+          const combined = title ? `${title}: ${snippet}` : snippet;
+          if (!snippets.includes(combined)) {
+            snippets.push(combined.slice(0, 240));
+          }
+        }
+      }
+
+      if (headlines.length > 0 || snippets.length > 0) {
+        return {
+          headlines,
+          snippets,
+          sourceTag: 'PlusVibe RU Web Search',
+        };
+      }
+    } catch {
+      // пробуем резервный шлюз gw.plusvibeapi.ru или бесплатные RSS
+    }
+  }
+
+  return { headlines: [], snippets: [], sourceTag: null };
+}
+
+/**
  * 1. Свежие новости спорта на русском (Google News RU RSS — Sports.ru, Чемпионат, СЭ и др.)
  */
 async function fetchRussianSportsNewsRss(
@@ -328,6 +405,7 @@ export async function gatherMatchOpenSourceIntel(params: {
   drawOdds: number | null;
   awayOdds: number;
   existingNotes?: string;
+  plusVibeApiKey?: string;
 }): Promise<OpenSourceMatchIntel> {
   const fair = computeFairMarketProbabilities({
     homeOdds: params.homeOdds,
@@ -338,7 +416,8 @@ export async function gatherMatchOpenSourceIntel(params: {
   const matchQuery = `${params.homeTeam} ${params.awayTeam}`;
   const previewQuery = `${params.homeTeam} ${params.awayTeam} прогноз состав форма травмы`;
 
-  const [gNews, bNews, webPrev, espnData] = await Promise.all([
+  const [pvSearch, gNews, bNews, webPrev, espnData] = await Promise.all([
+    fetchPlusVibeRussianSearch(previewQuery, params.plusVibeApiKey, 5),
     fetchRussianSportsNewsRss(matchQuery, 4),
     fetchBingSportsNewsRss(`${matchQuery} спорт`, 3),
     fetchOpenWebPreviewSnippets(previewQuery, 3),
@@ -351,15 +430,18 @@ export async function gatherMatchOpenSourceIntel(params: {
   ]);
 
   const sourcesChecked: string[] = ['Котировки и маржа БК РФ'];
+  if (pvSearch.sourceTag) sourcesChecked.push(pvSearch.sourceTag);
   if (gNews.sourceTag) sourcesChecked.push(gNews.sourceTag);
   if (bNews.sourceTag) sourcesChecked.push(bNews.sourceTag);
   if (webPrev.sourceTag) sourcesChecked.push(webPrev.sourceTag);
   if (espnData.sourceTag) sourcesChecked.push(espnData.sourceTag);
 
   const newsHeadlines = Array.from(
-    new Set([...gNews.headlines, ...bNews.headlines]),
-  ).slice(0, 5);
-  const webSnippets = webPrev.snippets.slice(0, 3);
+    new Set([...pvSearch.headlines, ...gNews.headlines, ...bNews.headlines]),
+  ).slice(0, 6);
+  const webSnippets = Array.from(
+    new Set([...pvSearch.snippets, ...webPrev.snippets]),
+  ).slice(0, 4);
   const teamRecordsAndForm = [...espnData.records];
   if (params.existingNotes?.trim()) {
     teamRecordsAndForm.unshift(params.existingNotes.trim());
@@ -454,30 +536,36 @@ export async function gatherMatchOpenSourceIntel(params: {
 /**
  * Поиск в открытых источниках по произвольному запросу (для ИИ-Чата администратора)
  */
-export async function searchOpenSourcesForAdmin(query: string): Promise<{
+export async function searchOpenSourcesForAdmin(
+  query: string,
+  plusVibeApiKey?: string,
+): Promise<{
   query: string;
   headlines: string[];
   snippets: string[];
   sources: string[];
 }> {
-  const [gNews, bNews, webPrev] = await Promise.all([
+  const [pvSearch, gNews, bNews, webPrev] = await Promise.all([
+    fetchPlusVibeRussianSearch(query, plusVibeApiKey, 6),
     fetchRussianSportsNewsRss(query, 6),
     fetchBingSportsNewsRss(query, 4),
     fetchOpenWebPreviewSnippets(query, 5),
   ]);
 
   const sources: string[] = [];
+  if (pvSearch.sourceTag) sources.push(pvSearch.sourceTag);
   if (gNews.sourceTag) sources.push(gNews.sourceTag);
   if (bNews.sourceTag) sources.push(bNews.sourceTag);
   if (webPrev.sourceTag) sources.push(webPrev.sourceTag);
 
   return {
     query,
-    headlines: Array.from(new Set([...gNews.headlines, ...bNews.headlines])).slice(
-      0,
-      8,
-    ),
-    snippets: webPrev.snippets.slice(0, 5),
+    headlines: Array.from(
+      new Set([...pvSearch.headlines, ...gNews.headlines, ...bNews.headlines]),
+    ).slice(0, 8),
+    snippets: Array.from(
+      new Set([...pvSearch.snippets, ...webPrev.snippets]),
+    ).slice(0, 6),
     sources,
   };
 }

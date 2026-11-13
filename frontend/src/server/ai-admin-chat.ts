@@ -3,6 +3,7 @@ import {
   approveAiDraftToStorefront,
   broadcastDailyDigestToTelegram,
   buildCandidateLlmBaseUrls,
+  isNonChatModelId,
   postLlmChatCompletion,
   prioritizeModelsFreeFirst,
   replaceDemoWithRealMatches,
@@ -173,12 +174,16 @@ async function executeAdminAgentTool(
     if (tool === 'search_open_sources') {
       const query = String(args.query || '').trim();
       if (!query) throw new Error('Пустой поисковый запрос');
-      const res = await searchOpenSourcesForAdmin(query);
+      const snap = await readState();
+      const pvKey = snap.aiAutopilot.llmApiKey?.trim().startsWith('sk-pv-')
+        ? snap.aiAutopilot.llmApiKey.trim()
+        : undefined;
+      const res = await searchOpenSourcesForAdmin(query, pvKey);
       return {
         record: {
           tool,
           ok: true,
-          summary: `Поиск в открытых источниках по запросу «${query}» (найдено заголовков: ${res.headlines.length}, превью: ${res.snippets.length})`,
+          summary: `Поиск в источниках по запросу «${query}» (заголовков: ${res.headlines.length}, превью: ${res.snippets.length}, источники: ${res.sources.join(', ') || 'RSS'})`,
         },
         toolData: res,
       };
@@ -189,6 +194,10 @@ async function executeAdminAgentTool(
       const awayTeam = String(args.awayTeam || '').trim();
       const sport = (String(args.sport || 'FOOTBALL').toUpperCase() as SportType) || 'FOOTBALL';
       const leagueName = String(args.leagueName || 'Турнир').trim();
+      const snap = await readState();
+      const pvKey = snap.aiAutopilot.llmApiKey?.trim().startsWith('sk-pv-')
+        ? snap.aiAutopilot.llmApiKey.trim()
+        : undefined;
       const intel = await gatherMatchOpenSourceIntel({
         sport,
         leagueName,
@@ -197,6 +206,7 @@ async function executeAdminAgentTool(
         homeOdds: Number(args.homeOdds || 1.9),
         drawOdds: args.drawOdds ? Number(args.drawOdds) : null,
         awayOdds: Number(args.awayOdds || 2.0),
+        plusVibeApiKey: pvKey,
       });
       return {
         record: {
@@ -692,8 +702,22 @@ async function callConfiguredLlmWithDiagnostics(
     };
   }
 
-  const bases = buildCandidateLlmBaseUrls(cfg.llmBaseUrl, cfg.llmProvider);
-  const configuredModel = cfg.llmModel.trim() || 'deepseek-v4.1-flash';
+  const isPlusVibe =
+    key.startsWith('sk-pv-') ||
+    cfg.llmProvider === 'PLUSVIBE' ||
+    cfg.llmBaseUrl.toLowerCase().includes('plusvibeapi.ru');
+
+  const effectiveProvider = isPlusVibe ? 'PLUSVIBE' : cfg.llmProvider;
+  const bases = buildCandidateLlmBaseUrls(cfg.llmBaseUrl, effectiveProvider, key);
+  const rawModel = cfg.llmModel.trim();
+  const configuredModel =
+    isPlusVibe &&
+    (!rawModel ||
+      rawModel.toLowerCase() === 'orcarouter/auto' ||
+      rawModel.toLowerCase().includes('free') ||
+      rawModel === 'deepseek-v4.1-flash')
+      ? 'deepseek-v4.1-flash-1017'
+      : rawModel || 'deepseek-v4.1-flash';
 
   let lastStatus = 0;
   let lastUrl = bases[0] || cfg.llmBaseUrl;
@@ -717,7 +741,7 @@ async function callConfiguredLlmWithDiagnostics(
       return {
         ok: true,
         content: primaryOut.content,
-        modelLabel: `${cfg.llmProvider} · ${
+        modelLabel: `${effectiveProvider} · ${
           primaryOut.returnedModel || configuredModel
         }`,
       };
@@ -731,13 +755,12 @@ async function callConfiguredLlmWithDiagnostics(
         .slice(0, 110)}`,
     );
 
-    // Если сам ключ неверный (HTTP 401) — дальше перебирать модели бессмысленно
-    if (primaryOut.status === 401) {
+    // Если сам ключ неверный (HTTP 401) или нулевой рублевый баланс (HTTP 402) — перебирать модели не нужно
+    if (primaryOut.status === 401 || (isPlusVibe && primaryOut.status === 402)) {
       break;
     }
 
-    // При ЛЮБОЙ другой ошибке модели (включая HTTP 403 model_access_denied на orcarouter/auto,
-    // 404, 429, 500, 502, 503) — автоматически загружаем /models и проверяем БЕСПЛАТНЫЕ (-free) модели токена!
+    // При любой другой ошибке модели — автоматически загружаем /models и проверяем приоритетные модели шлюза!
     try {
       const mRes = await fetch(`${base}/models`, {
         headers: {
@@ -750,12 +773,15 @@ async function callConfiguredLlmWithDiagnostics(
       });
       if (mRes.ok) {
         const mJson = (await mRes.json()) as {
-          data?: Array<{ id?: string }>;
+          data?: Array<{ id?: string; type?: string }>;
         };
         const rawIds = (mJson.data || [])
+          .filter((m) => !isNonChatModelId(m.id || '', m.type))
           .map((m) => (m.id || '').trim())
           .filter(Boolean);
-        discoveredModelsOnToken = prioritizeModelsFreeFirst(rawIds);
+        discoveredModelsOnToken = prioritizeModelsFreeFirst(rawIds, {
+          isPlusVibe,
+        });
 
         const candidates = discoveredModelsOnToken
           .filter(
@@ -776,15 +802,15 @@ async function callConfiguredLlmWithDiagnostics(
           });
 
           if (retryOut.ok && retryOut.content) {
-            // Автоматически фиксируем рабочую бесплатную модель и канонический URL в базе!
             await mutateState((s) => {
+              s.aiAutopilot.llmProvider = effectiveProvider;
               s.aiAutopilot.llmBaseUrl = base;
               s.aiAutopilot.llmModel = altModel;
             });
             return {
               ok: true,
               content: retryOut.content,
-              modelLabel: `${cfg.llmProvider} · ${
+              modelLabel: `${effectiveProvider} · ${
                 retryOut.returnedModel || altModel
               } (автоподбор)`,
             };

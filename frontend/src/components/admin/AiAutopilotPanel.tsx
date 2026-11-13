@@ -95,7 +95,14 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
   const handleApplyProviderPreset = (provider: AiLlmProvider) => {
     setLlmCheckStatus(null);
     setAvailableModels([]);
-    if (provider === 'OLLAMA') {
+    if (provider === 'PLUSVIBE') {
+      setDraftConfig({
+        ...draftConfig,
+        llmProvider: 'PLUSVIBE',
+        llmBaseUrl: 'https://plusvibeapi.ru/v1',
+        llmModel: 'deepseek-v4.1-flash-1017',
+      });
+    } else if (provider === 'OLLAMA') {
       setDraftConfig({
         ...draftConfig,
         llmProvider: 'OLLAMA',
@@ -162,18 +169,21 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
       });
       const json = (await res.json()) as {
         ok?: boolean;
+        detectedProvider?: AiLlmProvider;
         resolvedBaseUrl?: string;
         testedModel?: string;
         availableModels?: string[];
+        balanceRub?: number | null;
         message?: string;
         error?: string;
       };
       if (Array.isArray(json.availableModels) && json.availableModels.length > 0) {
         setAvailableModels(json.availableModels);
       }
-      if (json.resolvedBaseUrl || json.testedModel) {
+      if (json.detectedProvider || json.resolvedBaseUrl || json.testedModel) {
         setDraftConfig((prev) => ({
           ...prev,
+          llmProvider: json.detectedProvider || prev.llmProvider,
           llmBaseUrl: json.resolvedBaseUrl || prev.llmBaseUrl,
           llmModel: json.testedModel || prev.llmModel,
         }));
@@ -773,9 +783,10 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {(
                 [
+                  ['PLUSVIBE', 'PlusVibeAPI.ru (Платный РФ · ₽ без VPN)'],
                   ['OLLAMA', 'Ollama Cloud (deepseek-v4.1-flash)'],
                   ['ORCAROUTER', 'OrcaRouter.ai'],
-                  ['DEEPSEEK', 'DeepSeek API (РФ без VPN)'],
+                  ['DEEPSEEK', 'DeepSeek API'],
                   ['OPENROUTER', 'OpenRouter'],
                   ['RU_GATEWAY', 'ProxyAPI / AITunnel'],
                   ['OPENAI', 'OpenAI'],
@@ -800,6 +811,42 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
 
           {draftConfig.llmProvider !== 'BUILTIN_QUANT' && (
             <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/40 p-3.5">
+              {draftConfig.llmProvider === 'PLUSVIBE' && (
+                <div className="space-y-2">
+                  <p className="text-[11px] leading-relaxed text-slate-600">
+                    Российский платный шлюз <strong>PlusVibeAPI</strong> (<code className="font-mono font-bold text-slate-900">https://plusvibeapi.ru/v1</code> + автозеркало <code className="font-mono text-slate-700">gw.plusvibeapi.ru/v1</code>). Вставьте ваш ключ <code className="font-mono font-bold">sk-pv-...</code> ниже и нажмите <strong>«Проверить токен и загрузить модели»</strong> — отобразится живой баланс в ₽ и автоматически включится коммерческий русский веб-поиск для прогнозов!
+                  </p>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] font-bold text-slate-500">
+                      Модели PlusVibe (₽/1М):
+                    </span>
+                    {[
+                      ['deepseek-v4.1-flash-1017', 'DeepSeek V4.1 Flash (2/8₽)'],
+                      ['gpt-6-luna', 'GPT-6 Luna (3/19₽)'],
+                      ['gemini-3.8-flash', 'Gemini 3.8 Flash (4.7/24₽)'],
+                      ['qwen3.8-max', 'Qwen 3.8 Max (5.3/16₽)'],
+                      ['gpt-6.1-sol', 'GPT-6.1 Sol (14/71₽)'],
+                      ['claude-sonnet-5.5', 'Claude Sonnet 5.5 (23/114₽)'],
+                    ].map(([mid, mlabel]) => (
+                      <button
+                        key={mid}
+                        type="button"
+                        onClick={() =>
+                          setDraftConfig({ ...draftConfig, llmModel: mid })
+                        }
+                        className={`rounded-lg px-2 py-0.5 text-[10px] font-bold transition ${
+                          draftConfig.llmModel === mid
+                            ? 'bg-slate-900 text-white'
+                            : 'border border-blue-200 bg-white text-slate-700 hover:border-blue-400'
+                        }`}
+                      >
+                        {mlabel}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {draftConfig.llmProvider === 'OLLAMA' && (
                 <p className="text-[11px] leading-relaxed text-slate-600">
                   Шлюз <strong>Ollama Cloud</strong> (<code className="font-mono font-bold text-slate-900">https://ollama.com/v1</code>, модель <code className="font-mono font-bold text-slate-900">deepseek-v4.1-flash</code>). Вставьте ваш ключ <code className="font-mono font-bold">OLLAMA_API_KEY</code> ниже и нажмите <strong>«Проверить токен и загрузить модели»</strong> (либо задайте его в <code className="font-mono">frontend/.env.local</code>).
@@ -864,15 +911,34 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                 </div>
                 <div>
                   <label className="text-[11px] font-bold text-slate-500">
-                    API-ключ (Ollama или sk-...)
+                    API-ключ (sk-pv-... PlusVibe или токен Ollama)
                   </label>
                   <input
                     type="password"
-                    placeholder="Токен Ollama или sk-..."
+                    placeholder="sk-pv-... (PlusVibeAPI) или токен Ollama"
                     value={draftConfig.llmApiKey}
-                    onChange={(e) =>
-                      setDraftConfig({ ...draftConfig, llmApiKey: e.target.value })
-                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (
+                        val.trim().startsWith('sk-pv-') &&
+                        draftConfig.llmProvider !== 'PLUSVIBE'
+                      ) {
+                        setDraftConfig({
+                          ...draftConfig,
+                          llmProvider: 'PLUSVIBE',
+                          llmBaseUrl: 'https://plusvibeapi.ru/v1',
+                          llmApiKey: val,
+                          llmModel:
+                            !draftConfig.llmModel ||
+                            draftConfig.llmModel.includes('free') ||
+                            draftConfig.llmModel === 'deepseek-v4.1-flash'
+                              ? 'deepseek-v4.1-flash-1017'
+                              : draftConfig.llmModel,
+                        });
+                      } else {
+                        setDraftConfig({ ...draftConfig, llmApiKey: val });
+                      }
+                    }}
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs"
                   />
                 </div>

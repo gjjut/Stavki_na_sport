@@ -36,12 +36,27 @@ const QUICK_PROMPTS = [
   'Опубликуй красивую сводку дня и статистики в наш Telegram-канал',
 ];
 
+const PLUSVIBE_QUICK_MODELS: Array<{ id: string; label: string }> = [
+  { id: 'deepseek-v4.1-flash-1017', label: 'DeepSeek V4.1 Flash (2/8₽ · Эконом)' },
+  { id: 'gpt-6-luna', label: 'GPT-6 Luna (3/19₽)' },
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (4.7/24₽)' },
+  { id: 'qwen3.8-max', label: 'Qwen 3.8 Max (5.3/16₽)' },
+  { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol (14/71₽ · Топ)' },
+  { id: 'claude-sonnet-5.5', label: 'Claude Sonnet 5.5 (23/114₽)' },
+];
+
 const PROVIDER_PRESETS: Array<{
   id: AiLlmProvider;
   label: string;
   baseUrl: string;
   defaultModel: string;
 }> = [
+  {
+    id: 'PLUSVIBE',
+    label: 'PlusVibeAPI.ru (Платный РФ · ₽)',
+    baseUrl: 'https://plusvibeapi.ru/v1',
+    defaultModel: 'deepseek-v4.1-flash-1017',
+  },
   {
     id: 'OLLAMA',
     label: 'Ollama Cloud (deepseek-v4.1-flash)',
@@ -98,18 +113,19 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
   // Встроенная прямо в чат быстрая настройка и диагностика API-ключа!
   const [setupOpen, setSetupOpen] = useState<boolean>(!hasApiKey);
   const [providerDraft, setProviderDraft] = useState<AiLlmProvider>(
-    llmProvider === 'BUILTIN_QUANT' ? 'OLLAMA' : llmProvider,
+    llmProvider === 'BUILTIN_QUANT' ? 'PLUSVIBE' : llmProvider,
   );
   const [baseUrlDraft, setBaseUrlDraft] = useState<string>(
     llmProvider === 'BUILTIN_QUANT'
-      ? 'https://ollama.com/v1'
-      : llmBaseUrl || 'https://ollama.com/v1',
+      ? 'https://plusvibeapi.ru/v1'
+      : llmBaseUrl || 'https://plusvibeapi.ru/v1',
   );
   const [apiKeyDraft, setApiKeyDraft] = useState<string>(llmApiKey || '');
   const [modelDraft, setModelDraft] = useState<string>(
-    llmModel || 'deepseek-v4.1-flash',
+    llmModel || 'deepseek-v4.1-flash-1017',
   );
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [balanceRub, setBalanceRub] = useState<number | null>(null);
   const [testingKey, setTestingKey] = useState(false);
   const [keyResult, setKeyResult] = useState<{
     ok: boolean;
@@ -158,18 +174,27 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
       });
       const json = (await res.json()) as {
         ok?: boolean;
+        detectedProvider?: AiLlmProvider;
         resolvedBaseUrl?: string;
         testedModel?: string;
         availableModels?: string[];
+        balanceRub?: number | null;
         message?: string;
         error?: string;
       };
 
+      if (typeof json.balanceRub === 'number') {
+        setBalanceRub(json.balanceRub);
+      }
       if (Array.isArray(json.availableModels) && json.availableModels.length > 0) {
         setAvailableModels(json.availableModels);
       }
+      const nextProvider =
+        json.detectedProvider ||
+        (apiKeyDraft.trim().startsWith('sk-pv-') ? 'PLUSVIBE' : providerDraft);
       const nextUrl = json.resolvedBaseUrl || baseUrlDraft;
       const nextModel = json.testedModel || modelDraft;
+      setProviderDraft(nextProvider);
       setBaseUrlDraft(nextUrl);
       setModelDraft(nextModel);
 
@@ -180,7 +205,7 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             config: {
-              llmProvider: providerDraft,
+              llmProvider: nextProvider,
               llmBaseUrl: nextUrl,
               llmApiKey: apiKeyDraft.trim(),
               llmModel: nextModel,
@@ -382,20 +407,30 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
                 <input
                   value={baseUrlDraft}
                   onChange={(e) => setBaseUrlDraft(e.target.value)}
-                  placeholder="https://ollama.com/v1"
+                  placeholder="https://plusvibeapi.ru/v1"
                   className="mt-0.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-[11px]"
                 />
               </div>
 
               <div className="sm:col-span-5">
                 <label className="text-[10px] font-bold text-slate-600">
-                  Секретный API-ключ (OLLAMA_API_KEY или sk-...)
+                  Секретный API-ключ (sk-pv-... PlusVibe или токен Ollama)
                 </label>
                 <input
                   type="password"
                   value={apiKeyDraft}
-                  onChange={(e) => setApiKeyDraft(e.target.value)}
-                  placeholder="Вставьте токен Ollama или sk-..."
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setApiKeyDraft(val);
+                    if (val.trim().startsWith('sk-pv-') && providerDraft !== 'PLUSVIBE') {
+                      setProviderDraft('PLUSVIBE');
+                      setBaseUrlDraft('https://plusvibeapi.ru/v1');
+                      if (!modelDraft || modelDraft.includes('free') || modelDraft === 'deepseek-v4.1-flash') {
+                        setModelDraft('deepseek-v4.1-flash-1017');
+                      }
+                    }
+                  }}
+                  placeholder="sk-pv-... (PlusVibeAPI) или токен Ollama"
                   className="mt-0.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-[11px]"
                 />
               </div>
@@ -422,25 +457,60 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
                   <input
                     value={modelDraft}
                     onChange={(e) => setModelDraft(e.target.value)}
-                    placeholder="deepseek-v4.1-flash"
+                    placeholder="deepseek-v4.1-flash-1017"
                     className="mt-0.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-[11px]"
                   />
                 )}
               </div>
             </div>
 
+            {providerDraft === 'PLUSVIBE' && (
+              <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] font-bold text-slate-500">
+                  Быстрый выбор модели PlusVibe (₽/1М):
+                </span>
+                {PLUSVIBE_QUICK_MODELS.map((qm) => (
+                  <button
+                    key={qm.id}
+                    type="button"
+                    onClick={() => void handleSelectModelFromDropdown(qm.id)}
+                    className={`rounded-lg px-2 py-0.5 text-[10px] font-bold transition ${
+                      modelDraft === qm.id
+                        ? 'bg-slate-900 text-white'
+                        : 'border border-blue-200 bg-white text-slate-700 hover:border-blue-400'
+                    }`}
+                  >
+                    {qm.label}
+                  </button>
+                ))}
+                {balanceRub !== null && (
+                  <span className="ml-auto rounded-lg border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 font-mono text-[11px] font-extrabold text-emerald-800">
+                    Баланс: {balanceRub.toFixed(2)} ₽
+                  </span>
+                )}
+              </div>
+            )}
+
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] text-slate-600">
-                Нажмите «Копировать» рядом с вашим ключом на{' '}
-                <a
-                  href="https://www.orcarouter.ai/console/token"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-bold text-blue-700 underline"
-                >
-                  orcarouter.ai/console/token
-                </a>{' '}
-                и вставьте сюда.
+                {providerDraft === 'PLUSVIBE' ? (
+                  <>
+                    Вставьте платный ключ <code className="font-mono font-bold text-slate-900">sk-pv-...</code> из кабинета{' '}
+                    <a
+                      href="https://plusvibeapi.ru/dashboard"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-bold text-blue-700 underline"
+                    >
+                      plusvibeapi.ru/dashboard
+                    </a>{' '}
+                    — работает из РФ без VPN + включает живой русский веб-поиск для прогнозов!
+                  </>
+                ) : (
+                  <>
+                    Укажите ключ выбранного шлюза и нажмите «Проверить связь и СОХРАНИТЬ».
+                  </>
+                )}
               </span>
 
               <button
