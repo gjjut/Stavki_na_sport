@@ -17,6 +17,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { PublicPredictionDto, SportType } from '@/server/types';
+import { TeamAvatar } from '@/components/predictions/TeamAvatar';
 
 const SPORT_LABELS: Record<
   SportType,
@@ -53,18 +54,6 @@ const SPORT_LABELS: Record<
     badgeBg: 'bg-rose-600 text-white',
   },
 };
-
-function getTeamMonogram(teamName: string): string {
-  const words = teamName
-    .replace(/[^a-zA-Zа-яА-ЯёЁ0-9\s-]/g, '')
-    .trim()
-    .split(/[\s-]+/)
-    .filter(Boolean);
-  if (words.length >= 2) {
-    return `${words[0][0]}${words[1][0]}`.toUpperCase();
-  }
-  return (words[0] || teamName).slice(0, 3).toUpperCase();
-}
 
 function getConfidenceLabel(stakePct: number): { text: string; bars: number } {
   if (stakePct >= 2.5) return { text: 'Высокая уверенность', bars: 5 };
@@ -193,29 +182,33 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
           )}
         </div>
 
-        {/* 2. Табло команд */}
+        {/* 2. Табло команд с клубными эмблемами */}
         <div className="mt-3">
           <Link
             href={`/predictions/${prediction.slug}`}
             className="block rounded-xl border border-slate-100 bg-slate-50/80 p-3 transition group-hover:border-blue-100 group-hover:bg-blue-50/35"
           >
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0 flex-1 space-y-1.5">
+            <div className="flex items-center justify-between gap-2.5">
+              <div className="min-w-0 flex-1 space-y-2">
                 <div className="flex items-center gap-2.5">
-                  <span
-                    className={`flex h-6 w-7 shrink-0 items-center justify-center rounded-md font-mono text-[10px] font-bold shadow-2xs ${sportMeta.badgeBg}`}
-                  >
-                    {getTeamMonogram(prediction.homeTeam)}
-                  </span>
-                  <span className="truncate text-sm font-extrabold leading-tight text-slate-950">
+                  <TeamAvatar
+                    team={prediction.homeTeam}
+                    sport={prediction.sport}
+                    logoUrl={prediction.homeLogoUrl}
+                    size="md"
+                  />
+                  <span className="truncate text-[14px] font-extrabold leading-tight text-slate-950">
                     {prediction.homeTeam}
                   </span>
                 </div>
                 <div className="flex items-center gap-2.5">
-                  <span className="flex h-6 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white font-mono text-[10px] font-bold text-slate-700">
-                    {getTeamMonogram(prediction.awayTeam)}
-                  </span>
-                  <span className="truncate text-sm font-extrabold leading-tight text-slate-950">
+                  <TeamAvatar
+                    team={prediction.awayTeam}
+                    sport={prediction.sport}
+                    logoUrl={prediction.awayLogoUrl}
+                    size="md"
+                  />
+                  <span className="truncate text-[14px] font-extrabold leading-tight text-slate-950">
                     {prediction.awayTeam}
                   </span>
                 </div>

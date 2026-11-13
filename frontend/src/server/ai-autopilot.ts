@@ -29,6 +29,8 @@ interface ScannedFixtureCandidate {
   leagueName: string;
   homeTeam: string;
   awayTeam: string;
+  homeLogoUrl?: string | null;
+  awayLogoUrl?: string | null;
   matchStartsAt: string;
   bookmakerSource: string;
   homeOdds: number;
@@ -987,7 +989,11 @@ async function scanFromLeonRu(
           id: number;
           name: string;
           kickoff: number;
-          competitors?: Array<{ name: string; homeAway?: string }>;
+          competitors?: Array<{
+            name: string;
+            homeAway?: string;
+            logo?: string;
+          }>;
           markets?: Array<{
             name: string;
             open?: boolean;
@@ -1007,14 +1013,10 @@ async function scanFromLeonRu(
         }
 
         const splitName = ev.name.split(/\s+[—–-]\s+/);
-        const home =
-          ev.competitors?.find((c) => c.homeAway === 'HOME')?.name ||
-          splitName[0] ||
-          '';
-        const away =
-          ev.competitors?.find((c) => c.homeAway === 'AWAY')?.name ||
-          splitName[1] ||
-          '';
+        const homeCompLeon = ev.competitors?.find((c) => c.homeAway === 'HOME');
+        const awayCompLeon = ev.competitors?.find((c) => c.homeAway === 'AWAY');
+        const home = homeCompLeon?.name || splitName[0] || '';
+        const away = awayCompLeon?.name || splitName[1] || '';
         if (!isCleanMatchAndLeague(lg.title, home, away)) continue;
 
         const m1x2 = ev.markets?.find(
@@ -1068,6 +1070,8 @@ async function scanFromLeonRu(
           leagueName: lg.title,
           homeTeam: home.trim(),
           awayTeam: away.trim(),
+          homeLogoUrl: homeCompLeon?.logo || null,
+          awayLogoUrl: awayCompLeon?.logo || null,
           matchStartsAt: new Date(ev.kickoff).toISOString(),
           bookmakerSource: 'Фонбет · Леон · Винлайн',
           homeOdds: Number(p1.toFixed(2)),
@@ -1143,8 +1147,16 @@ async function scanFromLocalizedLiveCenter(
           competitions?: Array<{
             competitors?: Array<{
               homeAway?: 'home' | 'away';
-              team?: { displayName?: string };
-              athlete?: { displayName?: string };
+              team?: {
+                displayName?: string;
+                logo?: string;
+                logos?: Array<{ href?: string }>;
+              };
+              athlete?: {
+                displayName?: string;
+                headshot?: { href?: string };
+                flag?: { href?: string };
+              };
               records?: Array<{ summary?: string }>;
             }>;
             odds?: Array<{
@@ -1223,12 +1235,25 @@ async function scanFromLocalizedLiveCenter(
             ? `Текущая статистика сезона: «${homeName}» (${homeRec}), «${awayName}» (${awayRec}).`
             : `Официальный матч календаря турнира «${feed.leagueRu}».`;
 
+        const homeLogoUrl =
+          homeComp?.team?.logo ||
+          homeComp?.team?.logos?.[0]?.href ||
+          homeComp?.athlete?.headshot?.href ||
+          null;
+        const awayLogoUrl =
+          awayComp?.team?.logo ||
+          awayComp?.team?.logos?.[0]?.href ||
+          awayComp?.athlete?.headshot?.href ||
+          null;
+
         items.push({
           externalFixtureId: `espn_${ev.id}`,
           sport: feed.sport,
           leagueName: feed.leagueRu,
           homeTeam: homeName,
           awayTeam: awayName,
+          homeLogoUrl,
+          awayLogoUrl,
           matchStartsAt: new Date(ev.date).toISOString(),
           bookmakerSource: 'Фонбет · Винлайн · Пари',
           homeOdds: p1,
@@ -2542,6 +2567,8 @@ export async function runAiScanAndGenerateCycle(options?: {
         leagueName: cand.leagueName,
         homeTeam: cand.homeTeam,
         awayTeam: cand.awayTeam,
+        homeLogoUrl: cand.homeLogoUrl ?? null,
+        awayLogoUrl: cand.awayLogoUrl ?? null,
         matchStartsAt: cand.matchStartsAt,
         selectionTitle: dossier.selectionTitle,
         fixedOdds: dossier.fixedOdds,
@@ -2574,6 +2601,8 @@ export async function runAiScanAndGenerateCycle(options?: {
         leagueName: cand.leagueName,
         homeTeam: cand.homeTeam,
         awayTeam: cand.awayTeam,
+        homeLogoUrl: cand.homeLogoUrl ?? null,
+        awayLogoUrl: cand.awayLogoUrl ?? null,
         matchStartsAt: cand.matchStartsAt,
         selectionTitle: dossier.selectionTitle,
         fixedOdds: dossier.fixedOdds,
@@ -2743,6 +2772,8 @@ export async function approveAiDraftToStorefront(
     leagueName: draft.leagueName,
     homeTeam: draft.homeTeam,
     awayTeam: draft.awayTeam,
+    homeLogoUrl: draft.homeLogoUrl ?? null,
+    awayLogoUrl: draft.awayLogoUrl ?? null,
     matchStartsAt: draft.matchStartsAt,
     selectionTitle: draft.selectionTitle,
     fixedOdds: draft.fixedOdds,

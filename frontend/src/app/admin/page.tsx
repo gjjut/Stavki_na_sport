@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { AdminAiChatPanel } from '@/components/admin/AdminAiChatPanel';
 import { AiAutopilotPanel } from '@/components/admin/AiAutopilotPanel';
+import { TeamAvatar } from '@/components/predictions/TeamAvatar';
 import type {
   AccessTier,
   AiAutopilotConfig,
@@ -630,23 +631,33 @@ export default function AdminDashboardPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-[11px] font-bold text-slate-500">Хозяева / Игрок 1</label>
-                  <input
-                    required
-                    value={homeTeam}
-                    onChange={(e) => setHomeTeam(e.target.value)}
-                    placeholder="Реал Мадрид"
-                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
-                  />
+                  <div className="mt-1 flex items-center gap-2">
+                    {homeTeam.trim().length >= 2 && (
+                      <TeamAvatar team={homeTeam.trim()} sport={sport} size="sm" />
+                    )}
+                    <input
+                      required
+                      value={homeTeam}
+                      onChange={(e) => setHomeTeam(e.target.value)}
+                      placeholder="Реал Мадрид"
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+                    />
+                  </div>
                 </div>
                 <div>
                   <label className="text-[11px] font-bold text-slate-500">Гости / Игрок 2</label>
-                  <input
-                    required
-                    value={awayTeam}
-                    onChange={(e) => setAwayTeam(e.target.value)}
-                    placeholder="Бавария"
-                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
-                  />
+                  <div className="mt-1 flex items-center gap-2">
+                    {awayTeam.trim().length >= 2 && (
+                      <TeamAvatar team={awayTeam.trim()} sport={sport} size="sm" />
+                    )}
+                    <input
+                      required
+                      value={awayTeam}
+                      onChange={(e) => setAwayTeam(e.target.value)}
+                      placeholder="Бавария"
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -825,8 +836,22 @@ export default function AdminDashboardPage() {
                           </button>
                         )}
                       </div>
-                      <div className="mt-0.5 text-sm font-extrabold text-slate-950">
-                        {item.homeTeam} — {item.awayTeam}
+                      <div className="mt-1.5 flex items-center gap-2 text-sm font-extrabold text-slate-950">
+                        <TeamAvatar
+                          team={item.homeTeam}
+                          sport={item.sport}
+                          logoUrl={item.homeLogoUrl}
+                          size="xs"
+                        />
+                        <span>{item.homeTeam}</span>
+                        <span className="text-slate-300">—</span>
+                        <TeamAvatar
+                          team={item.awayTeam}
+                          sport={item.sport}
+                          logoUrl={item.awayLogoUrl}
+                          size="xs"
+                        />
+                        <span>{item.awayTeam}</span>
                       </div>
                       <div className="mt-0.5 text-xs text-slate-600">
                         Исход: <strong>{item.selectionTitle}</strong> @{' '}

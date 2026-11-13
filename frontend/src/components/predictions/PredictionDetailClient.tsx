@@ -22,6 +22,7 @@ import {
 import { SiteShell } from '@/components/layout/SiteShell';
 import { PredictionCard } from '@/components/predictions/PredictionCard';
 import { PredictionCardSkeleton } from '@/components/predictions/PredictionCardSkeleton';
+import { TeamAvatar } from '@/components/predictions/TeamAvatar';
 import { HashVerifyModal } from '@/components/predictions/HashVerifyModal';
 import {
   YooKassaCheckoutModal,
@@ -174,13 +175,46 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
                   )}
                 </div>
 
-                <h1 className="mt-1.5 text-2xl font-black tracking-tight sm:text-4xl">
-                  {prediction.homeTeam} — {prediction.awayTeam}
+                <div className="mt-3 flex flex-wrap items-center gap-3 sm:gap-4">
+                  <div className="flex items-center gap-2.5 sm:gap-3">
+                    <TeamAvatar
+                      team={prediction.homeTeam}
+                      sport={prediction.sport}
+                      logoUrl={prediction.homeLogoUrl}
+                      size="xl"
+                      variant="dark"
+                    />
+                    <span className="text-xl font-black tracking-tight text-white sm:text-3xl">
+                      {prediction.homeTeam}
+                    </span>
+                  </div>
+
                   {prediction.finalScore ? (
-                    <span className="ml-3 inline-block rounded-xl border border-white/15 bg-white/10 px-3 py-0.5 font-mono text-xl text-blue-300 sm:text-2xl">
+                    <span className="rounded-xl border border-white/20 bg-white/10 px-3.5 py-1 font-mono text-lg font-black text-blue-300 sm:text-2xl">
                       {prediction.finalScore}
                     </span>
-                  ) : null}
+                  ) : (
+                    <span className="rounded-xl border border-white/15 bg-white/5 px-2.5 py-1 font-mono text-xs font-black uppercase tracking-widest text-slate-400">
+                      VS
+                    </span>
+                  )}
+
+                  <div className="flex items-center gap-2.5 sm:gap-3">
+                    <TeamAvatar
+                      team={prediction.awayTeam}
+                      sport={prediction.sport}
+                      logoUrl={prediction.awayLogoUrl}
+                      size="xl"
+                      variant="dark"
+                    />
+                    <span className="text-xl font-black tracking-tight text-white sm:text-3xl">
+                      {prediction.awayTeam}
+                    </span>
+                  </div>
+                </div>
+
+                <h1 className="sr-only">
+                  {prediction.homeTeam} — {prediction.awayTeam}
                 </h1>
 
                 <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-300">

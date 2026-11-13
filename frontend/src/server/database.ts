@@ -1000,6 +1000,8 @@ export function toPublicPredictionDto(
     leagueName: record.leagueName,
     homeTeam: record.homeTeam,
     awayTeam: record.awayTeam,
+    homeLogoUrl: record.homeLogoUrl ?? null,
+    awayLogoUrl: record.awayLogoUrl ?? null,
     matchStartsAt: record.matchStartsAt,
     matchStatus: effectiveStatus,
     stakePercent: record.stakePercent,
@@ -1784,6 +1786,8 @@ export async function createPredictionByAdmin(input: {
   leagueName: string;
   homeTeam: string;
   awayTeam: string;
+  homeLogoUrl?: string | null;
+  awayLogoUrl?: string | null;
   matchStartsAt: string;
   selectionTitle: string;
   fixedOdds: number;
@@ -1836,6 +1840,8 @@ export async function createPredictionByAdmin(input: {
       leagueName: input.leagueName.trim(),
       homeTeam: input.homeTeam.trim(),
       awayTeam: input.awayTeam.trim(),
+      homeLogoUrl: input.homeLogoUrl?.trim() || null,
+      awayLogoUrl: input.awayLogoUrl?.trim() || null,
       matchStartsAt: startsIso,
       matchStatus: 'UPCOMING',
       stakePercent: stake,

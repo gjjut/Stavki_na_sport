@@ -17,6 +17,7 @@ import {
   XCircle,
   Zap,
 } from 'lucide-react';
+import { TeamAvatar } from '@/components/predictions/TeamAvatar';
 import type {
   AiAutopilotConfig,
   AiAutopilotLogEntry,
@@ -703,8 +704,22 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                     </div>
                   </div>
 
-                  <div className="mt-1.5 text-base font-black text-slate-950">
-                    {d.homeTeam} — {d.awayTeam}
+                  <div className="mt-2 flex items-center gap-2 text-base font-black text-slate-950">
+                    <TeamAvatar
+                      team={d.homeTeam}
+                      sport={d.sport}
+                      logoUrl={d.homeLogoUrl}
+                      size="sm"
+                    />
+                    <span>{d.homeTeam}</span>
+                    <span className="text-slate-300">—</span>
+                    <TeamAvatar
+                      team={d.awayTeam}
+                      sport={d.sport}
+                      logoUrl={d.awayLogoUrl}
+                      size="sm"
+                    />
+                    <span>{d.awayTeam}</span>
                   </div>
 
                   <div className="mt-2 rounded-xl border border-blue-100 bg-white p-2.5 text-xs">

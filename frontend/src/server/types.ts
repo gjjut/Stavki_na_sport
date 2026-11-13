@@ -68,6 +68,8 @@ export interface PredictionRecord {
   leagueName: string;
   homeTeam: string;
   awayTeam: string;
+  homeLogoUrl?: string | null;
+  awayLogoUrl?: string | null;
   matchStartsAt: string;
   matchStatus: MatchStatus;
   stakePercent: number;
@@ -114,6 +116,8 @@ export interface PublicPredictionDto {
   leagueName: string;
   homeTeam: string;
   awayTeam: string;
+  homeLogoUrl?: string | null;
+  awayLogoUrl?: string | null;
   matchStartsAt: string;
   matchStatus: MatchStatus;
   stakePercent: number;
@@ -339,6 +343,8 @@ export interface AiPredictionDraft {
   leagueName: string;
   homeTeam: string;
   awayTeam: string;
+  homeLogoUrl?: string | null;
+  awayLogoUrl?: string | null;
   matchStartsAt: string;
   selectionTitle: string;
   fixedOdds: number;
