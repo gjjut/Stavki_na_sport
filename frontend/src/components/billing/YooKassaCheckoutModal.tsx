@@ -51,7 +51,6 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
   } | null>(null);
   const [promoMessage, setPromoMessage] = useState<string | null>(null);
 
-  // Поля бесшовной покупки в 1 шаг для гостя
   const [guestEmail, setGuestEmail] = useState('');
   const [needPassword, setNeedPassword] = useState(false);
   const [guestPassword, setGuestPassword] = useState('');
@@ -78,6 +77,15 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
       trackMetrikaGoal('open_checkout', { kind: target.kind, price: target.priceRub });
     }
   }, [target]);
+
+  useEffect(() => {
+    if (!target) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [target, onClose]);
 
   if (!target) return null;
 
@@ -197,14 +205,19 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
-        <div className="flex items-center justify-between bg-[#0B0F19] px-6 py-4 text-white">
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="flex max-h-[92dvh] w-full max-w-md flex-col overflow-hidden rounded-t-3xl border border-slate-200 bg-white shadow-2xl sm:rounded-3xl">
+        <div className="flex shrink-0 items-center justify-between bg-[#0B0F19] px-5 py-4 text-white sm:px-6">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-blue-400" />
             <span className="text-sm font-bold">
               {target.kind === 'BUNDLE_PREDICTIONS'
-                ? 'Покупка пакета со скидкой'
+                ? 'Покупка набора со скидкой'
                 : target.kind === 'BALANCE_TOPUP'
                   ? 'Пополнение кошелька'
                   : 'Быстрая покупка прогноза'}
@@ -219,9 +232,9 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
           </button>
         </div>
 
-        <div className="p-6">
+        <div className="overflow-y-auto p-5 sm:p-6">
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            <div className="line-clamp-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
               {target.subtitle}
             </div>
             <div className="mt-0.5 text-base font-extrabold text-slate-950">
@@ -260,9 +273,12 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                     Ваш личный кабинет создан автоматически (для страховки и истории):
                   </div>
                   <div className="mt-1.5 flex items-center justify-between gap-2 rounded-xl border border-blue-100 bg-white px-3 py-2">
-                    <div>
-                      <div className="text-[11px] text-slate-500">
-                        Логин: <strong className="text-slate-900">{autoCreatedCreds.email}</strong>
+                    <div className="min-w-0">
+                      <div className="truncate text-[11px] text-slate-500">
+                        Логин:{' '}
+                        <strong className="text-slate-900">
+                          {autoCreatedCreds.email}
+                        </strong>
                       </div>
                       <div className="text-[11px] text-slate-500">
                         Пароль:{' '}
@@ -280,7 +296,7 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                         setCopiedPass(true);
                         setTimeout(() => setCopiedPass(false), 2000);
                       }}
-                      className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800"
                     >
                       {copiedPass ? (
                         <Check className="h-3.5 w-3.5 text-emerald-400" />
@@ -303,7 +319,6 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
             </div>
           ) : (
             <div className="mt-4 space-y-3.5">
-              {/* Если покупатель еще не вошел — покупка в 1 шаг по Email без ухода со страницы */}
               {!viewer && (
                 <div className="space-y-2.5 rounded-2xl border border-blue-100 bg-blue-50/40 p-3.5">
                   <div>
@@ -368,7 +383,6 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                 </div>
               )}
 
-              {/* Блок ввода промокода (только для событий) */}
               {target.kind !== 'BALANCE_TOPUP' && (
                 <div>
                   <div className="flex gap-2">
@@ -377,7 +391,9 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                       <input
                         type="text"
                         value={promoInput}
-                        onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
+                        onChange={(e) =>
+                          setPromoInput(e.target.value.toUpperCase())
+                        }
                         placeholder="Промокод (напр. START15)"
                         className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-8 pr-3 font-mono text-xs font-bold uppercase text-slate-900 placeholder:font-sans placeholder:font-normal placeholder:normal-case placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none"
                       />
@@ -385,7 +401,7 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                     <button
                       type="button"
                       onClick={handleApplyPromo}
-                      className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:border-blue-300 hover:text-blue-600"
+                      className="shrink-0 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:border-blue-300 hover:text-blue-600"
                     >
                       Применить
                     </button>
@@ -413,13 +429,12 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                   }`}
                 >
                   <CreditCard className="h-5 w-5 shrink-0 text-blue-600" />
-                  <div>
+                  <div className="min-w-0">
                     <div className="text-sm font-bold text-slate-900">
                       Карта РФ / СБП (ЮKassa)
                     </div>
-                    <div className="text-[11px] text-slate-500">
-                      МИР, СБП QR, SberPay, T-Pay · Чек 54-ФЗ на{' '}
-                      {viewer?.email || guestEmail || 'ваш E-mail'}
+                    <div className="truncate text-[11px] text-slate-500">
+                      МИР, СБП QR, SberPay, T-Pay · Чек 54-ФЗ
                     </div>
                   </div>
                 </button>
@@ -474,7 +489,7 @@ export const YooKassaCheckoutModal: React.FC<YooKassaCheckoutModalProps> = ({
                 </span>
               </button>
 
-              <p className="text-center text-[11px] text-slate-400">
+              <p className="pb-1 text-center text-[11px] text-slate-400">
                 Разовый платеж без подписок и автосписаний. Условия{' '}
                 <Link href="/legal/offer" className="underline hover:text-slate-600">
                   публичной оферты

@@ -6,11 +6,13 @@ import Script from 'next/script';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   BarChart3,
+  CreditCard,
   Home,
   LogOut,
   Menu,
   Send,
   Settings,
+  ShieldCheck,
   ShoppingBag,
   Trophy,
   User,
@@ -58,8 +60,18 @@ const DEFAULT_BRAND: PublicBrandInfo = {
 const NAV_LINKS = [
   { href: '/', label: 'Главная' },
   { href: '/predictions', label: 'Прогнозы на матчи' },
-  { href: '/stats', label: 'Результаты и статистика' },
+  { href: '/stats', label: 'Статистика' },
   { href: '/#how-it-works', label: 'Как это работает' },
+  { href: '/#faq', label: 'Вопросы' },
+];
+
+const QUICK_LEAGUES = [
+  { label: 'РПЛ', href: '/leagues/rpl' },
+  { label: 'КХЛ', href: '/leagues/khl' },
+  { label: 'Лига чемпионов', href: '/leagues/champions-league' },
+  { label: 'Теннис ATP/WTA', href: '/leagues/tennis-atp-wta' },
+  { label: 'CS2 / Dota 2', href: '/leagues/cs2-dota2' },
+  { label: 'UFC / ММА', href: '/leagues/ufc-mma' },
 ];
 
 export const SiteShell: React.FC<SiteShellProps> = ({
@@ -73,6 +85,10 @@ export const SiteShell: React.FC<SiteShellProps> = ({
   const pathname = usePathname();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
 
   const handleLogout = async () => {
     if (onLogout) {
@@ -89,7 +105,9 @@ export const SiteShell: React.FC<SiteShellProps> = ({
     brand.legalInn,
   );
 
-  const metrikaNumericId = Number((brand.yandexMetrikaId || '').replace(/\D/g, ''));
+  const metrikaNumericId = Number(
+    (brand.yandexMetrikaId || '').replace(/\D/g, ''),
+  );
 
   useEffect(() => {
     if (metrikaNumericId > 0 && typeof window !== 'undefined') {
@@ -116,13 +134,14 @@ export const SiteShell: React.FC<SiteShellProps> = ({
           }}
         />
       )}
+
       {/* КОНТРАСТНАЯ ТЕМНАЯ ШАПКА */}
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0B0F19]/95 text-white backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-7">
-            {/* Логотип с русским пояснением */}
-            <Link href="/" className="flex items-center gap-2.5">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 font-mono text-xs font-black tracking-tighter text-white shadow-sm shadow-blue-600/40">
+      <header className="sticky top-0 z-40 border-b border-white/10 bg-[#0B0F19]/95 text-white backdrop-blur-md">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
+          <div className="flex min-w-0 items-center gap-5 xl:gap-7">
+            {/* Логотип */}
+            <Link href="/" className="flex shrink-0 items-center gap-2.5">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-blue-700 font-mono text-xs font-black tracking-tighter text-white shadow-md shadow-blue-600/35">
                 VX
               </div>
               <div className="leading-none">
@@ -130,13 +149,13 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                   {brand.brandName}
                   <span className="text-blue-400">.</span>
                 </span>
-                <span className="block text-[10px] font-medium text-slate-400">
+                <span className="mt-0.5 block text-[10px] font-medium text-slate-400">
                   прогнозы на спорт
                 </span>
               </div>
             </Link>
 
-            {/* Навигация */}
+            {/* Навигация ПК (lg+) */}
             <nav className="hidden items-center gap-1 lg:flex">
               {NAV_LINKS.map((item) => {
                 const active =
@@ -147,10 +166,10 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                   <Link
                     key={item.href}
                     href={item.href}
-                    className={`rounded-lg px-3 py-2 text-sm font-medium transition ${
+                    className={`whitespace-nowrap rounded-xl px-3 py-2 text-[13px] font-semibold transition ${
                       active
-                        ? 'bg-white/12 text-white'
-                        : 'text-slate-300 hover:bg-white/5 hover:text-white'
+                        ? 'bg-blue-600/20 text-white ring-1 ring-blue-500/40'
+                        : 'text-slate-300 hover:bg-white/10 hover:text-white'
                     }`}
                   >
                     {item.label}
@@ -160,27 +179,37 @@ export const SiteShell: React.FC<SiteShellProps> = ({
             </nav>
           </div>
 
-          {/* Правая часть: кошелек + кабинет / вход */}
-          <div className="hidden items-center gap-2.5 md:flex">
+          {/* Правая часть на ПК (lg+) */}
+          <div className="hidden shrink-0 items-center gap-2 lg:flex">
+            <a
+              href={brand.freeTelegramUrl}
+              target="_blank"
+              rel="noreferrer"
+              title="Наш открытый Telegram-канал"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-blue-400/40 hover:bg-white/10 hover:text-white"
+            >
+              <Send className="h-3.5 w-3.5 text-sky-400" />
+              <span className="hidden xl:inline">Telegram</span>
+            </a>
+
             {viewer ? (
               <>
                 {viewer.role === 'ADMIN' && (
                   <Link
                     href="/admin"
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-blue-400/50 hover:text-white"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs font-bold text-blue-300 transition hover:bg-blue-500/20 hover:text-white"
                   >
                     <Settings className="h-3.5 w-3.5 text-blue-400" />
-                    <span>Админ-панель</span>
+                    <span>Админ</span>
                   </Link>
                 )}
 
                 <Link
                   href="/cabinet"
                   title="Ваш баланс и возвраты по страховке"
-                  className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
                 >
-                  <Wallet className="h-3.5 w-3.5 text-blue-400" />
-                  <span>Баланс:</span>
+                  <Wallet className="h-3.5 w-3.5 text-emerald-400" />
                   <span className="font-mono font-bold text-white">
                     {viewer.balanceRub.toLocaleString('ru-RU')} ₽
                   </span>
@@ -188,7 +217,7 @@ export const SiteShell: React.FC<SiteShellProps> = ({
 
                 <Link
                   href="/cabinet"
-                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-blue-500"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm shadow-blue-600/30 transition hover:bg-blue-500"
                 >
                   <ShoppingBag className="h-3.5 w-3.5" />
                   <span>Мои прогнозы</span>
@@ -198,7 +227,7 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                   type="button"
                   title="Выйти из аккаунта"
                   onClick={handleLogout}
-                  className="rounded-lg border border-white/10 p-2 text-slate-400 transition hover:border-white/20 hover:text-white"
+                  className="rounded-xl border border-white/10 p-2 text-slate-400 transition hover:border-white/25 hover:text-white"
                 >
                   <LogOut className="h-4 w-4" />
                 </button>
@@ -207,13 +236,13 @@ export const SiteShell: React.FC<SiteShellProps> = ({
               <>
                 <Link
                   href="/login"
-                  className="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-300 transition hover:text-white"
+                  className="rounded-xl px-3.5 py-2 text-xs font-bold text-slate-200 transition hover:bg-white/10 hover:text-white"
                 >
                   Войти
                 </Link>
                 <Link
                   href="/register"
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-600/30 transition hover:bg-blue-500"
+                  className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white shadow-sm shadow-blue-600/30 transition hover:bg-blue-500"
                 >
                   Создать кабинет
                 </Link>
@@ -221,91 +250,214 @@ export const SiteShell: React.FC<SiteShellProps> = ({
             )}
           </div>
 
-          {/* Кнопка меню на мобильных */}
-          <button
-            type="button"
-            onClick={() => setMobileOpen((v) => !v)}
-            className="rounded-lg p-2 text-slate-300 hover:bg-white/10 lg:hidden"
-          >
-            {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-          </button>
+          {/* Правая часть на планшетах и смартфонах (<1024px): быстрый доступ + бургер */}
+          <div className="flex shrink-0 items-center gap-2 lg:hidden">
+            {viewer ? (
+              <>
+                {viewer.role === 'ADMIN' && (
+                  <Link
+                    href="/admin"
+                    className="inline-flex items-center gap-1 rounded-xl border border-blue-500/35 bg-blue-500/15 px-2.5 py-1.5 text-[11px] font-bold text-blue-300"
+                  >
+                    <Settings className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Админ</span>
+                  </Link>
+                )}
+                <Link
+                  href="/cabinet"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/10 px-2.5 py-1.5 text-xs font-bold text-white"
+                >
+                  <Wallet className="h-3.5 w-3.5 text-emerald-400" />
+                  <span className="font-mono">
+                    {viewer.balanceRub.toLocaleString('ru-RU')} ₽
+                  </span>
+                </Link>
+              </>
+            ) : (
+              <Link
+                href="/login"
+                className="rounded-xl bg-blue-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm shadow-blue-600/30"
+              >
+                Войти
+              </Link>
+            )}
+
+            <button
+              type="button"
+              aria-label="Открыть меню навигации"
+              onClick={() => setMobileOpen((v) => !v)}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-slate-200 transition hover:bg-white/15"
+            >
+              {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            </button>
+          </div>
         </div>
 
+        {/* Выпадающее мобильное/планшетное меню */}
         {mobileOpen && (
-          <div className="border-t border-white/10 bg-[#0B0F19] px-4 py-4 lg:hidden">
-            <div className="flex flex-col gap-1">
-              {NAV_LINKS.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={() => setMobileOpen(false)}
-                  className="rounded-lg px-3 py-2.5 text-sm font-medium text-slate-200 hover:bg-white/5"
-                >
-                  {item.label}
-                </Link>
-              ))}
-              <div className="my-2 border-t border-white/10" />
-              {viewer ? (
-                <>
-                  <Link
-                    href="/cabinet"
-                    onClick={() => setMobileOpen(false)}
-                    className="rounded-lg bg-blue-600 px-3 py-2.5 text-sm font-bold text-white"
-                  >
-                    Мои прогнозы (Баланс: {viewer.balanceRub.toLocaleString('ru-RU')} ₽)
-                  </Link>
-                  {viewer.role === 'ADMIN' && (
+          <>
+            <div
+              className="fixed inset-x-0 bottom-0 top-16 z-30 bg-slate-950/60 backdrop-blur-sm lg:hidden"
+              onClick={() => setMobileOpen(false)}
+            />
+            <div className="relative z-40 max-h-[calc(100dvh-4rem)] overflow-y-auto border-t border-white/10 bg-[#0B0F19] px-4 py-4 shadow-2xl lg:hidden">
+              <div className="flex flex-col gap-1">
+                {NAV_LINKS.map((item) => {
+                  const active =
+                    item.href === '/'
+                      ? pathname === '/'
+                      : !item.href.includes('#') && pathname.startsWith(item.href);
+                  return (
                     <Link
-                      href="/admin"
+                      key={item.href}
+                      href={item.href}
                       onClick={() => setMobileOpen(false)}
-                      className="rounded-lg px-3 py-2.5 text-sm font-semibold text-blue-400"
+                      className={`rounded-xl px-3.5 py-2.5 text-sm font-semibold transition ${
+                        active
+                          ? 'bg-blue-600/20 text-white ring-1 ring-blue-500/40'
+                          : 'text-slate-200 hover:bg-white/5'
+                      }`}
                     >
-                      Админ-панель
+                      {item.label}
                     </Link>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMobileOpen(false);
-                      handleLogout();
-                    }}
-                    className="rounded-lg px-3 py-2.5 text-left text-sm text-slate-400"
-                  >
-                    Выйти
-                  </button>
-                </>
-              ) : (
-                <div className="grid grid-cols-2 gap-2 pt-1">
-                  <Link
-                    href="/login"
-                    onClick={() => setMobileOpen(false)}
-                    className="rounded-lg border border-white/15 py-2.5 text-center text-sm font-semibold text-white"
-                  >
-                    Войти
-                  </Link>
-                  <Link
-                    href="/register"
-                    onClick={() => setMobileOpen(false)}
-                    className="rounded-lg bg-blue-600 py-2.5 text-center text-sm font-bold text-white"
-                  >
-                    Создать кабинет
-                  </Link>
+                  );
+                })}
+
+                <div className="my-2 border-t border-white/10 pt-2.5">
+                  <div className="px-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                    Популярные турниры
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {QUICK_LEAGUES.map((lg) => (
+                      <Link
+                        key={lg.href}
+                        href={lg.href}
+                        onClick={() => setMobileOpen(false)}
+                        className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/10"
+                      >
+                        {lg.label}
+                      </Link>
+                    ))}
+                  </div>
                 </div>
-              )}
+
+                <div className="my-1.5 border-t border-white/10" />
+
+                {viewer ? (
+                  <div className="space-y-1.5 pt-1">
+                    <Link
+                      href="/cabinet"
+                      onClick={() => setMobileOpen(false)}
+                      className="flex items-center justify-between rounded-xl bg-blue-600 px-3.5 py-2.5 text-sm font-bold text-white"
+                    >
+                      <span>Мои прогнозы и кабинет</span>
+                      <span className="font-mono">
+                        {viewer.balanceRub.toLocaleString('ru-RU')} ₽
+                      </span>
+                    </Link>
+                    {viewer.role === 'ADMIN' && (
+                      <Link
+                        href="/admin"
+                        onClick={() => setMobileOpen(false)}
+                        className="flex items-center gap-2 rounded-xl border border-blue-500/30 bg-blue-500/10 px-3.5 py-2.5 text-sm font-bold text-blue-300"
+                      >
+                        <Settings className="h-4 w-4" />
+                        <span>Админ-панель и ИИ-Управляющий</span>
+                      </Link>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileOpen(false);
+                        void handleLogout();
+                      }}
+                      className="w-full rounded-xl border border-white/10 px-3.5 py-2.5 text-left text-sm font-medium text-slate-400 hover:text-white"
+                    >
+                      Выйти из аккаунта
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <Link
+                      href="/login"
+                      onClick={() => setMobileOpen(false)}
+                      className="rounded-xl border border-white/15 py-2.5 text-center text-sm font-semibold text-white"
+                    >
+                      Войти
+                    </Link>
+                    <Link
+                      href="/register"
+                      onClick={() => setMobileOpen(false)}
+                      className="rounded-xl bg-blue-600 py-2.5 text-center text-sm font-bold text-white"
+                    >
+                      Создать кабинет
+                    </Link>
+                  </div>
+                )}
+
+                <div className="mt-2 grid grid-cols-2 gap-2 border-t border-white/10 pt-3">
+                  <a
+                    href={brand.freeTelegramUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/5 py-2 text-xs font-semibold text-sky-300"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    <span>Telegram-канал</span>
+                  </a>
+                  <a
+                    href={brand.supportTelegram}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/5 py-2 text-xs font-semibold text-slate-200"
+                  >
+                    <span>Поддержка 24/7</span>
+                  </a>
+                </div>
+              </div>
             </div>
-          </div>
+          </>
         )}
       </header>
 
       {/* ОСНОВНОЙ СВЕТЛЫЙ КОНТЕНТ */}
       <main className="flex-1">{children}</main>
 
-      {/* ПОНЯТНЫЙ ЧЕЛОВЕЧЕСКИЙ ПОДВАЛ */}
-      <footer className="mt-20 border-t border-slate-200/90 bg-white pb-24 pt-12 text-xs text-slate-500 md:pb-12">
+      {/* ПОНЯТНЫЙ ПОДВАЛ С ПЛАТЕЖНЫМИ ЗНАКАМИ И ДОВЕРИЕМ */}
+      <footer className="mt-16 border-t border-slate-200/90 bg-white pb-24 pt-12 text-xs text-slate-500 md:pb-12">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          {/* Полоска гарантий и способов оплаты */}
+          <div className="mb-8 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200/80 bg-[#F8FAFC] px-4 py-3.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-800">
+                <CreditCard className="h-3.5 w-3.5 text-blue-600" />
+                <span>Карты МИР</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-800">
+                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                <span>СБП (Система быстрых платежей)</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-800">
+                <span>Кассовый чек 54-ФЗ (ЮKassa)</span>
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold text-slate-600">
+              <span className="inline-flex items-center gap-1 text-emerald-700">
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                <span>Без подписок и автосписаний</span>
+              </span>
+              <span className="hidden text-slate-300 sm:inline">•</span>
+              <span>Возврат 100% на баланс по страховке</span>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 gap-8 md:grid-cols-4">
             <div className="md:col-span-2">
               <div className="flex items-center gap-2 text-base font-black text-slate-900">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#0B0F19] font-mono text-[10px] font-black text-white">
+                  VX
+                </div>
                 <span>
                   {brand.brandName}
                   <span className="text-blue-600">.</span>
@@ -323,20 +475,13 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                 </p>
               )}
               <div className="mt-4 flex flex-wrap gap-1.5">
-                {[
-                  ['Прогнозы на РПЛ', '/leagues/rpl'],
-                  ['Прогнозы на КХЛ', '/leagues/khl'],
-                  ['Лига чемпионов', '/leagues/champions-league'],
-                  ['Теннис ATP / WTA', '/leagues/tennis-atp-wta'],
-                  ['Киберспорт CS2', '/leagues/cs2-dota2'],
-                  ['Бои UFC', '/leagues/ufc-mma'],
-                ].map(([title, href]) => (
+                {QUICK_LEAGUES.map((lg) => (
                   <Link
-                    key={href}
-                    href={href}
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:border-blue-300 hover:text-blue-600"
+                    key={lg.href}
+                    href={lg.href}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:border-blue-300 hover:bg-white hover:text-blue-600"
                   >
-                    {title}
+                    {lg.label}
                   </Link>
                 ))}
               </div>
@@ -357,7 +502,7 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                 </li>
                 <li>
                   <Link href="/cabinet" className="hover:text-blue-600">
-                    Личный кабинет и приглашение друзей
+                    Личный кабинет и партнерская программа
                   </Link>
                 </li>
                 <li>
@@ -383,13 +528,23 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                   </a>
                 </li>
                 <li>
+                  <a
+                    href={brand.freeTelegramUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="hover:text-blue-600"
+                  >
+                    Открытый Telegram-канал проекта
+                  </a>
+                </li>
+                <li>
                   <Link href="/legal/offer" className="hover:text-blue-600">
                     Публичная оферта (условия покупки)
                   </Link>
                 </li>
                 <li>
                   <Link href="/legal/privacy" className="hover:text-blue-600">
-                    Политика конфиденциальности
+                    Политика конфиденциальности (152-ФЗ)
                   </Link>
                 </li>
                 <li className="text-slate-400">{brand.supportEmail}</li>
@@ -403,23 +558,27 @@ export const SiteShell: React.FC<SiteShellProps> = ({
         </div>
       </footer>
 
-      {/* МОБИЛЬНАЯ НИЖНЯЯ ПАНЕЛЬ КАК В ПРИЛОЖЕНИИ (удобно одной рукой из Telegram) */}
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-2 py-1.5 backdrop-blur-md md:hidden">
+      {/* МОБИЛЬНАЯ НИЖНЯЯ ПАНЕЛЬ КАК В ПРИЛОЖЕНИИ */}
+      <nav className="pb-safe-bottom fixed inset-x-0 bottom-0 z-30 border-t border-slate-200/90 bg-white/95 px-2 pt-1.5 shadow-[0_-4px_16px_rgba(15,23,42,0.06)] backdrop-blur-md md:hidden">
         <div className="mx-auto grid max-w-md grid-cols-4 gap-1">
           {[
             { href: '/', label: 'Витрина', Icon: Home },
             { href: '/predictions', label: 'Матчи', Icon: Trophy },
-            { href: '/stats', label: 'Результаты', Icon: BarChart3 },
+            { href: '/stats', label: 'Статистика', Icon: BarChart3 },
             {
               href: viewer ? '/cabinet' : '/login',
-              label: viewer ? `${viewer.balanceRub} ₽` : 'Кабинет',
+              label: viewer
+                ? `${viewer.balanceRub.toLocaleString('ru-RU')} ₽`
+                : 'Кабинет',
               Icon: User,
             },
           ].map(({ href, label, Icon }) => {
             const active =
               href === '/'
                 ? pathname === '/'
-                : pathname.startsWith(href);
+                : pathname.startsWith(href) ||
+                  (href === '/login' &&
+                    (pathname === '/register' || pathname === '/forgot-password'));
             return (
               <Link
                 key={href}
@@ -431,7 +590,7 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                 }`}
               >
                 <Icon className="h-4 w-4" />
-                <span className="mt-0.5 truncate">{label}</span>
+                <span className="mt-0.5 max-w-full truncate px-1">{label}</span>
               </Link>
             );
           })}

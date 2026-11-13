@@ -13,17 +13,45 @@ import {
   Radio,
   ShieldCheck,
   Sparkles,
+  Star,
   XCircle,
 } from 'lucide-react';
 import type { PublicPredictionDto, SportType } from '@/server/types';
 
-const SPORT_LABELS: Record<SportType, { name: string; dot: string }> = {
-  FOOTBALL: { name: 'Футбол', dot: 'bg-blue-600' },
-  HOCKEY: { name: 'Хоккей', dot: 'bg-sky-500' },
-  TENNIS: { name: 'Теннис', dot: 'bg-amber-500' },
-  BASKETBALL: { name: 'Баскетбол', dot: 'bg-orange-500' },
-  ESPORTS: { name: 'Киберспорт', dot: 'bg-indigo-600' },
-  MMA: { name: 'ММА / UFC', dot: 'bg-rose-600' },
+const SPORT_LABELS: Record<
+  SportType,
+  { name: string; dot: string; badgeBg: string }
+> = {
+  FOOTBALL: {
+    name: 'Футбол',
+    dot: 'bg-blue-600',
+    badgeBg: 'bg-blue-600 text-white',
+  },
+  HOCKEY: {
+    name: 'Хоккей',
+    dot: 'bg-sky-500',
+    badgeBg: 'bg-sky-600 text-white',
+  },
+  TENNIS: {
+    name: 'Теннис',
+    dot: 'bg-amber-500',
+    badgeBg: 'bg-amber-500 text-slate-950',
+  },
+  BASKETBALL: {
+    name: 'Баскетбол',
+    dot: 'bg-orange-500',
+    badgeBg: 'bg-orange-600 text-white',
+  },
+  ESPORTS: {
+    name: 'Киберспорт',
+    dot: 'bg-indigo-600',
+    badgeBg: 'bg-indigo-600 text-white',
+  },
+  MMA: {
+    name: 'ММА / UFC',
+    dot: 'bg-rose-600',
+    badgeBg: 'bg-rose-600 text-white',
+  },
 };
 
 function getTeamMonogram(teamName: string): string {
@@ -56,16 +84,16 @@ interface PredictionCardProps {
 
 function formatCountdown(kickoffAt: string, nowMs: number): string {
   const diff = new Date(kickoffAt).getTime() - nowMs;
-  if (diff <= 0) return 'Матч уже идет';
+  if (diff <= 0) return 'Матч идет';
   const totalMinutes = Math.floor(diff / 60_000);
   const hours = Math.floor(totalMinutes / 60);
   const mins = totalMinutes % 60;
   if (hours >= 24) {
     const days = Math.floor(hours / 24);
-    return `Старт через ${days}д ${hours % 24}ч`;
+    return `Через ${days}д ${hours % 24}ч`;
   }
   if (hours === 0) {
-    return `Старт через ${mins} мин`;
+    return `Через ${mins} мин`;
   }
   return `Через ${hours}ч ${String(mins).padStart(2, '0')}м`;
 }
@@ -98,12 +126,14 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
 
   return (
     <article
-      className={`group flex h-full flex-col justify-between rounded-2xl border bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.04)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_-8px_rgba(37,99,235,0.12)] ${
+      className={`group flex h-full flex-col justify-between rounded-2xl border bg-white p-4 shadow-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card-hover sm:p-5 ${
         inBundle
           ? 'border-blue-600 ring-2 ring-blue-600/15'
           : prediction.accessTier === 'FREE' && prediction.resultStatus === 'PENDING'
             ? 'border-emerald-300 ring-1 ring-emerald-500/15'
-            : 'border-slate-200/90 hover:border-blue-300'
+            : prediction.isFeatured && prediction.resultStatus === 'PENDING'
+              ? 'border-blue-200/90 hover:border-blue-400'
+              : 'border-slate-200/90 hover:border-blue-300'
       }`}
     >
       {/* 1. Верхняя шапка карточки */}
@@ -144,7 +174,8 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
                 );
               })()
             )
-          ) : prediction.resultStatus === 'WIN' || prediction.resultStatus === 'CASHOUT' ? (
+          ) : prediction.resultStatus === 'WIN' ||
+            prediction.resultStatus === 'CASHOUT' ? (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
               <CheckCircle2 className="h-3.5 w-3.5" />
               <span>Зашел +{profitVal.toFixed(1)}%</span>
@@ -162,19 +193,21 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
           )}
         </div>
 
-        {/* 2. Команды */}
-        <div className="mt-3.5">
+        {/* 2. Табло команд */}
+        <div className="mt-3">
           <Link
             href={`/predictions/${prediction.slug}`}
-            className="block rounded-xl border border-slate-100 bg-slate-50/70 p-3 transition group-hover:border-blue-100 group-hover:bg-blue-50/30"
+            className="block rounded-xl border border-slate-100 bg-slate-50/80 p-3 transition group-hover:border-blue-100 group-hover:bg-blue-50/35"
           >
             <div className="flex items-center justify-between gap-2">
-              <div className="space-y-1.5">
+              <div className="min-w-0 flex-1 space-y-1.5">
                 <div className="flex items-center gap-2.5">
-                  <span className="flex h-6 w-7 shrink-0 items-center justify-center rounded-md bg-slate-900 font-mono text-[10px] font-bold text-white">
+                  <span
+                    className={`flex h-6 w-7 shrink-0 items-center justify-center rounded-md font-mono text-[10px] font-bold shadow-2xs ${sportMeta.badgeBg}`}
+                  >
                     {getTeamMonogram(prediction.homeTeam)}
                   </span>
-                  <span className="text-sm font-extrabold leading-tight text-slate-950">
+                  <span className="truncate text-sm font-extrabold leading-tight text-slate-950">
                     {prediction.homeTeam}
                   </span>
                 </div>
@@ -182,18 +215,24 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
                   <span className="flex h-6 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white font-mono text-[10px] font-bold text-slate-700">
                     {getTeamMonogram(prediction.awayTeam)}
                   </span>
-                  <span className="text-sm font-extrabold leading-tight text-slate-950">
+                  <span className="truncate text-sm font-extrabold leading-tight text-slate-950">
                     {prediction.awayTeam}
                   </span>
                 </div>
               </div>
 
-              <ArrowUpRight className="h-4 w-4 shrink-0 text-slate-300 transition group-hover:text-blue-600" />
+              {prediction.finalScore ? (
+                <div className="shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-center font-mono text-xs font-black text-slate-900 shadow-2xs">
+                  {prediction.finalScore}
+                </div>
+              ) : (
+                <ArrowUpRight className="h-4 w-4 shrink-0 text-slate-300 transition group-hover:text-blue-600" />
+              )}
             </div>
           </Link>
 
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-            <span>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs text-slate-500">
+            <span className="font-medium">
               {new Date(prediction.matchStartsAt).toLocaleString('ru-RU', {
                 day: '2-digit',
                 month: 'short',
@@ -202,13 +241,13 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
               })}
             </span>
 
-            {/* Понятная шкала уверенности и доли банка */}
+            {/* Шкала уверенности и доли банка */}
             <div
               className="flex items-center gap-1.5"
               title={`${conf.text} — рекомендуем ставить ${prediction.stakeUnits.toFixed(1)}% от игрового банка`}
             >
               <span className="text-[11px] font-semibold text-slate-600">
-                Ставка {prediction.stakeUnits.toFixed(1)}% от банка
+                Ставка {prediction.stakeUnits.toFixed(1)}% банка
               </span>
               <div className="flex items-center gap-0.5">
                 {[1, 2, 3, 4, 5].map((seg) => (
@@ -224,22 +263,32 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
           </div>
         </div>
 
-        {/* Понятная плашка страховки */}
-        {prediction.insuredOnLoss && prediction.accessTier === 'PAID_SINGLE' && (
-          <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg border border-emerald-200/80 bg-emerald-50/80 px-2.5 py-1 text-[11px] font-bold text-emerald-800">
-            <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
-            <span>Если не зайдет — вернем 100% оплаты на баланс</span>
-          </div>
-        )}
+        {/* Бейджи преимуществ */}
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
+          {prediction.isFeatured && prediction.resultStatus === 'PENDING' && (
+            <span className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+              <Star className="h-3 w-3 fill-amber-500 text-amber-500" />
+              <span>Матч дня</span>
+            </span>
+          )}
 
-        {prediction.accessTier === 'FREE' && prediction.resultStatus === 'PENDING' && (
-          <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-bold text-blue-800">
-            <Sparkles className="h-3.5 w-3.5 shrink-0 text-blue-600" />
-            <span>Бесплатный открытый прогноз дня (0 ₽)</span>
-          </div>
-        )}
+          {prediction.insuredOnLoss && prediction.accessTier === 'PAID_SINGLE' && (
+            <span className="inline-flex items-center gap-1 rounded-lg border border-emerald-200/80 bg-emerald-50/80 px-2 py-0.5 text-[11px] font-bold text-emerald-800">
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+              <span>Страховка 100% на баланс</span>
+            </span>
+          )}
 
-        {/* 3. Короткое понятное описание */}
+          {prediction.accessTier === 'FREE' &&
+            prediction.resultStatus === 'PENDING' && (
+              <span className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-bold text-blue-800">
+                <Sparkles className="h-3.5 w-3.5 shrink-0 text-blue-600" />
+                <span>Открытый прогноз дня (0 ₽)</span>
+              </span>
+            )}
+        </div>
+
+        {/* 3. Короткое описание */}
         <p className="mt-2.5 line-clamp-2 text-xs leading-relaxed text-slate-600">
           {prediction.analysisTeaser}
         </p>
@@ -250,22 +299,22 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
         {isUnlocked ? (
           <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-3">
             <div className="flex items-center justify-between gap-2">
-              <div>
+              <div className="min-w-0">
                 <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-blue-600">
-                  <Sparkles className="h-3 w-3" />
-                  <span>
+                  <Sparkles className="h-3 w-3 shrink-0" />
+                  <span className="truncate">
                     {prediction.accessTier === 'FREE'
-                      ? 'Что ставить (открыто бесплатно)'
+                      ? 'Открыто бесплатно'
                       : prediction.isPurchased
                         ? 'Ваша покупка — что ставить'
                         : 'Матч завершен — исход открыт'}
                   </span>
                 </div>
-                <div className="mt-0.5 text-sm font-extrabold text-slate-950">
+                <div className="mt-0.5 truncate text-sm font-extrabold text-slate-950">
                   {prediction.selectionTitle}
                 </div>
               </div>
-              <div className="rounded-lg border border-blue-100 bg-white px-2.5 py-1 text-right shadow-xs">
+              <div className="shrink-0 rounded-lg border border-blue-100 bg-white px-2.5 py-1 text-right shadow-2xs">
                 <div className="text-[10px] text-slate-400">Коэфф.</div>
                 <div className="font-mono text-sm font-black text-blue-600">
                   {prediction.fixedOdds?.toFixed(2)}
@@ -273,16 +322,7 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
               </div>
             </div>
 
-            {prediction.finalScore && (
-              <div className="mt-2 flex items-center justify-between border-t border-blue-100/80 pt-1.5 text-[11px] text-slate-600">
-                <span>Счет матча:</span>
-                <span className="font-mono font-bold text-slate-900">
-                  {prediction.finalScore}
-                </span>
-              </div>
-            )}
-
-            <div className="mt-2 flex items-center justify-between text-[11px]">
+            <div className="mt-2.5 flex items-center justify-between border-t border-blue-100/80 pt-2 text-[11px]">
               <Link
                 href={`/predictions/${prediction.slug}`}
                 className="font-bold text-blue-700 hover:underline"
@@ -295,19 +335,19 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
                 className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-900"
               >
                 <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-                <span>Проверено</span>
+                <span>SHA-256</span>
               </button>
             </div>
           </div>
         ) : (
           <div>
             <div className="flex items-center justify-between gap-2">
-              <div>
+              <div className="min-w-0">
                 <div className="flex items-center gap-1 text-[11px] font-medium text-slate-500">
-                  <Lock className="h-3 w-3 text-blue-600" />
-                  <span>Исход откроется сразу</span>
+                  <Lock className="h-3 w-3 shrink-0 text-blue-600" />
+                  <span className="truncate">Исход сразу</span>
                 </div>
-                <div className="mt-0.5 flex items-baseline gap-1.5">
+                <div className="mt-0.5 flex items-baseline gap-1">
                   <span className="font-mono text-lg font-black text-slate-950">
                     {price.toLocaleString('ru-RU')} ₽
                   </span>
@@ -316,7 +356,7 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
               </div>
 
               {canPurchase ? (
-                <div className="flex items-center gap-1.5">
+                <div className="flex shrink-0 items-center gap-1.5">
                   {onToggleBundle && (
                     <button
                       type="button"
@@ -326,7 +366,7 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
                           : 'Собрать 2–3 матча в набор со скидкой до 25%'
                       }
                       onClick={() => onToggleBundle(prediction)}
-                      className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-2.5 text-xs font-bold transition ${
+                      className={`inline-flex min-h-[38px] items-center gap-1 rounded-xl border px-2.5 py-2 text-xs font-bold transition ${
                         inBundle
                           ? 'border-blue-600 bg-blue-50 text-blue-700'
                           : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-300 hover:bg-white'
@@ -344,27 +384,27 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
                   <button
                     type="button"
                     onClick={() => onBuySingle(prediction)}
-                    className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-3.5 py-2.5 text-xs font-bold text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-700"
+                    className="inline-flex min-h-[38px] items-center justify-center rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-700"
                   >
                     Купить
                   </button>
                 </div>
               ) : (
                 <span className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-500">
-                  Матч уже идет
+                  Матч идет
                 </span>
               )}
             </div>
 
-            <div className="mt-2.5 flex items-center justify-between text-[11px] text-slate-400">
-              <span>Подходит: {prediction.bookmakerSource}</span>
+            <div className="mt-2.5 flex items-center justify-between gap-2 text-[11px] text-slate-400">
+              <span className="truncate">БК: {prediction.bookmakerSource}</span>
               <button
                 type="button"
                 onClick={() => onVerifyHash(prediction)}
-                className="inline-flex items-center gap-1 font-medium text-slate-500 hover:text-blue-600"
+                className="inline-flex shrink-0 items-center gap-1 font-medium text-slate-500 hover:text-blue-600"
               >
                 <ShieldCheck className="h-3 w-3 text-blue-600" />
-                <span>Защита от подмены</span>
+                <span>Защита SHA-256</span>
               </button>
             </div>
           </div>

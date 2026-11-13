@@ -935,6 +935,7 @@ export function toPublicPredictionDto(
     verificationHash: record.verificationHash,
     oddsLockedAt: record.oddsLockedAt,
     settledAt: record.settledAt,
+    researchSources: record.researchSources ?? [],
   };
 }
 

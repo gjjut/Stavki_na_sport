@@ -412,66 +412,76 @@ export default function AdminDashboardPage() {
   return (
     <div className="min-h-screen bg-[#F4F6FA] text-slate-900">
       {/* Темная шапка админ-панели */}
-      <header className="bg-[#0B0F19] text-white">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-3">
+      <header className="sticky top-0 z-40 border-b border-white/10 bg-[#0B0F19]/95 text-white backdrop-blur-md">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-6 lg:px-8">
+          <div className="flex min-w-0 items-center gap-3">
             <Link
               href="/"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/10 hover:text-white"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/10 hover:text-white"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
               <span>На витрину</span>
             </Link>
-            <h1 className="text-lg font-black">
-              Управление маркетплейсом прогнозов
+            <h1 className="truncate text-sm font-black sm:text-lg">
+              Управление сервисом VALUEX
             </h1>
           </div>
 
           {notice && (
-            <div className="rounded-xl bg-blue-600 px-4 py-1.5 text-xs font-bold text-white shadow">
+            <div className="rounded-xl bg-blue-600 px-3.5 py-1.5 text-xs font-bold text-white shadow">
               {notice}
             </div>
           )}
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
         {/* KPI карточки выручки */}
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">Выручка всего</div>
-            <div className="mt-1 font-mono text-2xl font-black text-slate-950">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-5">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs">
+            <div className="text-[11px] font-medium text-slate-500">
+              Выручка всего
+            </div>
+            <div className="mt-1 font-mono text-xl font-black text-slate-950 sm:text-2xl">
               {totalRevenueRub.toLocaleString('ru-RU')} ₽
             </div>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">Продажи за 24ч</div>
-            <div className="mt-1 font-mono text-2xl font-black text-blue-600">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs">
+            <div className="text-[11px] font-medium text-slate-500">
+              Продажи за 24ч
+            </div>
+            <div className="mt-1 font-mono text-xl font-black text-blue-600 sm:text-2xl">
               {todayRevenueRub.toLocaleString('ru-RU')} ₽
             </div>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">Оплаченных чеков</div>
-            <div className="mt-1 font-mono text-2xl font-black text-slate-950">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs">
+            <div className="text-[11px] font-medium text-slate-500">
+              Оплаченных чеков
+            </div>
+            <div className="mt-1 font-mono text-xl font-black text-slate-950 sm:text-2xl">
               {paidTransactions.length}
             </div>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">Покупателей / Всего</div>
-            <div className="mt-1 font-mono text-2xl font-black text-slate-950">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs">
+            <div className="text-[11px] font-medium text-slate-500">
+              Покупателей / Всего
+            </div>
+            <div className="mt-1 font-mono text-xl font-black text-slate-950 sm:text-2xl">
               {buyersCount} / {data?.users.length ?? 0}
             </div>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">Активных на витрине</div>
-            <div className="mt-1 font-mono text-2xl font-black text-emerald-600">
+          <div className="col-span-2 rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs sm:col-span-1">
+            <div className="text-[11px] font-medium text-slate-500">
+              Активных на витрине
+            </div>
+            <div className="mt-1 font-mono text-xl font-black text-emerald-600 sm:text-2xl">
               {pendingPredictionsCount}
             </div>
           </div>
         </div>
 
-        {/* Навигация разделов */}
-        <div className="mt-6 flex flex-wrap gap-2">
+        {/* Навигация разделов (удобный свайп на смартфонах + перенос на ПК) */}
+        <div className="no-scrollbar -mx-4 mt-5 flex gap-2 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:px-0">
           {(
             [
               ['AUTOPILOT', 'ИИ-Автопилот 24/7', Bot],
@@ -491,7 +501,7 @@ export default function AdminDashboardPage() {
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
-                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition ${
+                className={`inline-flex shrink-0 items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold transition ${
                   tab === id
                     ? 'bg-slate-900 text-white shadow-xs'
                     : 'border border-slate-200 bg-white text-slate-600 hover:text-slate-950'

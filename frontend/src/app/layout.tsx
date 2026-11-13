@@ -1,5 +1,14 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
+import '@fontsource-variable/inter';
+import '@fontsource-variable/jetbrains-mono';
 import './globals.css';
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  themeColor: '#0B0F19',
+};
 
 export const metadata: Metadata = {
   metadataBase: new URL(
@@ -16,8 +25,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ru">
-      <body className="min-h-screen bg-[#F4F6FA] font-sans text-slate-900">{children}</body>
+    <html lang="ru" className="scroll-smooth">
+      <body className="min-h-screen overflow-x-hidden bg-[#F4F6FA] font-sans text-slate-900 antialiased">
+        {children}
+      </body>
     </html>
   );
 }

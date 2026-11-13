@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { ArrowLeft, ShieldCheck } from 'lucide-react';
 import { SiteShell } from '@/components/layout/SiteShell';
 import { PredictionCard } from '@/components/predictions/PredictionCard';
+import { PredictionCardSkeleton } from '@/components/predictions/PredictionCardSkeleton';
 import { HashVerifyModal } from '@/components/predictions/HashVerifyModal';
 import { BundleCartBar } from '@/components/billing/BundleCartBar';
 import {
@@ -18,7 +19,7 @@ import type { PublicPredictionDto } from '@/server/types';
 export const LeagueLandingClient: React.FC<{
   leagueConfig: SeoLeaguePageConfig;
 }> = ({ leagueConfig }) => {
-  const { data, reload } = usePublicPlatform();
+  const { data, loading, reload } = usePublicPlatform();
   const [selectedBundleIds, setSelectedBundleIds] = useState<string[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<CheckoutModalTarget | null>(null);
   const [hashItem, setHashItem] = useState<PublicPredictionDto | null>(null);
@@ -97,7 +98,7 @@ export const LeagueLandingClient: React.FC<{
       brand={data?.brand ?? null}
       onViewerChange={() => reload()}
     >
-      <section className="bg-[#0B0F19] py-12 text-white">
+      <section className="hero-surface py-10 text-white sm:py-12">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <Link
             href="/predictions"
@@ -107,19 +108,19 @@ export const LeagueLandingClient: React.FC<{
             <span>Все прогнозы и турниры</span>
           </Link>
 
-          <h1 className="mt-3 text-3xl font-black tracking-tight sm:text-4xl">
+          <h1 className="mt-3 text-2xl font-black tracking-tight sm:text-4xl">
             {leagueConfig.h1}
           </h1>
-          <p className="mt-3 max-w-3xl text-sm leading-relaxed text-slate-300">
+          <p className="mt-3 max-w-3xl text-xs leading-relaxed text-slate-300 sm:text-sm">
             {leagueConfig.introText}
           </p>
 
-          <div className="mt-5 flex flex-wrap gap-2">
+          <div className="no-scrollbar -mx-4 mt-5 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:px-0">
             {SEO_LEAGUE_PAGES.map((item) => (
               <Link
                 key={item.slug}
                 href={`/leagues/${item.slug}`}
-                className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold transition ${
                   item.slug === leagueConfig.slug
                     ? 'bg-blue-600 text-white'
                     : 'border border-white/15 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white'
@@ -143,7 +144,13 @@ export const LeagueLandingClient: React.FC<{
           </div>
         </div>
 
-        {matchingActive.length > 0 ? (
+        {loading && !data ? (
+          <div className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {[1, 2, 3].map((n) => (
+              <PredictionCardSkeleton key={n} />
+            ))}
+          </div>
+        ) : matchingActive.length > 0 ? (
           <div className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {matchingActive.map((p) => (
               <PredictionCard

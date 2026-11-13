@@ -138,6 +138,7 @@ export interface PublicPredictionDto {
   verificationHash: string;
   oddsLockedAt: string;
   settledAt: string | null;
+  researchSources?: string[];
 }
 
 export interface PromoCodeRecord {

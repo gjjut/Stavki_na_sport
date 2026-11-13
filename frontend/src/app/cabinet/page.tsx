@@ -233,10 +233,12 @@ export default function CabinetPage() {
         </div>
       )}
 
-      <div className="bg-[#0B0F19] py-10 text-white">
+      <div className="hero-surface py-8 text-white sm:py-10">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
           <div>
-            <h1 className="text-3xl font-black tracking-tight">Мои прогнозы и баланс</h1>
+            <h1 className="text-2xl font-black tracking-tight sm:text-3xl">
+              Мои прогнозы и баланс
+            </h1>
             <p className="mt-1 text-sm text-slate-300">
               Здесь хранятся все открытые вами матчи, баланс для покупок в 1 клик и возвраты по страховке
             </p>
@@ -661,9 +663,14 @@ export default function CabinetPage() {
 
       {/* Модальное окно вывода партнерских средств на СБП / Карту МИР */}
       {payoutOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
-            <div className="flex items-center justify-between bg-[#0B0F19] px-6 py-4 text-white">
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setPayoutOpen(false);
+          }}
+        >
+          <div className="flex max-h-[90dvh] w-full max-w-md flex-col overflow-hidden rounded-t-3xl border border-slate-200 bg-white shadow-2xl sm:rounded-3xl">
+            <div className="flex shrink-0 items-center justify-between bg-[#0B0F19] px-6 py-4 text-white">
               <span className="text-sm font-bold">Вывод партнерского дохода</span>
               <button
                 type="button"
@@ -673,7 +680,10 @@ export default function CabinetPage() {
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <form onSubmit={handleSubmitPayout} className="space-y-4 p-6">
+            <form
+              onSubmit={handleSubmitPayout}
+              className="space-y-4 overflow-y-auto p-6"
+            >
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -754,9 +764,14 @@ export default function CabinetPage() {
 
       {/* Модальное окно настроек профиля и смены пароля */}
       {profileOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
-            <div className="flex items-center justify-between bg-[#0B0F19] px-6 py-4 text-white">
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setProfileOpen(false);
+          }}
+        >
+          <div className="flex max-h-[90dvh] w-full max-w-md flex-col overflow-hidden rounded-t-3xl border border-slate-200 bg-white shadow-2xl sm:rounded-3xl">
+            <div className="flex shrink-0 items-center justify-between bg-[#0B0F19] px-6 py-4 text-white">
               <span className="text-sm font-bold">Профиль и смена пароля</span>
               <button
                 type="button"
@@ -766,7 +781,10 @@ export default function CabinetPage() {
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <form onSubmit={handleSaveProfile} className="space-y-3.5 p-6">
+            <form
+              onSubmit={handleSaveProfile}
+              className="space-y-3.5 overflow-y-auto p-6"
+            >
               <div>
                 <label className="block text-xs font-bold text-slate-700">Ваше имя</label>
                 <input

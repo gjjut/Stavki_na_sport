@@ -278,7 +278,7 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
   return (
     <div className="mt-6 grid gap-6 lg:grid-cols-12">
       {/* Левая колонка: основной чат с ИИ-управляющим */}
-      <div className="flex min-h-[700px] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs lg:col-span-8">
+      <div className="flex h-[74dvh] min-h-[540px] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xs lg:col-span-8 lg:h-[740px]">
         {/* Шапка чата */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-[#0B0F19] px-5 py-4 text-white">
           <div className="flex items-center gap-3">

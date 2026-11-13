@@ -49,6 +49,15 @@ export const HashVerifyModal: React.FC<HashVerifyModalProps> = ({
     };
   }, [prediction]);
 
+  useEffect(() => {
+    if (!prediction) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [prediction, onClose]);
+
   if (!prediction) return null;
 
   const copyHash = async () => {
@@ -58,9 +67,14 @@ export const HashVerifyModal: React.FC<HashVerifyModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-lg overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
-        <div className="flex items-center justify-between bg-[#0B0F19] px-6 py-4 text-white">
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="flex max-h-[90dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl border border-slate-200 bg-white shadow-2xl sm:rounded-3xl">
+        <div className="flex shrink-0 items-center justify-between bg-[#0B0F19] px-5 py-4 text-white sm:px-6">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-emerald-400" />
             <h3 className="text-sm font-bold">Защита от подмены статистики</h3>
@@ -74,7 +88,7 @@ export const HashVerifyModal: React.FC<HashVerifyModalProps> = ({
           </button>
         </div>
 
-        <div className="p-6">
+        <div className="overflow-y-auto p-5 sm:p-6">
           <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-3.5 text-xs leading-relaxed text-slate-700">
             <strong className="text-slate-900">Простыми словами:</strong> еще до начала игры наш прогноз «запечатывается» уникальным цифровым отпечатком. Если после матча попытаться изменить хотя бы одну букву или цифру коэффициента — отпечаток сразу перестанет совпадать. Поэтому нарисовать победу задним числом невозможно.
           </div>
@@ -92,14 +106,14 @@ export const HashVerifyModal: React.FC<HashVerifyModalProps> = ({
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-semibold text-slate-400">
                   Цифровой отпечаток прогноза (SHA-256)
                 </span>
                 <button
                   type="button"
                   onClick={copyHash}
-                  className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:underline"
+                  className="inline-flex shrink-0 items-center gap-1 text-[11px] font-bold text-blue-600 hover:underline"
                 >
                   {copied ? (
                     <>
