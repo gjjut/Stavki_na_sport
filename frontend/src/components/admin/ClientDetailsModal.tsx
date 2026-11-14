@@ -56,6 +56,7 @@ export function ClientDetailsModal({ user, transactions, predictions, onClose }:
                       </div>
                       {order.insuranceCredited && <div className="mt-1 text-[11px] text-emerald-700">Страховка выплачена{typeof order.insuranceRefundedAmountRub === 'number' ? `: ${formatRub(order.insuranceRefundedAmountRub)}` : ''}</div>}
                       {order.refundDestination === 'BALANCE' && <div className="mt-1 text-[11px] text-slate-500">Возврат на баланс: {formatRub(order.refundBalanceAmountRub ?? 0)}</div>}
+                      {order.externalRefundNotices?.length ? <div className="mt-1 text-[11px] font-bold text-amber-700">Возврат ЮKassa: требуется ручная сверка в разделе «Финансы».</div> : null}
                     </div>
                     <div className="text-right"><div className="mb-1 font-mono font-bold">{formatRub(order.amountRub)}</div><OrderStatusBadge status={order.status} /></div>
                   </div>

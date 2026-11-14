@@ -6,6 +6,9 @@ export type BalanceRefundQuote =
 
 /** A store-credit refund is not a refund to the original payment method. */
 export function quoteBalanceRefund(order: OrderTransaction): BalanceRefundQuote {
+  if (Array.isArray(order.externalRefundNotices) && order.externalRefundNotices.length > 0) {
+    return { ok: false, reason: 'По заказу есть возврат в ЮKassa; сначала нужна ручная сверка, чтобы не вернуть деньги дважды.' };
+  }
   if (order.status !== 'SUCCEEDED') {
     return { ok: false, reason: 'Возврат доступен только для оплаченного заказа.' };
   }

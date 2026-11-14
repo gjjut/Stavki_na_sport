@@ -169,6 +169,10 @@ export default function AdminDashboardPage() {
     () => (data?.payouts ?? []).filter((p) => p.status === 'PENDING').length,
     [data],
   );
+  const refundReviewCount = useMemo(
+    () => (data?.transactions ?? []).filter((order) => order.externalRefundNotices?.length).length,
+    [data],
+  );
   const liveCount = useMemo(
     () => (data?.predictions ?? []).filter((p) => p.matchLifecycleStatus === 'LIVE').length,
     [data],
@@ -191,7 +195,7 @@ export default function AdminDashboardPage() {
     { id: 'AI_CHAT', label: 'ИИ-Чат', icon: MessageSquareText },
     { id: 'PREDICTIONS', label: 'События', icon: Plus, badge: pendingPredictionsCount || undefined },
     { id: 'PRICING_PROMOS', label: 'Цены и промокоды', icon: Tag },
-    { id: 'FINANCE', label: 'Финансы', icon: Coins, badge: pendingPayoutsCount || undefined },
+    { id: 'FINANCE', label: 'Финансы', icon: Coins, badge: pendingPayoutsCount + refundReviewCount || undefined },
     { id: 'USERS', label: 'Клиенты', icon: Users },
     { id: 'SETTINGS', label: 'Настройки', icon: Settings },
   ];
@@ -582,6 +586,7 @@ function OverviewTab({
     .sort((a, b) => new Date(a.matchStartsAt).getTime() - new Date(b.matchStartsAt).getTime())
     .slice(0, 5);
   const pendingPayouts = data.payouts.filter((p) => p.status === 'PENDING');
+  const refundReviewCount = data.transactions.filter((order) => order.externalRefundNotices?.length).length;
 
   const revenuePoints = useMemo(
     () => buildPredictionSalesChart(data.transactions, new Date()),
@@ -635,7 +640,13 @@ function OverviewTab({
         })}
       </div>
 
-      <p className="text-[11px] text-slate-500">Продажи — сумма заказов прогнозов со статусом «Оплачен»: пополнения и возвращённые заказы исключены, страховые выплаты не вычитаются. Это не денежный поток.</p>
+      {refundReviewCount > 0 && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+          <span><strong>Требуется сверка возвратов ЮKassa: {refundReviewCount}.</strong> Балансы, доступы и статусы заказов автоматически не менялись.</span>
+          <button type="button" onClick={() => onGoTab('FINANCE')} className="font-bold underline">Открыть финансы</button>
+        </div>
+      )}
+      <p className="text-[11px] text-slate-500">Продажи — сумма заказов прогнозов со статусом «Оплачен»: пополнения, возвращённые заказы и заказы с возвратами ЮKassa на сверке исключены, страховые выплаты не вычитаются. Это не денежный поток.</p>
       <div className="grid gap-5 xl:grid-cols-3">
         <SectionCard title="Динамика продаж прогнозов" subtitle="За 14 дней по времени оплаты; только текущий статус «Оплачен»" className="xl:col-span-2">
           <RevenueChart points={revenuePoints} />

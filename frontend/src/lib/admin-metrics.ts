@@ -1,7 +1,9 @@
 import type { OrderTransaction, PredictionRecord } from '@/server/types';
 
 export function isPaidPredictionSale(order: OrderTransaction): boolean {
-  return order.status === 'SUCCEEDED' && (order.kind === 'SINGLE_PREDICTION' || order.kind === 'BUNDLE_PREDICTIONS');
+  return order.status === 'SUCCEEDED' &&
+    !(Array.isArray(order.externalRefundNotices) && order.externalRefundNotices.length > 0) &&
+    (order.kind === 'SINGLE_PREDICTION' || order.kind === 'BUNDLE_PREDICTIONS');
 }
 
 export function paidAtMs(order: OrderTransaction): number {

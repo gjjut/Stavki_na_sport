@@ -27,7 +27,7 @@ export function FinanceTab({
   onToast: (msg: string, kind?: ToastKind) => void;
 }) {
   const [search, setSearch] = useState(initialSearch);
-  const [statusFilter, setStatusFilter] = useState<'ALL' | OrderTransaction['status']>('ALL');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'REVIEW' | OrderTransaction['status']>('ALL');
   const [sort, setSort] = useState<SortState<OrderSort>>({ key: 'date', direction: 'desc' });
   const [refundTarget, setRefundTarget] = useState<OrderTransaction | null>(null);
   const [refunding, setRefunding] = useState(false);
@@ -46,6 +46,7 @@ export function FinanceTab({
       'Статус',
       'Промокод',
       'Возврат по страховке',
+      'Возвраты ЮKassa на сверке',
     ];
     const lines = [
       header.map(escapeCsvCell).join(';'),
@@ -60,6 +61,7 @@ export function FinanceTab({
           r.status,
           r.promoCode || '',
           r.insuranceCredited ? 'Да' : 'Нет',
+          (r.externalRefundNotices ?? []).map((notice) => `${notice.id}: ${notice.amountValue} ${notice.currency}`).join(', '),
         ]
           .map(escapeCsvCell)
           .join(';'),
@@ -77,7 +79,8 @@ export function FinanceTab({
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     const rows = transactions.filter((o) => {
-      if (statusFilter !== 'ALL' && o.status !== statusFilter) return false;
+      if (statusFilter === 'REVIEW' && !o.externalRefundNotices?.length) return false;
+      if (statusFilter !== 'ALL' && statusFilter !== 'REVIEW' && o.status !== statusFilter) return false;
       if (!q) return true;
       if (initialOrderId && q === initialOrderId.toLowerCase()) return o.id === initialOrderId;
       return (
@@ -236,6 +239,7 @@ export function FinanceTab({
                 ['REFUNDED', 'Возвраты'],
                 ['PENDING', 'Ожидают'],
                 ['CANCELED', 'Отменены'],
+                ['REVIEW', 'На сверке'],
               ] as const
             ).map(([id, label]) => (
               <button
@@ -295,6 +299,14 @@ export function FinanceTab({
                     <td className="px-5 py-3">
                       <OrderStatusBadge status={order.status} />
                       {order.refundDestination === 'BALANCE' && <div className="mt-1 text-[10px] text-slate-500">На баланс: {formatRub(order.refundBalanceAmountRub ?? 0)}</div>}
+                      {order.externalRefundNotices?.length ? (
+                        <div className="mt-1 max-w-xs text-[10px] leading-relaxed text-amber-800">
+                          <strong>Возврат ЮKassa — нужна ручная сверка.</strong>{' '}
+                          {order.externalRefundNotices.map((notice) => `${notice.amountValue} ${notice.currency} (ID ${notice.id})`).join('; ')}.
+                          {order.refundDestination === 'BALANCE' && ' Возможен двойной возврат: средства уже зачислялись на баланс.'}
+                          {' '}Уведомление не меняло статус, баланс или доступ.
+                        </div>
+                      ) : null}
                     </td>
                     <td className="px-5 py-3 text-right">
                       {order.status === 'SUCCEEDED' && (quoteBalanceRefund(order).ok ? (
@@ -323,7 +335,7 @@ export function FinanceTab({
         open={refundTarget !== null}
         title="Вернуть средства?"
         description={refundTarget && refundQuote?.ok
-          ? `На внутренний баланс будет зачислено ${formatRub(refundQuote.creditRub)}${refundQuote.insuranceRub ? ` с учётом уже выплаченной страховки ${formatRub(refundQuote.insuranceRub)}` : ''}; доступ к прогнозам будет отозван. На карту или в ЮKassa этот возврат не отправляется.`
+          ? `На внутренний баланс будет зачислено ${formatRub(refundQuote.creditRub)}${refundQuote.insuranceRub ? ` с учётом уже выплаченной страховки ${formatRub(refundQuote.insuranceRub)}` : ''}; доступ к прогнозам будет отозван. На карту или в ЮKassa этот возврат не отправляется.${refundTarget.paymentMethod === 'yookassa' ? ' Проверьте, что возврат через ЮKassa не выполнялся и не будет выполнен отдельно: возможен двойной возврат.' : ''}`
           : ''}
         confirmLabel="Вернуть на баланс"
         busy={refunding}

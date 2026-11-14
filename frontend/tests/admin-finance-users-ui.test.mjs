@@ -71,6 +71,28 @@ test('top-ups and ambiguous old insurance are not offered for automatic refunds'
   assert.equal([...view.container.querySelectorAll('tbody span')].filter((el) => el.textContent === 'Требуется ручная проверка').length, 2);
 });
 
+test('verified external refunds are visible, filterable and block balance refunds', async (t) => {
+  const view = await mount(FinanceTab, {
+    ...callbacks, payouts: [], transactions: [
+      order('normal'),
+      order('review', { refundDestination: 'BALANCE', status: 'REFUNDED', externalRefundNotices: [
+        { id: 'refund-42', amountValue: '300.00', currency: 'RUB', verifiedAt: '2026-11-12T12:00:00Z' },
+      ] }),
+      order('partial', { externalRefundNotices: [
+        { id: 'refund-43', amountValue: '100.00', currency: 'RUB', verifiedAt: '2026-11-12T12:00:00Z' },
+      ] }),
+    ],
+  });
+  t.after(view.cleanup);
+  await click(buttonWithText(view.container, 'На сверке'));
+  const rows = [...view.container.querySelectorAll('tbody tr')];
+  assert.equal(rows.length, 2);
+  assert.match(rows.find((row) => row.textContent.includes('Заказ review')).textContent, /Возможен двойной возврат/);
+  assert.match(rows.find((row) => row.textContent.includes('Заказ partial')).textContent, /100\.00 RUB.*refund-43/);
+  assert.equal(buttonWithText(view.container, 'Возврат на баланс'), undefined);
+  assert.match(rows.find((row) => row.textContent.includes('Заказ partial')).textContent, /Требуется ручная проверка/);
+});
+
 test('payout confirmation does not claim success for an API failure', async (t) => {
   const toasts = [];
   let calls = 0;

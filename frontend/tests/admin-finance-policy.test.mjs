@@ -46,6 +46,7 @@ test('unsafe and ambiguous refunds fail without modifying the state', () => {
     makeOrder({ insuranceCredited: true }),
     makeOrder({ insuranceRefundedAmountRub: -1 }),
     makeOrder({ amountRub: NaN }),
+    makeOrder({ externalRefundNotices: [{ id: 'refund-1', amountValue: '100.00', currency: 'RUB', verifiedAt: 'now' }] }),
   ]) {
     const state = makeState(order);
     const before = structuredClone(state);

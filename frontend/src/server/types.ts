@@ -195,6 +195,13 @@ export interface PromoCodeRecord {
   createdAt: string;
 }
 
+export interface ExternalRefundNotice {
+  id: string;
+  amountValue: string;
+  currency: string;
+  verifiedAt: string;
+}
+
 export interface OrderTransaction {
   id: string;
   idempotenceKey: string;
@@ -216,6 +223,8 @@ export interface OrderTransaction {
   refundDestination?: 'BALANCE';
   refundBalanceAmountRub?: number;
   refundedAt?: string;
+  /** Verified external refunds require manual reconciliation; they do not change balances or access. */
+  externalRefundNotices?: ExternalRefundNotice[];
   receiptEmail: string;
   confirmationUrl: string | null;
   affiliateUserId: string | null;

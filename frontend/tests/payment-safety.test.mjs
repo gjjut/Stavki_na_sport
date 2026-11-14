@@ -179,14 +179,91 @@ test('a late canceled response cannot overwrite a concurrently confirmed payment
   assert.equal((await readState()).transactions.find((item) => item.id === order.id).status, 'SUCCEEDED');
 });
 
-test('unverified refund notifications do not change balance, access, or order state', async () => {
+test('unverified and mismatched refund notifications do not change an order', async () => {
   const { user, order } = await fixture('refund-fail-closed', { status: 'SUCCEEDED' });
-  let calls = 0;
-  global.fetch = async () => { calls++; throw new Error('No refund API was called'); };
-  const res = await notify('refund.succeeded', 'refund-id', { payment_id: order.externalPaymentId });
-  assert.equal(res.status, 503);
-  assert.equal(calls, 0);
+  global.fetch = async () => { throw new Error('provider offline'); };
+  let res = await notify('refund.succeeded', 'refund-id', { payment_id: order.externalPaymentId });
+  assert.equal(res.status, 400);
+  global.fetch = async (url, options) => {
+    assert.equal(url, 'https://api.yookassa.ru/v3/refunds/refund-id');
+    assert.equal(options.method, 'GET');
+    return { ok: true, status: 200, json: async () => ({
+      id: 'refund-id', payment_id: order.externalPaymentId, status: 'succeeded', amount: { value: '500.00', currency: 'RUB' },
+    }) };
+  };
+  res = await notify('refund.succeeded', 'refund-id', { payment_id: 'wrong-payment' });
+  assert.equal(res.status, 400);
   const state = await readState();
   assert.equal(state.transactions.find((item) => item.id === order.id).status, 'SUCCEEDED');
+  assert.equal(state.transactions.find((item) => item.id === order.id).externalRefundNotices, undefined);
   assert.equal(state.users.find((item) => item.id === user.id).balanceRub, 0);
+});
+
+test('only a succeeded, well-formed refund belonging to a local YooKassa order is recorded', async () => {
+  const { order } = await fixture('refund-validation', { status: 'SUCCEEDED' });
+  for (const [id, details, expectedStatus] of [
+    ['pending-refund', { status: 'pending' }, 200],
+    ['different-id', { id: 'not-the-requested-id' }, 400],
+    ['bad-amount', { amount: { value: 'garbage', currency: 'RUB' } }, 400],
+    ['unknown-order', { payment_id: 'missing-payment' }, 400],
+  ]) {
+    global.fetch = async () => ({ ok: true, status: 200, json: async () => ({
+      id, payment_id: order.externalPaymentId, status: 'succeeded', amount: { value: '100.00', currency: 'RUB' }, ...details,
+    }) });
+    const result = await notify('refund.succeeded', id);
+    assert.equal(result.status, expectedStatus);
+    if (id === 'pending-refund') assert.equal((await result.json()).ignored, true);
+  }
+  const state = await readState();
+  assert.equal(state.transactions.find((item) => item.id === order.id).externalRefundNotices, undefined);
+});
+
+test('verified partial refunds are recorded once for manual review, without automatic money or access changes', async () => {
+  const { user, prediction, order } = await fixture('refund-partial', { status: 'SUCCEEDED' });
+  await mutateState((state) => {
+    const buyer = state.users.find((item) => item.id === user.id);
+    buyer.balanceRub = 50;
+    buyer.purchasedPredictionIds.push(prediction.id);
+  });
+  global.fetch = async (url) => {
+    assert.equal(url, 'https://api.yookassa.ru/v3/refunds/refund-partial');
+    return { ok: true, status: 200, json: async () => ({
+      id: 'refund-partial', payment_id: order.externalPaymentId, status: 'succeeded', amount: { value: '100.00', currency: 'RUB' },
+    }) };
+  };
+  const responses = await Promise.all([
+    notify('refund.succeeded', 'refund-partial', { payment_id: order.externalPaymentId }),
+    notify('refund.succeeded', 'refund-partial', { payment_id: order.externalPaymentId }),
+  ]);
+  assert.ok(responses.every((response) => response.status === 200));
+  const state = await readState();
+  const recorded = state.transactions.find((item) => item.id === order.id);
+  const buyer = state.users.find((item) => item.id === user.id);
+  assert.equal(recorded.status, 'SUCCEEDED');
+  assert.equal(recorded.externalRefundNotices.length, 1);
+  assert.equal(recorded.externalRefundNotices[0].amountValue, '100.00');
+  assert.equal(buyer.balanceRub, 50);
+  assert.deepEqual(buyer.purchasedPredictionIds, [prediction.id]);
+  const { quoteBalanceRefund } = require('../src/lib/admin-finance-policy.ts');
+  assert.equal(quoteBalanceRefund(recorded).ok, false);
+  const duplicate = await notify('refund.succeeded', 'refund-partial', { payment_id: order.externalPaymentId });
+  assert.equal((await duplicate.json()).duplicate, true);
+});
+
+test('a later verified external refund is flagged even after a balance refund', async () => {
+  const { user, order } = await fixture('refund-conflict', {
+    status: 'REFUNDED', refundDestination: 'BALANCE', refundBalanceAmountRub: 500,
+  });
+  await mutateState((state) => { state.users.find((item) => item.id === user.id).balanceRub = 500; });
+  global.fetch = async () => ({ ok: true, status: 200, json: async () => ({
+    id: 'external-refund', payment_id: order.externalPaymentId, status: 'succeeded', amount: { value: '500.00', currency: 'RUB' },
+  }) });
+  const response = await notify('refund.succeeded', 'external-refund', { payment_id: order.externalPaymentId });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).reconciliationRequired, true);
+  const state = await readState();
+  const recorded = state.transactions.find((item) => item.id === order.id);
+  assert.equal(recorded.refundDestination, 'BALANCE');
+  assert.equal(recorded.externalRefundNotices[0].id, 'external-refund');
+  assert.equal(state.users.find((item) => item.id === user.id).balanceRub, 500);
 });

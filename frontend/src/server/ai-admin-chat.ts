@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isPaidPredictionSale, paidAtMs } from '../lib/admin-metrics';
 import {
   approveAiDraftToStorefront,
   broadcastDailyDigestToTelegram,
@@ -53,11 +54,12 @@ async function buildPlatformContextSnapshot() {
   const analytics = computePlatformAnalytics(state.predictions);
   const aiStats = computeAiPerformanceStats(state.predictions);
 
-  const paidOrders = state.transactions.filter((t) => t.status === 'SUCCEEDED');
+  const paidOrders = state.transactions.filter(isPaidPredictionSale);
   const totalRevenueRub = paidOrders.reduce((acc, t) => acc + t.amountRub, 0);
-  const dayAgo = Date.now() - 24 * 3600_000;
+  const now = Date.now();
+  const dayAgo = now - 24 * 3600_000;
   const revenue24hRub = paidOrders
-    .filter((t) => new Date(t.createdAt).getTime() >= dayAgo)
+    .filter((t) => paidAtMs(t) >= dayAgo && paidAtMs(t) <= now)
     .reduce((acc, t) => acc + t.amountRub, 0);
 
   const activePredictions = state.predictions
@@ -110,6 +112,8 @@ async function buildPlatformContextSnapshot() {
       totalRevenueRub,
       revenue24hRub,
       paidOrdersCount: paidOrders.length,
+      revenueBasis: 'Продажи прогнозов без пополнений, возвратов и заказов на сверке; страховка не вычтена. Это не денежный поток.',
+      externalRefundReviewCount: state.transactions.filter((order) => order.externalRefundNotices?.length).length,
       totalUsersCount: state.users.length,
       pendingPartnerPayoutsCount: state.payouts.filter(
         (p) => p.status === 'PENDING',
@@ -1085,7 +1089,8 @@ async function runDeterministicFallbackAssistant(
     executedActions,
     reply: [
       `Сводка по вашему сайту **${snap.brandAndSettings.brandName}** прямо сейчас:`,
-      `• Выручка всего: **${snap.financeAndUsers.totalRevenueRub.toLocaleString('ru-RU')} ₽** (за 24ч: ${snap.financeAndUsers.revenue24hRub.toLocaleString('ru-RU')} ₽, оплаченных заказов: ${snap.financeAndUsers.paidOrdersCount})`,
+      `• Продажи прогнозов: **${snap.financeAndUsers.totalRevenueRub.toLocaleString('ru-RU')} ₽** (за 24ч: ${snap.financeAndUsers.revenue24hRub.toLocaleString('ru-RU')} ₽, заказов: ${snap.financeAndUsers.paidOrdersCount}). Пополнения, возвраты и заказы на сверке исключены; страховка не вычтена. Это не денежный поток.`,
+      `• Возвратов ЮKassa на ручной сверке: **${snap.financeAndUsers.externalRefundReviewCount}**`,
       `• Активных прогнозов на витрине: **${snap.activePredictionsOnStorefront.length} шт.** · Черновиков ИИ: **${snap.autopilot.draftsInQueueCount} шт.**`,
       `• Режим ИИ-Автопилота: **${snap.autopilot.mode}** · Базовая цена: **${snap.brandAndSettings.defaultSinglePriceRub} ₽**`,
       `• Статистика сайта: **${snap.verifiedStats.wins} побед / ${snap.verifiedStats.losses} минусов** (${snap.verifiedStats.allTimeWinRatePct.toFixed(1)}%, прирост +${snap.verifiedStats.allTimeNetProfitPct.toFixed(1)}%)`,

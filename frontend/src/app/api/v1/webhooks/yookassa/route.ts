@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fulfillOrderPayment, mutateState, readState } from '@/server/database';
-import { verifyYooKassaLivePayment } from '@/server/integrations';
+import { verifyYooKassaLivePayment, verifyYooKassaLiveRefund } from '@/server/integrations';
 import { assertYooKassaPaymentMatchesOrder } from '@/server/payment-policy';
 
 export async function POST(req: NextRequest) {
@@ -25,8 +25,32 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ received: true, duplicate: true });
     }
     if (body.event === 'refund.succeeded') {
-      // Until the refund itself is authenticated and reconciled, never change money or access.
-      return NextResponse.json({ error: 'Возврат требует ручной сверки в ЮKassa.' }, { status: 503 });
+      // YooKassa supports partial refunds and refunds outside this application. Record only
+      // a verified notice; changing balances/access automatically could cause a double refund.
+      const refund = await verifyYooKassaLiveRefund(state.settings, objectId);
+      if (body.object.payment_id !== undefined && body.object.payment_id !== refund.paymentId) {
+        throw new Error('Платёж в уведомлении не совпадает с возвратом ЮKassa.');
+      }
+      if (refund.status !== 'succeeded') {
+        return NextResponse.json({ received: true, ignored: true });
+      }
+      await mutateState((draft) => {
+        const order = draft.transactions.find((item) =>
+          item.externalPaymentId === refund.paymentId && item.paymentMethod === 'yookassa',
+        );
+        if (!order) throw new Error('Заказ для возврата ЮKassa не найден; требуется ручная сверка.');
+        if (!Array.isArray(order.externalRefundNotices)) order.externalRefundNotices = [];
+        if (!order.externalRefundNotices.some((notice) => notice.id === refund.id)) {
+          order.externalRefundNotices.push({
+            id: refund.id,
+            amountValue: refund.amountValue,
+            currency: refund.currency,
+            verifiedAt: new Date().toISOString(),
+          });
+        }
+        if (!draft.processedWebhooks.includes(dedupKey)) draft.processedWebhooks.push(dedupKey);
+      });
+      return NextResponse.json({ received: true, reconciliationRequired: true });
     }
 
     const order = state.transactions.find((item) => item.externalPaymentId === objectId && item.paymentMethod === 'yookassa');

@@ -151,6 +151,50 @@ export async function verifyYooKassaLivePayment(
   };
 }
 
+export interface VerifiedYooKassaRefund {
+  id: string;
+  paymentId: string;
+  status: string;
+  amountValue: string;
+  currency: string;
+}
+
+/** Fetch the refund object itself with the shop credentials; webhook bodies are not proof. */
+export async function verifyYooKassaLiveRefund(
+  settings: PlatformSettings,
+  refundId: string,
+): Promise<VerifiedYooKassaRefund> {
+  const shopId = (settings.yookassaShopId || process.env.YOOKASSA_SHOP_ID || '').trim();
+  const secretKey = (settings.yookassaSecretKey || process.env.YOOKASSA_SECRET_KEY || '').trim();
+  if (!shopId || !secretKey) throw new Error('Ключи ЮKassa не настроены');
+
+  const auth = Buffer.from(`${shopId}:${secretKey}`).toString('base64');
+  const res = await fetch(`https://api.yookassa.ru/v3/refunds/${encodeURIComponent(refundId)}`, {
+    method: 'GET',
+    headers: { Authorization: `Basic ${auth}` },
+  });
+  if (!res.ok) throw new Error(`Не удалось проверить возврат в ЮKassa (${res.status})`);
+  const data = (await res.json()) as {
+    id?: unknown;
+    payment_id?: unknown;
+    status?: unknown;
+    amount?: { value?: unknown; currency?: unknown };
+  };
+  if (data?.id !== refundId || typeof data.payment_id !== 'string' || !data.payment_id ||
+      typeof data.status !== 'string' || typeof data.amount?.value !== 'string' ||
+      !/^\d{1,16}(?:\.\d{1,2})?$/.test(data.amount.value) || Number(data.amount.value) <= 0 ||
+      typeof data.amount?.currency !== 'string' || !/^[A-Z]{3}$/.test(data.amount.currency)) {
+    throw new Error('ЮKassa вернула неполные или некорректные данные возврата.');
+  }
+  return {
+    id: refundId,
+    paymentId: data.payment_id,
+    status: data.status,
+    amountValue: data.amount.value,
+    currency: data.amount.currency,
+  };
+}
+
 export async function sendTelegramChannelAnnouncement(
   settings: PlatformSettings,
   htmlText: string,

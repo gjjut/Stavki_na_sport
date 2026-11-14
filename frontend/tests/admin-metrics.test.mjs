@@ -19,6 +19,7 @@ test('sales exclude balance top-ups and refunds and use the local payment day', 
       { ...base, kind: 'BALANCE_TOPUP', amountRub: 1000 },
       { ...base, status: 'REFUNDED', amountRub: 200 },
       { ...base, paymentMethod: 'internal_balance', amountRub: 500 },
+      { ...base, amountRub: 700, externalRefundNotices: [{ id: 'refund', amountValue: '100.00', currency: 'RUB', verifiedAt: 'now' }] },
     ];
     assert.equal(isPaidPredictionSale(orders[1]), false);
     const points = buildPredictionSalesChart(orders, new Date('2026-11-12T01:00:00+07:00'), 2);
