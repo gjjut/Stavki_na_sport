@@ -9,10 +9,12 @@ import { usePublicPlatform } from '@/hooks/usePublicPlatform';
 import { trackMetrikaGoal } from '@/lib/metrika';
 import type { OrderTransaction } from '@/server/types';
 
+type PaymentReturnOrder = Pick<OrderTransaction, 'id' | 'title' | 'amountRub' | 'kind' | 'status'>;
+
 function PaymentReturnInner() {
   const searchParams = useSearchParams();
   const orderId = searchParams.get('orderId');
-  const [order, setOrder] = useState<OrderTransaction | null>(null);
+  const [order, setOrder] = useState<PaymentReturnOrder | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savedCreds, setSavedCreds] = useState<{
@@ -49,7 +51,7 @@ function PaymentReturnInner() {
           body: JSON.stringify({ orderId }),
         });
         const json = (await res.json()) as {
-          order?: OrderTransaction;
+          order?: PaymentReturnOrder;
           error?: string;
         };
         if (!res.ok || !json.order) {
@@ -179,11 +181,15 @@ function PaymentReturnInner() {
           <h1 className="mt-4 text-xl font-extrabold text-slate-950">
             Статус:{' '}
             {order.status === 'CANCELED'
-              ? 'Платеж отменен'
-              : 'Ожидает подтверждения'}
+              ? 'Платёж отменён'
+              : order.status === 'REFUNDED'
+                ? 'Возврат оформлен'
+                : 'Ожидает подтверждения'}
           </h1>
           <p className="mt-2 text-xs text-slate-500">
-            Если оплата прошла, событие появится в разделе «Мои прогнозы» в течение минуты.
+            {order.status === 'PENDING'
+              ? 'Если оплата прошла, проверьте статус заказа в кабинете немного позже.'
+              : 'Подробности заказа можно посмотреть в кабинете.'}
           </p>
           <Link
             href="/cabinet"

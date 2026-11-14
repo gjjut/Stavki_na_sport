@@ -17,6 +17,13 @@ global.fetch = async () => { throw new Error('Real network disabled in tests'); 
 const { registerUserAccount, createPredictionByAdmin, mutateState, readState, fulfillOrderPayment, verifyAndSyncOrderFromReturn } = require('../src/server/database.ts');
 const { assertYooKassaPaymentMatchesOrder } = require('../src/server/payment-policy.ts');
 const webhook = require('../src/app/api/v1/webhooks/yookassa/route.ts');
+const guards = require('../src/server/guards.ts');
+let returnViewer = null;
+guards.requireAuthenticatedUser = async () => {
+  if (!returnViewer) throw new Error('UNAUTHORIZED');
+  return returnViewer;
+};
+const returnRoute = require('../src/app/api/v1/billing/verify-return/route.ts');
 const { NextRequest } = require('next/server');
 
 after(() => {
@@ -76,6 +83,32 @@ function verified(order) {
   return { id: order.externalPaymentId, status: 'succeeded', paid: true,
     amountValue: `${order.amountRub}.00`, currency: 'RUB', metadata: { orderId: order.id, userId: order.userId } };
 }
+function checkReturn(orderId) {
+  return returnRoute.POST(new NextRequest('http://localhost/api/v1/billing/verify-return', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orderId }),
+  }));
+}
+
+test('payment return requires the order owner and returns only the fields used by the page', async () => {
+  const { user, prediction, order } = await fixture('return-privacy');
+  let calls = 0;
+  global.fetch = async () => { calls++; throw new Error('Must not contact provider'); };
+  returnViewer = null;
+  assert.equal((await checkReturn(order.id)).status, 401);
+  returnViewer = { id: 'another-user' };
+  assert.equal((await checkReturn(order.id)).status, 404);
+  assert.equal(calls, 0);
+  returnViewer = user;
+  mockPayment(order);
+  const response = await checkReturn(order.id);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(Object.keys(body.order).sort(), ['amountRub', 'id', 'kind', 'status', 'title']);
+  assert.equal(body.order.status, 'SUCCEEDED');
+  const state = await readState();
+  assert.deepEqual(state.users.find((u) => u.id === user.id).purchasedPredictionIds, [prediction.id]);
+  returnViewer = null;
+});
 
 test('verified payments must match the local ID, ruble amount, currency and metadata', () => {
   const order = { id: 'o', userId: 'u', externalPaymentId: 'p', paymentMethod: 'yookassa', amountRub: 500 };
