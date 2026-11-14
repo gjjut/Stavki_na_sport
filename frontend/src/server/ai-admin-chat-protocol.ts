@@ -33,6 +33,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * Проверяет, что глагол встречается как отдельное слово, а не как подстрока
+ * другого слова (например, «дай» внутри «создай» или «дайджест»).
+ */
+function containsStandaloneVerb(lower: string, verb: string): boolean {
+  const escaped = verb.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^а-яёa-z0-9])${escaped}(?:$|[^а-яёa-z0-9])`).test(lower);
+}
+
+function containsAnyStandaloneVerb(lower: string, verbs: string[]): boolean {
+  return verbs.some((verb) => containsStandaloneVerb(lower, verb));
+}
+
 export function parseStructuredAgentJson(
   raw: string,
 ): AgentLlmStructuredOutput | null {
@@ -335,7 +348,8 @@ export function isMatchCollectionIntent(userText: string): boolean {
   if (
     [
       'как ', 'почему ', 'что ', 'сколько ', 'какой ', 'какая ', 'какие ',
-      'где ', 'когда ', 'можно ', 'можно ли ', 'нужно ли ', 'есть ли ',
+      'где ', 'когда ', 'можно ', 'можно ли ', 'нужно ли ', 'нужен ли ',
+      'нужны ли ', 'есть ли ',
       'могу ли ', 'можешь ли ', 'можете ли ', 'можешь ', 'можете ',
       'сможешь ли ', 'сможете ли ', 'сможешь ', 'сможете ', 'могу ',
       'стоит ли ', 'надо ли ', 'покажи ', 'список ', 'статус ',
@@ -343,6 +357,8 @@ export function isMatchCollectionIntent(userText: string): boolean {
     lower.includes(' можно ли ') ||
     lower.includes(' можно ') ||
     lower.includes(' нужно ли ') ||
+    lower.includes(' нужен ли ') ||
+    lower.includes(' нужны ли ') ||
     lower.includes(' есть ли ') ||
     lower.includes(' можешь ли ') ||
     lower.includes(' могу ли ') ||
@@ -357,14 +373,28 @@ export function isMatchCollectionIntent(userText: string): boolean {
       'не надо создавать',
       'не надо собирать', 'не нужно собирать', 'не подбери', 'не подберите',
       'не подобрать', 'не подбирай', 'не надо подбирать', 'не нужно подбирать',
+      'не дай', 'не давай', 'не давайте', 'не делай', 'не делайте',
+      'не придумывай', 'не придумывайте', 'не готовь', 'не готовьте',
+      'не нужен', 'не нужны', 'не нужно подбирать', 'не надо подбирать',
+      'не хочу',
     ].some((negativeCommand) => lower.includes(negativeCommand))
   ) {
     return false;
   }
-  const hasCollectionVerb = [
+  const hasCollectionVerb = containsAnyStandaloneVerb(lower, [
     'собери', 'соберите', 'собрать', 'собирай',
-    'подбери', 'подберите', 'подобрать',
-  ].some((verb) => lower.includes(verb));
+    'подбери', 'подберите', 'подобрать', 'подбирай',
+    'дай', 'давай', 'давайте',
+    'сделай', 'сделайте', 'сделать',
+    'придумай', 'придумайте', 'придумать',
+    'подготовь', 'подготовьте', 'подготовить',
+    'нужен', 'нужны', 'нужно',
+    'хочу',
+  ]);
+  const hasNewPredictionPhrase = [
+    'новый прогноз', 'новые прогнозы', 'новый матч', 'новые матчи',
+    'свежий прогноз', 'свежие прогнозы', 'свежий матч', 'свежие матчи',
+  ].some((phrase) => lower.includes(phrase));
   const hasPublicationVerb = [
     'выложи', 'выложите', 'выложить',
     'выпусти', 'выпустите', 'выпустить',
@@ -378,16 +408,16 @@ export function isMatchCollectionIntent(userText: string): boolean {
     'запустить публикац', 'начни публикац', 'начать публикац',
   ].some((phrase) => lower.includes(phrase));
   const hasPositiveCollectionIntent =
-    hasCollectionVerb || hasPublicationVerb || startsCollectionFlow;
+    hasCollectionVerb || hasPublicationVerb || startsCollectionFlow || hasNewPredictionPhrase;
   const mentionsMatches = lower.includes('матч') || lower.includes('прогноз');
 
-  if (isDraftOnlyMatchCollectionIntent(userText) && !hasCollectionVerb) return false;
+  if (isDraftOnlyMatchCollectionIntent(userText) && !hasCollectionVerb && !hasNewPredictionPhrase) return false;
   return hasPositiveCollectionIntent && mentionsMatches;
 }
 
 function hasExplicitNegatedMutation(userText: string): boolean {
   const lower = userText.toLowerCase().replace(/ё/g, 'е').trim();
-  return /(?:^|[\s,;:])не(?:\s+(?:надо|нужно|следует|стоит))?\s+(?:созда|удал|измен|меня|поменя|установ|постав|сдела|добав|отправ|опублику|опубликов|публику|публиков|выпусти|выпуск|вылож|размещ|включ|выключ|запусти|запуск|начни|начин|настро|одобр|утвержд|начисл|подари|переключ|обнов|провед|свер|рассчита|собира|подбира)/.test(
+  return /(?:^|[\s,;:])не(?:\s+(?:надо|нужно|следует|стоит))?\s+(?:созда|удал|измен|меня|поменя|установ|постав|сдела|добав|отправ|опублику|опубликов|публику|публиков|выпусти|выпуск|вылож|размещ|включ|выключ|запусти|запуск|начни|начин|настро|одобр|утвержд|начисл|подари|переключ|обнов|провед|свер|рассчита|собира|подбира|дай|давай|придума|подготов)/.test(
     lower,
   );
 }
@@ -418,7 +448,7 @@ export function isAdminMutationIntent(userText: string): boolean {
   ) {
     return false;
   }
-  return [
+  return containsAnyStandaloneVerb(lower, [
     'создай', 'создайте', 'создать',
     'удали', 'удалите', 'удалить',
     'измени', 'измените', 'изменить',
@@ -448,7 +478,10 @@ export function isAdminMutationIntent(userText: string): boolean {
     'рассчитай', 'рассчитайте', 'рассчитать',
     'собери', 'соберите', 'собрать',
     'подбери', 'подберите', 'подобрать',
-  ].some((verb) => lower.includes(verb));
+    'дай', 'давай', 'давайте',
+    'придумай', 'придумайте', 'придумать',
+    'подготовь', 'подготовьте', 'подготовить',
+  ]);
 }
 
 export function resolveAdminAgentActions(

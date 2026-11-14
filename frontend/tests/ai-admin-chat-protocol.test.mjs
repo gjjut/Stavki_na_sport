@@ -233,3 +233,67 @@ test('zero-result draft scans say no draft was created and no publication occurr
   assert.match(summary, /автоматической публикации на витрину не было/);
   assert.match(summary, /новых прогнозов не создано/);
 });
+
+test('natural "give me a prediction" phrasings are collection intents', () => {
+  const collectionPhrases = [
+    'дай новый прогноз',
+    'дай прогноз',
+    'дай прогнозы на сегодня',
+    'дай 3 прогноза',
+    'дай матч',
+    'нужен новый прогноз',
+    'нужны прогнозы на сегодня',
+    'хочу новый прогноз',
+    'сделай прогноз',
+    'придумай прогноз',
+    'подготовь прогнозы на вечер',
+    'новый прогноз',
+    'свежие прогнозы',
+  ];
+  for (const phrase of collectionPhrases) {
+    assert.equal(isMatchCollectionIntent(phrase), true, phrase);
+  }
+});
+
+test('model scan action for "дай новый прогноз" executes without rejection', () => {
+  const result = resolveAdminAgentActions(
+    {
+      actions: [
+        { tool: 'scan_and_publish_matches', args: { count: 3, publishImmediately: true } },
+      ],
+      reply: 'Запускаю сбор прогнозов.',
+    },
+    'дай новый прогноз',
+  );
+
+  assert.equal(result.collectionIntent, true);
+  assert.equal(result.invalidActionCount, 0);
+  assert.equal(result.shouldRunCollectionFallback, false);
+  assert.deepEqual(result.actionsToExecute, [
+    { tool: 'scan_and_publish_matches', args: { count: 3, publishImmediately: true } },
+  ]);
+});
+
+test('questions and negations stay out of collection and mutation intents', () => {
+  const nonCollection = [
+    'какой прогноз на сегодня?',
+    'что по прогнозам?',
+    'можно прогноз?',
+    'покажи прогнозы',
+    'не собирай прогнозы',
+    'не дай прогноз',
+    'не нужно собирать прогнозы',
+    'сколько прогнозов опубликовано?',
+    'нужен ли прогноз?',
+    'дай статистику',
+    'не хочу прогноз',
+  ];
+  for (const phrase of nonCollection) {
+    assert.equal(isMatchCollectionIntent(phrase), false, phrase);
+  }
+  assert.equal(isAdminMutationIntent('дай сводку в телеграм'), true);
+  assert.equal(isAdminMutationIntent('не дай сводку в телеграм'), false);
+  assert.equal(isMatchCollectionIntent('Создай прогноз на матч A — B'), false);
+  assert.equal(isMatchCollectionIntent('Собери прогнозы, но не нужно публиковать'), true);
+  assert.equal(isDraftOnlyMatchCollectionIntent('Собери прогнозы, но не нужно публиковать'), true);
+});
