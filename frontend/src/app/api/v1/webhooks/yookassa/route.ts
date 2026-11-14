@@ -1,69 +1,59 @@
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  fulfillOrderPayment,
-  mutateState,
-  readState,
-  refundOrderTransaction,
-} from '@/server/database';
+import { fulfillOrderPayment, mutateState, readState } from '@/server/database';
 import { verifyYooKassaLivePayment } from '@/server/integrations';
+import { assertYooKassaPaymentMatchesOrder } from '@/server/payment-policy';
 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as {
-      event?: 'payment.succeeded' | 'payment.canceled' | 'refund.succeeded';
-      object?: { id?: string; payment_id?: string };
+      event?: unknown;
+      object?: { id?: unknown; payment_id?: unknown };
     };
-
-    if (!body?.event || !body?.object?.id) {
+    if ((body?.event !== 'payment.succeeded' && body?.event !== 'payment.canceled' &&
+         body?.event !== 'refund.succeeded') || typeof body.object?.id !== 'string' || !body.object.id.trim()) {
       return NextResponse.json({ error: 'Некорректное тело уведомления' }, { status: 400 });
     }
 
     const objectId = body.object.id;
     const dedupKey = `${body.event}:${objectId}`;
     const state = await readState();
-
+    // Test-mode checkouts are completed locally. A public webhook must never simulate a payment.
+    if (state.settings.paymentMode !== 'YOOKASSA_LIVE') {
+      return NextResponse.json({ error: 'Уведомления ЮKassa недоступны в тестовом режиме.' }, { status: 503 });
+    }
     if (state.processedWebhooks.includes(dedupKey)) {
       return NextResponse.json({ received: true, duplicate: true });
     }
+    if (body.event === 'refund.succeeded') {
+      // Until the refund itself is authenticated and reconciled, never change money or access.
+      return NextResponse.json({ error: 'Возврат требует ручной сверки в ЮKassa.' }, { status: 503 });
+    }
 
-    const isLive = state.settings.paymentMode === 'YOOKASSA_LIVE';
+    const order = state.transactions.find((item) => item.externalPaymentId === objectId && item.paymentMethod === 'yookassa');
+    if (!order) throw new Error('Заказ для платежа ЮKassa не найден.');
+    const verified = await verifyYooKassaLivePayment(state.settings, objectId);
+    assertYooKassaPaymentMatchesOrder(order, verified);
 
     if (body.event === 'payment.succeeded') {
-      if (isLive) {
-        const verified = await verifyYooKassaLivePayment(state.settings, objectId);
-        if (verified.status !== 'succeeded' || !verified.paid) {
-          return NextResponse.json({ received: true, ignored: true });
-        }
+      if (verified.status !== 'succeeded' || !verified.paid) {
+        return NextResponse.json({ received: true, ignored: true });
       }
-      await fulfillOrderPayment(objectId);
-    } else if (body.event === 'payment.canceled') {
-      if (isLive) {
-        const verified = await verifyYooKassaLivePayment(state.settings, objectId);
-        if (verified.status !== 'canceled') {
-          return NextResponse.json({ received: true, ignored: true });
-        }
+      await fulfillOrderPayment(order.id, verified);
+    } else {
+      if (verified.status !== 'canceled' || verified.paid) {
+        return NextResponse.json({ received: true, ignored: true });
       }
       await mutateState((draft) => {
-        const tx = draft.transactions.find((t) => t.externalPaymentId === objectId);
-        if (tx && tx.status === 'PENDING') {
-          tx.status = 'CANCELED';
-        }
+        const current = draft.transactions.find((item) => item.id === order.id);
+        if (!current) throw new Error('Заказ не найден.');
+        assertYooKassaPaymentMatchesOrder(current, verified);
+        if (current.status === 'PENDING') current.status = 'CANCELED';
       });
-    } else if (body.event === 'refund.succeeded') {
-      const targetId = body.object.payment_id || objectId;
-      if (isLive && body.object.payment_id) {
-        // Проверяем, что исходный платеж действительно существует в ЮKassa магазина
-        await verifyYooKassaLivePayment(state.settings, body.object.payment_id);
-      }
-      await refundOrderTransaction(targetId);
     }
 
     await mutateState((draft) => {
-      if (!draft.processedWebhooks.includes(dedupKey)) {
-        draft.processedWebhooks.push(dedupKey);
-      }
+      if (!draft.processedWebhooks.includes(dedupKey)) draft.processedWebhooks.push(dedupKey);
     });
-
     return NextResponse.json({ received: true });
   } catch (err) {
     return NextResponse.json(

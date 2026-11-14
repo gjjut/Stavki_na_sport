@@ -1,4 +1,5 @@
 import type { PlatformSettings } from './types';
+import type { VerifiedYooKassaPayment } from './payment-policy';
 
 export interface YooKassaCreatePaymentArgs {
   settings: PlatformSettings;
@@ -102,7 +103,7 @@ export async function createYooKassaLivePayment(
 export async function verifyYooKassaLivePayment(
   settings: PlatformSettings,
   externalPaymentId: string,
-): Promise<{ status: string; paid: boolean; amountValue: string }> {
+): Promise<VerifiedYooKassaPayment> {
   const shopId = (settings.yookassaShopId || process.env.YOOKASSA_SHOP_ID || '').trim();
   const secretKey = (
     settings.yookassaSecretKey ||
@@ -128,15 +129,25 @@ export async function verifyYooKassaLivePayment(
   }
 
   const data = (await res.json()) as {
-    status: string;
-    paid: boolean;
-    amount: { value: string };
+    id?: unknown;
+    status?: unknown;
+    paid?: unknown;
+    amount?: { value?: unknown; currency?: unknown };
+    metadata?: { orderId?: unknown; userId?: unknown };
   };
+  if (typeof data.id !== 'string' || typeof data.status !== 'string' ||
+      typeof data.paid !== 'boolean' || typeof data.amount?.value !== 'string' ||
+      typeof data.amount?.currency !== 'string' || !data.metadata || typeof data.metadata !== 'object') {
+    throw new Error('ЮKassa вернула неполные данные платежа; требуется ручная проверка.');
+  }
 
   return {
+    id: data.id,
     status: data.status,
-    paid: Boolean(data.paid),
+    paid: data.paid,
     amountValue: data.amount.value,
+    currency: data.amount.currency,
+    metadata: data.metadata,
   };
 }
 

@@ -16,6 +16,7 @@ import {
 import { evaluateMarketByScore } from './market-settlement';
 import { withoutLegacyStarterDemoPredictions } from './prediction-data-policy';
 import { assertPredictionsExistForOrder, validatePredictionForPublication } from './admin-prediction-policy';
+import { assertYooKassaPaymentMatchesOrder, type VerifiedYooKassaPayment } from './payment-policy';
 import {
   createYooKassaLivePayment,
   sendTelegramChannelAnnouncement,
@@ -1379,12 +1380,22 @@ export async function initiateOrderCheckout(params: {
 
 export async function fulfillOrderPayment(
   orderIdOrExternalId: string,
+  verifiedPayment?: VerifiedYooKassaPayment,
 ): Promise<OrderTransaction> {
   const result = await mutateState((state) => {
     const tx = state.transactions.find(
       (t) => t.id === orderIdOrExternalId || t.externalPaymentId === orderIdOrExternalId,
     );
     if (!tx) throw new Error('Заказ не найден');
+    // Verify again under the state lock: the order may have changed during the network request.
+    if (verifiedPayment) {
+      assertYooKassaPaymentMatchesOrder(tx, verifiedPayment);
+      if (verifiedPayment.status !== 'succeeded' || !verifiedPayment.paid) {
+        throw new Error('Оплата не подтверждена ЮKassa.');
+      }
+    } else if (tx.paymentMethod === 'yookassa' && state.settings.paymentMode === 'YOOKASSA_LIVE') {
+      throw new Error('Для подтверждения платежа требуется проверка ЮKassa.');
+    }
     if (tx.status === 'SUCCEEDED') {
       return {
         tx,
@@ -1393,6 +1404,9 @@ export async function fulfillOrderPayment(
         unlockedPreds: [] as PredictionRecord[],
         settings: state.settings,
       };
+    }
+    if (tx.status !== 'PENDING') {
+      throw new Error('Заказ уже отменён или возвращён; требуется ручная сверка платежа.');
     }
 
     const buyer = state.users.find((u) => u.id === tx.userId);
@@ -1548,55 +1562,29 @@ export async function verifyAndSyncOrderFromReturn(
   const tx = state.transactions.find((t) => t.id === orderId);
   if (!tx) throw new Error('Заказ не найден');
 
-  if (tx.status === 'SUCCEEDED') return tx;
+  if (tx.status !== 'PENDING') return tx;
 
   if (
     tx.paymentMethod === 'yookassa' &&
     state.settings.paymentMode === 'YOOKASSA_LIVE'
   ) {
     const check = await verifyYooKassaLivePayment(state.settings, tx.externalPaymentId);
+    assertYooKassaPaymentMatchesOrder(tx, check);
     if (check.status === 'succeeded' && check.paid) {
-      return fulfillOrderPayment(tx.id);
+      return fulfillOrderPayment(tx.id, check);
     }
-    if (check.status === 'canceled') {
+    if (check.status === 'canceled' && !check.paid) {
       return mutateState((draft) => {
         const found = draft.transactions.find((r) => r.id === tx.id);
         if (!found) throw new Error('Заказ не найден');
-        found.status = 'CANCELED';
+        assertYooKassaPaymentMatchesOrder(found, check);
+        if (found.status === 'PENDING') found.status = 'CANCELED';
         return found;
       });
     }
   }
 
   return tx;
-}
-
-export async function refundOrderTransaction(orderIdOrExternal: string): Promise<void> {
-  await mutateState((state) => {
-    const tx = state.transactions.find(
-      (t) => t.id === orderIdOrExternal || t.externalPaymentId === orderIdOrExternal,
-    );
-    if (!tx || tx.status === 'REFUNDED') return;
-    tx.status = 'REFUNDED';
-
-    const buyer = state.users.find((u) => u.id === tx.userId);
-    if (!buyer) return;
-
-    if (tx.paymentMethod === 'internal_balance') {
-      buyer.balanceRub += tx.amountRub;
-    }
-
-    const revokeIds = tx.predictionIds.length
-      ? tx.predictionIds
-      : tx.predictionId
-        ? [tx.predictionId]
-        : [];
-    if (revokeIds.length) {
-      buyer.purchasedPredictionIds = buyer.purchasedPredictionIds.filter(
-        (pid) => !revokeIds.includes(pid),
-      );
-    }
-  });
 }
 
 export async function createPredictionByAdmin(input: {
