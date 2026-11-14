@@ -3,28 +3,65 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
+}
+
+html {
+  scroll-padding-top: 5rem;
 }
 
 body {
-  @apply bg-slate-950 text-slate-100 antialiased selection:bg-emerald-500/30 selection:text-emerald-200;
+  background-color: #f4f6fa;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
-/* Custom subtle scrollbar */
+/* Тонкая редакционная сетка и глубокое свечение для темных шапок (#0B0F19) */
+.hero-surface {
+  background-color: #0b0f19;
+  background-image:
+    radial-gradient(ellipse 65% 55% at 78% 18%, rgba(37, 99, 235, 0.22), transparent 70%),
+    radial-gradient(ellipse 50% 50% at 12% 88%, rgba(16, 185, 129, 0.1), transparent 70%),
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 36px 36px, 36px 36px;
+}
+
+/* Скрытие полосы прокрутки для удобных мобильных свайп-лент */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Безопасный нижний отступ под индикатор iPhone / Telegram WebView */
+.pb-safe-bottom {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+::selection {
+  background-color: rgba(37, 99, 235, 0.16);
+  color: #1e3a8a;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #020617;
+  background: #edf0f6;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: #cbd5e1;
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: #94a3b8;
 }

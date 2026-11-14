@@ -1,6 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  poweredByHeader: false,
+  experimental: {
+    instrumentationHook: true,
+  },
   async headers() {
     return [
       {
@@ -9,6 +13,18 @@ const nextConfig = {
           {
             key: 'Content-Security-Policy',
             value: 'frame-ancestors *',
+          },
+          {
+            key: 'X-Content-Type-Options',
+            value: 'nosniff',
+          },
+          {
+            key: 'Referrer-Policy',
+            value: 'strict-origin-when-cross-origin',
+          },
+          {
+            key: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=()',
           },
         ],
       },
