@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { mutateState } from '@/server/database';
+import { mutateState, StorageUnavailableError } from '@/server/database';
 import { applyAdminBalanceRefund, applyPayoutDecision } from '@/lib/admin-finance-policy';
 import { requireAdminAccount } from '@/server/guards';
 
@@ -105,7 +105,7 @@ export async function PATCH(req: NextRequest) {
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка финансового модуля' },
-      { status: 400 },
+      { status: err instanceof StorageUnavailableError ? 503 : 400 },
     );
   }
 }

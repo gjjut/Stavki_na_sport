@@ -7,7 +7,7 @@ import { Badge, SectionCard } from './ui';
 
 type Health = {
   status: 'ok' | 'degraded' | 'error';
-  storage?: 'postgres' | 'local_file';
+  storage?: 'postgres' | 'local_file' | 'unavailable';
   storageDegraded?: boolean;
   sessionAuthConfigured?: boolean;
   adminAccountConfigured?: boolean;
@@ -59,7 +59,7 @@ export function SystemHealth() {
               {health.timestamp && <span className="text-[11px] text-slate-400">Проверено: <LocalDateTime value={health.timestamp} format="full" /></span>}
             </div>
             <div className="grid gap-2 text-slate-600 sm:grid-cols-2">
-              <span>Хранилище: <strong>{health.storage === 'postgres' ? 'PostgreSQL' : health.storage === 'local_file' ? 'локальный файл' : 'нет данных'}</strong>{health.storageDegraded ? ' · ошибка конфигурации' : ''}</span>
+              <span>Хранилище: <strong>{health.storage === 'postgres' ? 'PostgreSQL' : health.storage === 'local_file' ? 'локальный файл' : health.storage === 'unavailable' ? 'недоступно' : 'нет данных'}</strong>{health.storageDegraded ? health.storage === 'unavailable' ? ' · операции приостановлены' : ' · ошибка конфигурации' : ''}</span>
               <span>Подпись сессий: <strong>{stateLabel(health.sessionAuthConfigured, 'настроена', 'не настроена')}</strong></span>
               <span>Администратор: <strong>{stateLabel(health.adminAccountConfigured, 'активен', 'не найден')}</strong></span>
               <span>Секрет расписания: <strong>{stateLabel(health.cronAuthConfigured, 'настроен', 'не настроен')}</strong></span>

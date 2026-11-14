@@ -170,8 +170,19 @@ export function PredictionsTab({
           const res = await fetch(`/api/v1/admin/predictions?id=${encodeURIComponent(id)}`, {
             method: 'DELETE',
           });
-          if (res.ok) deletedIds.add(id);
-          else addIssue(id, await responseError(res, 'Не удалось удалить событие'));
+          if (res.ok) {
+            deletedIds.add(id);
+          } else {
+            const message = await responseError(res, 'Не удалось удалить событие');
+            if (res.status >= 500) {
+              addIssue(id, `${message} Результат не подтверждён — проверьте событие перед повтором.`);
+              ids.slice(index + 1).forEach((remainingId) =>
+                addIssue(remainingId, 'Запрос не отправлен: пакет остановлен после ошибки сервера.'),
+              );
+              break;
+            }
+            addIssue(id, message);
+          }
         } catch {
           addIssue(id, unknownResultMessage);
           ids.slice(index + 1).forEach((remainingId) =>
@@ -246,6 +257,7 @@ export function PredictionsTab({
       });
       if (!res.ok) {
         onToast(await responseError(res, 'Не удалось изменить цену'), 'error');
+        if (res.status >= 500) await refreshAfterAction();
         return;
       }
       setPriceEdit(null);
@@ -274,6 +286,7 @@ export function PredictionsTab({
       });
       if (!res.ok) {
         onToast(await responseError(res, 'Не удалось изменить страховку'), 'error');
+        if (res.status >= 500) await refreshAfterAction();
         return;
       }
       onToast(
@@ -300,6 +313,7 @@ export function PredictionsTab({
       });
       if (!res.ok) {
         onToast(await responseError(res, 'Не удалось удалить событие'), 'error');
+        if (res.status >= 500) await refreshAfterAction();
         return;
       }
       setSelectedIds((current) => {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fulfillOrderPayment, mutateState, readState } from '@/server/database';
+import { fulfillOrderPayment, mutateState, readState, StorageUnavailableError } from '@/server/database';
 import { verifyYooKassaLivePayment, verifyYooKassaLiveRefund } from '@/server/integrations';
 import { assertYooKassaPaymentMatchesOrder } from '@/server/payment-policy';
 
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка обработки уведомления' },
-      { status: 400 },
+      { status: err instanceof StorageUnavailableError ? 503 : 400 },
     );
   }
 }

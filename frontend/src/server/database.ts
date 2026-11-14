@@ -544,85 +544,126 @@ function normalizeLoadedState(
 }
 
 let pgPool: Pool | null = null;
+let pgPoolInit: Promise<Pool | null> | null = null;
 let pgLastFailAt = 0;
 let memoryFallback: PersistentState | null = null;
 let localWriteQueue: Promise<unknown> = Promise.resolve();
 
 async function getPostgresPool(): Promise<Pool | null> {
   const dbUrl = process.env.DATABASE_URL?.trim();
-  if (!dbUrl) {
-    return null;
-  }
-
+  if (!dbUrl) return null;
   if (pgPool) return pgPool;
+  if (pgPoolInit) return pgPoolInit;
 
-  // Если при старте системы PostgreSQL еще поднимался, пробуем переподключиться раз в 10 секунд
-  if (pgLastFailAt > 0 && Date.now() - pgLastFailAt < 10_000) {
-    return null;
-  }
+  // Если при старте системы PostgreSQL еще поднимался, пробуем переподключиться раз в 10 секунд.
+  if (pgLastFailAt > 0 && Date.now() - pgLastFailAt < 10_000) return null;
 
-  try {
-    const pool = new Pool({
-      connectionString: dbUrl,
-      connectionTimeoutMillis: 3000,
-      idleTimeoutMillis: 30_000,
-      max: 8,
-    });
-    pool.on('error', () => {
-      pgPool = null;
+  // Concurrent requests share one connection attempt rather than creating multiple pools.
+  const init = (async (): Promise<Pool | null> => {
+    let pool: Pool | null = null;
+    try {
+      const candidate = new Pool({
+        connectionString: dbUrl,
+        connectionTimeoutMillis: 3000,
+        idleTimeoutMillis: 30_000,
+        max: 8,
+      });
+      pool = candidate;
+      candidate.on('error', () => {
+        if (pgPool === candidate) {
+          pgPool = null;
+          pgLastFailAt = Date.now();
+        }
+        void candidate.end().catch(() => undefined);
+      });
+      await candidate.query(`
+        CREATE TABLE IF NOT EXISTS valuex_app_storage (
+          store_key VARCHAR(64) PRIMARY KEY,
+          payload JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
+      pgPool = candidate;
+      pgLastFailAt = 0;
+      return candidate;
+    } catch {
+      if (pool) await pool.end().catch(() => undefined);
       pgLastFailAt = Date.now();
-    });
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS valuex_app_storage (
-        store_key VARCHAR(64) PRIMARY KEY,
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-    pgPool = pool;
-    pgLastFailAt = 0;
-    return pool;
+      return null;
+    }
+  })();
+  pgPoolInit = init;
+  try {
+    return await init;
+  } finally {
+    if (pgPoolInit === init) pgPoolInit = null;
+  }
+}
+
+export class StorageUnavailableError extends Error {
+  constructor(message = 'Хранилище временно недоступно. Проверьте результат операции перед повтором.') {
+    super(message);
+    this.name = 'StorageUnavailableError';
+  }
+}
+
+async function postgresOperation<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
   } catch {
-    pgLastFailAt = Date.now();
-    return null;
+    // SQL/connection details, including credentials, must not reach API clients.
+    throw new StorageUnavailableError();
   }
 }
 
 export async function getDatabaseBackendStatus(): Promise<{
-  backend: 'postgres' | 'local_file';
+  backend: 'postgres' | 'local_file' | 'unavailable';
   databaseUrlConfigured: boolean;
   usingLocalFallback: boolean;
 }> {
   const databaseUrlConfigured = Boolean(process.env.DATABASE_URL?.trim());
   const pool = await getPostgresPool();
-  const backend = pool ? 'postgres' : 'local_file';
   return {
-    backend,
+    backend: pool ? 'postgres' : databaseUrlConfigured ? 'unavailable' : 'local_file',
     databaseUrlConfigured,
-    usingLocalFallback: databaseUrlConfigured && !pool,
+    usingLocalFallback: false,
   };
 }
 
 function readLocalFileState(): PersistentState {
   if (memoryFallback) return memoryFallback;
+  let contents: string;
   try {
-    if (fs.existsSync(LOCAL_DB_FILE)) {
-      const parsed = normalizeLoadedState(
-        JSON.parse(fs.readFileSync(LOCAL_DB_FILE, 'utf8')),
-      );
-      memoryFallback = parsed;
-      return parsed;
+    contents = fs.readFileSync(LOCAL_DB_FILE, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new StorageUnavailableError('Не удалось прочитать локальную базу. Проверьте файл и резервную копию.');
     }
-  } catch {
-    // create fresh seed
+    const initial = createInitialState();
+    writeLocalFileState(initial);
+    return initial;
   }
-  const initial = createInitialState();
-  writeLocalFileState(initial);
-  return initial;
+
+  try {
+    const raw: unknown = JSON.parse(contents);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid state');
+    const fields = raw as Record<string, unknown>;
+    // These core collections exist in both current and legacy snapshots. Missing them
+    // must not silently turn a truncated but syntactically valid JSON file into a seed.
+    if (!fields.settings || typeof fields.settings !== 'object' || Array.isArray(fields.settings) ||
+        !Array.isArray(fields.users) || !Array.isArray(fields.predictions) || !Array.isArray(fields.transactions)) {
+      throw new Error('Incomplete state');
+    }
+    const parsed = normalizeLoadedState(fields);
+    memoryFallback = parsed;
+    return parsed;
+  } catch {
+    // Never replace an unreadable or invalid file with a new empty seed.
+    throw new StorageUnavailableError('Локальная база повреждена. Файл не изменён; проверьте резервную копию.');
+  }
 }
 
 function writeLocalFileState(state: PersistentState): void {
-  memoryFallback = state;
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -630,34 +671,46 @@ function writeLocalFileState(state: PersistentState): void {
     const tmp = `${LOCAL_DB_FILE}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
     fs.renameSync(tmp, LOCAL_DB_FILE);
+    memoryFallback = state;
   } catch {
-    // in-memory fallback
+    throw new StorageUnavailableError('Не удалось сохранить локальную базу. Проверьте результат операции перед повтором.');
   }
 }
 
 export async function readState(): Promise<PersistentState> {
   const pool = await getPostgresPool();
   if (!pool) {
+    // A configured PostgreSQL is authoritative; never serve a divergent local file.
+    if (process.env.DATABASE_URL?.trim()) throw new StorageUnavailableError();
     return readLocalFileState();
   }
 
-  const res = await pool.query<{ payload: PersistentState }>(
-    `SELECT payload FROM valuex_app_storage WHERE store_key = 'main'`,
-  );
-  if (res.rows.length > 0) {
-    return normalizeLoadedState(
-      res.rows[0].payload as unknown as Record<string, unknown>,
+  return postgresOperation(async () => {
+    const res = await pool.query<{ payload: PersistentState }>(
+      `SELECT payload FROM valuex_app_storage WHERE store_key = 'main'`,
     );
-  }
+    if (res.rows.length > 0) {
+      return normalizeLoadedState(
+        res.rows[0].payload as unknown as Record<string, unknown>,
+      );
+    }
 
-  const seeded = createInitialState();
-  await pool.query(
-    `INSERT INTO valuex_app_storage (store_key, payload, updated_at)
-     VALUES ('main', $1::jsonb, NOW())
-     ON CONFLICT (store_key) DO NOTHING`,
-    [JSON.stringify(seeded)],
-  );
-  return seeded;
+    const seeded = createInitialState();
+    const inserted = await pool.query<{ payload: PersistentState }>(
+      `INSERT INTO valuex_app_storage (store_key, payload, updated_at)
+       VALUES ('main', $1::jsonb, NOW())
+       ON CONFLICT (store_key) DO NOTHING
+       RETURNING payload`,
+      [JSON.stringify(seeded)],
+    );
+    if (inserted.rows.length) return seeded;
+    // Another request initialized the row first; read its state instead of returning our unused seed.
+    const current = await pool.query<{ payload: PersistentState }>(
+      `SELECT payload FROM valuex_app_storage WHERE store_key = 'main'`,
+    );
+    if (!current.rows.length) throw new Error('PostgreSQL state is missing');
+    return normalizeLoadedState(current.rows[0].payload as unknown as Record<string, unknown>);
+  });
 }
 
 export async function mutateState<T>(
@@ -665,7 +718,8 @@ export async function mutateState<T>(
 ): Promise<T> {
   const pool = await getPostgresPool();
   if (!pool) {
-    // Строгая очередь записи, исключающая гонки при параллельных запросах
+    if (process.env.DATABASE_URL?.trim()) throw new StorageUnavailableError();
+    // Строгая очередь записи, исключающая гонки при параллельных запросах в одном процессе.
     const runTask = localWriteQueue.then(async () => {
       const state = readLocalFileState();
       const cloned = structuredClone(state);
@@ -679,19 +733,19 @@ export async function mutateState<T>(
     return runTask;
   }
 
-  const client = await pool.connect();
+  const client = await postgresOperation(() => pool.connect());
   try {
-    await client.query('BEGIN');
-    let res = await client.query<{ payload: PersistentState }>(
+    await postgresOperation(() => client.query('BEGIN'));
+    let res = await postgresOperation(() => client.query<{ payload: PersistentState }>(
       `SELECT payload FROM valuex_app_storage WHERE store_key = 'main' FOR UPDATE`,
-    );
+    ));
     if (res.rows.length === 0) {
       const seeded = createInitialState();
-      await client.query(
+      await postgresOperation(() => client.query(
         `INSERT INTO valuex_app_storage (store_key, payload, updated_at)
          VALUES ('main', $1::jsonb, NOW())`,
         [JSON.stringify(seeded)],
-      );
+      ));
       res = { rows: [{ payload: seeded }] } as typeof res;
     }
 
@@ -702,14 +756,15 @@ export async function mutateState<T>(
     draft.processedWebhooks = draft.processedWebhooks.slice(-1000);
     draft.aiLogs = draft.aiLogs.slice(0, 100);
 
-    await client.query(
+    await postgresOperation(() => client.query(
       `UPDATE valuex_app_storage SET payload = $1::jsonb, updated_at = NOW() WHERE store_key = 'main'`,
       [JSON.stringify(draft)],
-    );
-    await client.query('COMMIT');
+    ));
+    await postgresOperation(() => client.query('COMMIT'));
     return result;
   } catch (err) {
-    await client.query('ROLLBACK');
+    // Preserve the original failure even if the connection also fails during rollback.
+    await client.query('ROLLBACK').catch(() => undefined);
     throw err;
   } finally {
     client.release();

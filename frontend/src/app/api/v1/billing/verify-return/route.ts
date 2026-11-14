@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { readState, verifyAndSyncOrderFromReturn } from '@/server/database';
+import { readState, StorageUnavailableError, verifyAndSyncOrderFromReturn } from '@/server/database';
 import { requireAuthenticatedUser } from '@/server/guards';
 
 export async function POST(req: NextRequest) {
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка проверки оплаты' },
-      { status: 400 },
+      { status: err instanceof StorageUnavailableError ? 503 : 400 },
     );
   }
 }

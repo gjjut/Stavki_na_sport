@@ -3,6 +3,7 @@ import {
   createPredictionByAdmin,
   mutateState,
   settlePredictionByAdmin,
+  StorageUnavailableError,
 } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
 import { assertInsuranceChangeAllowed, deleteUnownedPrediction } from '@/server/admin-prediction-policy';
@@ -21,7 +22,7 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка создания прогноза' },
-      { status: 400 },
+      { status: err instanceof StorageUnavailableError ? 503 : 400 },
     );
   }
 }
@@ -160,7 +161,7 @@ export async function PATCH(req: NextRequest) {
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка обновления прогноза' },
-      { status: 400 },
+      { status: err instanceof StorageUnavailableError ? 503 : 400 },
     );
   }
 }
@@ -179,7 +180,7 @@ export async function DELETE(req: NextRequest) {
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка удаления события' },
-      { status: 400 },
+      { status: err instanceof StorageUnavailableError ? 503 : 400 },
     );
   }
 }

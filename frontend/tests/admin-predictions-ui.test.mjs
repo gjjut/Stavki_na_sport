@@ -48,6 +48,29 @@ test('single delete and price changes do not report success on server rejection'
   assert.equal(refreshed, 0);
 });
 
+test('server failures refresh potentially changed event data before another attempt', async (t) => {
+  const toasts = [];
+  let refreshed = 0;
+  global.fetch = async () => response({ error: 'Хранилище недоступно. Проверьте результат.' }, 503);
+  const view = await mount(PredictionsTab, {
+    ...base, predictions: [event('1')], onToast: (...args) => toasts.push(args),
+    onRefresh: async () => { refreshed++; },
+  });
+  t.after(view.cleanup);
+  await click(view.container.querySelector('button[aria-label="Удалить событие"]'));
+  let dialog = view.container.querySelector('[role="dialog"]');
+  await click(buttonWithText(dialog, 'Удалить'));
+  await click(buttonWithText(dialog, 'Отмена'));
+  await click(view.container.querySelector('button[title="Изменить цену"]'));
+  dialog = view.container.querySelector('[role="dialog"]');
+  await click(buttonWithText(dialog, 'Сохранить цену'));
+  await click(buttonWithText(dialog, 'Отмена'));
+  await click(view.container.querySelector('button[title="Переключить страховку"]'));
+  assert.equal(refreshed, 3);
+  assert.equal(toasts.length, 3);
+  assert.ok(toasts.every(([message, kind]) => kind === 'error' && /Проверьте результат/.test(message)));
+});
+
 test('insurance and settlement network failures report an unknown result rather than success', async (t) => {
   const toasts = [];
   let refreshed = 0;
@@ -97,6 +120,35 @@ test('bulk deletion reports each partial failure and retains unresolved selectio
   assert.match(report.textContent, /Дом 4 — Гости 4.*Запрос не отправлен/);
   assert.equal(view.container.querySelector('input[aria-label="Выбрать Дом 1 — Гости 1"]').checked, false);
   for (const id of [2, 3, 4]) {
+    assert.equal(view.container.querySelector(`input[aria-label="Выбрать Дом ${id} — Гости ${id}"]`).checked, true);
+  }
+});
+
+test('bulk deletion stops on a server failure and marks the result as unconfirmed', async (t) => {
+  const requests = [];
+  let refreshed = 0;
+  global.fetch = async (url) => {
+    requests.push(url);
+    return url.endsWith('1')
+      ? response({ ok: true })
+      : response({ error: 'Хранилище недоступно' }, 503);
+  };
+  const view = await mount(PredictionsTab, {
+    ...base, predictions: [1, 2, 3].map((id) => event(String(id))),
+    onRefresh: async () => { refreshed++; },
+  });
+  t.after(view.cleanup);
+  await click(view.container.querySelector('input[aria-label="Выбрать все на странице"]'));
+  await click(buttonWithText(view.container, 'Удалить'));
+  await click(buttonWithText(view.container.querySelector('[role="dialog"]'), 'Удалить (3)'));
+  assert.equal(requests.length, 2);
+  assert.equal(refreshed, 1);
+  const report = view.container.querySelector('[role="status"]');
+  assert.match(report.textContent, /Удалено: 1/);
+  assert.match(report.textContent, /Дом 2 — Гости 2.*Результат не подтверждён/);
+  assert.match(report.textContent, /Дом 3 — Гости 3.*пакет остановлен после ошибки сервера/);
+  assert.equal(view.container.querySelector('input[aria-label="Выбрать Дом 1 — Гости 1"]').checked, false);
+  for (const id of [2, 3]) {
     assert.equal(view.container.querySelector(`input[aria-label="Выбрать Дом ${id} — Гости ${id}"]`).checked, true);
   }
 });

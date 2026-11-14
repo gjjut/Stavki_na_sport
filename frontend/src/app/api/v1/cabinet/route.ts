@@ -3,6 +3,7 @@ import { hashPassword, verifyPassword } from '@/server/auth';
 import {
   mutateState,
   readState,
+  StorageUnavailableError,
   toPublicPredictionDto,
   toSafeSessionUser,
 } from '@/server/database';
@@ -56,6 +57,9 @@ export async function GET() {
       payouts: myPayouts,
     });
   } catch (err) {
+    if (err instanceof StorageUnavailableError) {
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
     const code = err instanceof Error ? err.message : '';
     return NextResponse.json(
       { error: 'Необходима авторизация' },
@@ -117,7 +121,7 @@ export async function PATCH(req: NextRequest) {
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка обновления профиля' },
-      { status: 400 },
+      { status: err instanceof StorageUnavailableError ? 503 : 400 },
     );
   }
 }
@@ -229,7 +233,7 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка привязки Telegram' },
-      { status: 400 },
+      { status: err instanceof StorageUnavailableError ? 503 : 400 },
     );
   }
 }

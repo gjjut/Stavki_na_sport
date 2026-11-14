@@ -89,7 +89,7 @@ interface AdminOverviewPayload {
 export default function AdminDashboardPage() {
   const [data, setData] = useState<AdminOverviewPayload | null>(null);
   const [loading, setLoading] = useState(true);
-  const [authError, setAuthError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<{ message: string; authentication: boolean } | null>(null);
   const [tab, setTab] = useState<TabId>('OVERVIEW');
   const [navigation, setNavigation] = useState<{ target: AdminCommandTarget; sequence: number } | null>(null);
   const navigationSequence = useRef(0);
@@ -126,14 +126,23 @@ export default function AdminDashboardPage() {
     try {
       const res = await fetch('/api/v1/admin/overview', { cache: 'no-store' });
       if (!res.ok) {
-        setAuthError('Требуется вход под аккаунтом администратора.');
+        const authentication = res.status === 401 || res.status === 403;
+        const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+        setLoadError({
+          authentication,
+          message: authentication
+            ? 'Требуется вход под аккаунтом администратора.'
+            : typeof body?.error === 'string'
+              ? body.error
+              : `Не удалось загрузить данные администратора (HTTP ${res.status}).`,
+        });
         return;
       }
       const json = (await res.json()) as AdminOverviewPayload;
       setData(json);
-      setAuthError(null);
+      setLoadError(null);
     } catch {
-      setAuthError('Не удалось связаться с сервером. Проверьте соединение и обновите страницу.');
+      setLoadError({ message: 'Не удалось связаться с сервером. Проверьте соединение и повторите.', authentication: false });
     } finally {
       setLoading(false);
     }
@@ -200,21 +209,32 @@ export default function AdminDashboardPage() {
     { id: 'SETTINGS', label: 'Настройки', icon: Settings },
   ];
 
-  if (authError) {
+  if (loadError) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#F4F6FA] p-6">
         <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 text-rose-600">
             <ShieldCheck className="h-6 w-6" />
           </div>
-          <p className="mt-4 text-sm font-bold text-slate-800">{authError}</p>
-          <Link
-            href="/login"
-            className="mt-5 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-blue-700"
-          >
-            <LogIn className="h-3.5 w-3.5" />
-            Войти в админ-аккаунт
-          </Link>
+          <p className="mt-4 text-sm font-bold text-slate-800">{loadError.message}</p>
+          {loadError.authentication ? (
+            <Link
+              href="/login"
+              className="mt-5 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-blue-700"
+            >
+              <LogIn className="h-3.5 w-3.5" />
+              Войти в админ-аккаунт
+            </Link>
+          ) : (
+            <button
+              type="button"
+              onClick={() => { setLoadError(null); setLoading(true); void loadOverview(); }}
+              className="mt-5 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-blue-700"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Повторить
+            </button>
+          )}
         </div>
         <ToastStack toasts={toasts} onDismiss={dismissToast} />
       </div>

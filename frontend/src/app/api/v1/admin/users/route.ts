@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hashPassword } from '@/server/auth';
-import { mutateState, toSafeSessionUser } from '@/server/database';
+import { mutateState, StorageUnavailableError, toSafeSessionUser } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
 import { grantPredictionAccess } from '@/server/admin-prediction-policy';
 
@@ -57,7 +57,7 @@ export async function PATCH(req: NextRequest) {
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка управления пользователем' },
-      { status: 400 },
+      { status: err instanceof StorageUnavailableError ? 503 : 400 },
     );
   }
 }

@@ -5,25 +5,42 @@ import {
   getDatabaseBackendStatus,
   hasVerifiedSettledResult,
   readState,
+  StorageUnavailableError,
 } from '@/server/database';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const [storage, state] = await Promise.all([
-      getDatabaseBackendStatus(),
-      readState(),
-    ]);
+    const storage = await getDatabaseBackendStatus();
+    const sessionAuthConfigured = isSessionSigningAvailable();
+    const cronAuthConfigured = (process.env.AUTOPILOT_CRON_SECRET || '').trim().length >= 32;
+    let state: Awaited<ReturnType<typeof readState>>;
+    try {
+      state = await readState();
+    } catch (err) {
+      if (!(err instanceof StorageUnavailableError)) throw err;
+      // Return actionable health without reading a fallback or exposing database errors.
+      return NextResponse.json(
+        {
+          status: 'degraded',
+          storage: 'unavailable',
+          databaseUrlConfigured: storage.databaseUrlConfigured,
+          storageDegraded: true,
+          sessionAuthConfigured,
+          cronAuthConfigured,
+          timestamp: new Date().toISOString(),
+        },
+        { status: 503 },
+      );
+    }
     const storageDegraded = isStorageDegraded({
       production: process.env.NODE_ENV === 'production',
       ...storage,
     });
-    const sessionAuthConfigured = isSessionSigningAvailable();
     const adminAccountConfigured = state.users.some(
       (user) => user.role === 'ADMIN' && user.status === 'ACTIVE',
     );
-    const cronAuthConfigured = (process.env.AUTOPILOT_CRON_SECRET || '').trim().length >= 32;
     const productionSecurityDegraded =
       process.env.NODE_ENV === 'production' &&
       (!sessionAuthConfigured || !adminAccountConfigured || !cronAuthConfigured);

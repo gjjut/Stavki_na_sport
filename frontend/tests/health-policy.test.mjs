@@ -36,6 +36,17 @@ test('production health fails when PostgreSQL is missing, unreachable, or replac
   );
 });
 
+test('an unavailable backend is degraded in both development and production', () => {
+  for (const production of [false, true]) {
+    assert.equal(isStorageDegraded({
+      production,
+      backend: 'unavailable',
+      databaseUrlConfigured: true,
+      usingLocalFallback: false,
+    }), true);
+  }
+});
+
 test('local development may use local-file storage without a degraded production health status', () => {
   assert.equal(
     isStorageDegraded({

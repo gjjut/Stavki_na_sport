@@ -10,6 +10,7 @@ import {
   loginUserAccount,
   readState,
   registerUserAccount,
+  StorageUnavailableError,
   toSafeSessionUser,
 } from '@/server/database';
 import { getOptionalViewer } from '@/server/guards';
@@ -136,6 +137,6 @@ export async function POST(req: NextRequest) {
         { status: 401 },
       );
     }
-    return NextResponse.json({ error: msg }, { status: 400 });
+    return NextResponse.json({ error: msg }, { status: err instanceof StorageUnavailableError ? 503 : 400 });
   }
 }

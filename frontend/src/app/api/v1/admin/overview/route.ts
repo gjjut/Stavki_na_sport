@@ -4,6 +4,7 @@ import {
   computeAiPerformanceStats,
   computePlatformAnalytics,
   readState,
+  StorageUnavailableError,
   toAdminAutopilotDto,
   toAdminSettingsDto,
   toSafeSessionUser,
@@ -41,6 +42,9 @@ export async function GET() {
       aiStats,
     });
   } catch (err) {
+    if (err instanceof StorageUnavailableError) {
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
     const code = err instanceof Error ? err.message : '';
     return NextResponse.json(
       { error: 'Доступ разрешен только администратору' },

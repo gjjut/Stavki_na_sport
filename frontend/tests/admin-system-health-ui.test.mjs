@@ -25,6 +25,18 @@ test('degraded health is visible even when the health endpoint returns 503', asy
   assert.equal(requests, 1);
 });
 
+test('unavailable storage is presented as suspended, not as a local fallback', async (t) => {
+  global.fetch = async () => response({
+    status: 'degraded', storage: 'unavailable', storageDegraded: true,
+    sessionAuthConfigured: true, cronAuthConfigured: true,
+  }, 503);
+  const view = await mount(SystemHealth, {});
+  t.after(view.cleanup);
+  assert.match(view.container.textContent, /Хранилище: недоступно · операции приостановлены/);
+  assert.match(view.container.textContent, /Администратор: нет данных/);
+  assert.doesNotMatch(view.container.textContent, /локальный файл/);
+});
+
 test('health errors are displayed and can be retried', async (t) => {
   let requests = 0;
   global.fetch = async () => {
