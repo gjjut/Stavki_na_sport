@@ -300,6 +300,155 @@ export function EmptyState({
   );
 }
 
+/* ── График выручки (SVG, без зависимостей) ───────────────────────────── */
+
+export interface RevenuePoint {
+  label: string;
+  value: number;
+  orders: number;
+}
+
+export function RevenueChart({ points }: { points: RevenuePoint[] }) {
+  const [hoverIdx, setHoverIdx] = React.useState<number | null>(null);
+  const width = 640;
+  const height = 180;
+  const paddingX = 8;
+  const paddingTop = 16;
+  const paddingBottom = 24;
+  const maxValue = Math.max(1, ...points.map((p) => p.value));
+  const innerW = width - paddingX * 2;
+  const innerH = height - paddingTop - paddingBottom;
+
+  const xFor = (i: number) =>
+    points.length <= 1 ? paddingX + innerW / 2 : paddingX + (i / (points.length - 1)) * innerW;
+  const yFor = (v: number) => paddingTop + innerH - (v / maxValue) * innerH;
+
+  const linePath = points
+    .map((p, i) => `${i === 0 ? 'M' : 'L'}${xFor(i).toFixed(1)},${yFor(p.value).toFixed(1)}`)
+    .join(' ');
+  const areaPath = `${linePath} L${xFor(points.length - 1).toFixed(1)},${(paddingTop + innerH).toFixed(1)} L${xFor(0).toFixed(1)},${(paddingTop + innerH).toFixed(1)} Z`;
+
+  const hovered = hoverIdx !== null ? points[hoverIdx] : null;
+
+  return (
+    <div>
+      <div className="flex items-baseline justify-between px-5 pt-4">
+        <div className="text-xs font-bold text-slate-500">Выручка по дням</div>
+        {hovered ? (
+          <div className="font-mono text-xs font-black text-slate-950">
+            {hovered.label}: {hovered.value.toLocaleString('ru-RU')} ₽ · чеков {hovered.orders}
+          </div>
+        ) : (
+          <div className="font-mono text-xs font-bold text-slate-400">
+            Итого: {points.reduce((acc, p) => acc + p.value, 0).toLocaleString('ru-RU')} ₽
+          </div>
+        )}
+      </div>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="mt-1 w-full"
+        onMouseLeave={() => setHoverIdx(null)}
+        role="img"
+        aria-label="График выручки за последние дни"
+      >
+        <defs>
+          <linearGradient id="revenue-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#2563eb" stopOpacity="0.25" />
+            <stop offset="100%" stopColor="#2563eb" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {[0.25, 0.5, 0.75, 1].map((f) => (
+          <line
+            key={f}
+            x1={paddingX}
+            x2={width - paddingX}
+            y1={paddingTop + innerH * (1 - f)}
+            y2={paddingTop + innerH * (1 - f)}
+            stroke="#e2e8f0"
+            strokeDasharray="3 4"
+          />
+        ))}
+        <path d={areaPath} fill="url(#revenue-fill)" />
+        <path d={linePath} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        {points.map((p, i) => (
+          <g key={i}>
+            <circle
+              cx={xFor(i)}
+              cy={yFor(p.value)}
+              r={hoverIdx === i ? 5 : 3}
+              fill={hoverIdx === i ? '#1d4ed8' : '#2563eb'}
+              stroke="#fff"
+              strokeWidth="1.5"
+            />
+            <rect
+              x={xFor(i) - innerW / points.length / 2}
+              y={0}
+              width={innerW / points.length}
+              height={height}
+              fill="transparent"
+              onMouseEnter={() => setHoverIdx(i)}
+            />
+          </g>
+        ))}
+        {points.map((p, i) =>
+          i % Math.ceil(points.length / 7) === 0 || i === points.length - 1 ? (
+            <text
+              key={`t-${i}`}
+              x={xFor(i)}
+              y={height - 6}
+              textAnchor="middle"
+              className="fill-slate-400"
+              fontSize="10"
+            >
+              {p.label}
+            </text>
+          ) : null,
+        )}
+      </svg>
+    </div>
+  );
+}
+
+/* ── Статистика по видам спорта ────────────────────────────────────────── */
+
+export interface SportStatRow {
+  sport: string;
+  label: string;
+  settled: number;
+  wins: number;
+  losses: number;
+  winRatePct: number;
+  yieldPct: number;
+}
+
+export function SportStats({ rows }: { rows: SportStatRow[] }) {
+  const maxSettled = Math.max(1, ...rows.map((r) => r.settled));
+  return (
+    <div className="space-y-3 px-5 py-4">
+      {rows.map((row) => (
+        <div key={row.sport}>
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-slate-800">{row.label}</span>
+            <span className="font-mono text-[11px] text-slate-500">
+              {row.wins}W / {row.losses}L · {row.winRatePct.toFixed(0)}% · yield{' '}
+              <span className={row.yieldPct >= 0 ? 'font-bold text-emerald-600' : 'font-bold text-rose-600'}>
+                {row.yieldPct >= 0 ? '+' : ''}
+                {row.yieldPct.toFixed(1)}%
+              </span>
+            </span>
+          </div>
+          <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-blue-500 to-blue-600"
+              style={{ width: `${Math.max(3, (row.settled / maxSettled) * 100)}%` }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ── Скелетон загрузки ─────────────────────────────────────────────────── */
 
 export function SkeletonLines({ rows = 4 }: { rows?: number }) {

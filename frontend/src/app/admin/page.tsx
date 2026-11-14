@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
+  Activity,
   ArrowLeft,
   Ban,
   Bot,
@@ -39,11 +40,15 @@ import {
   EmptyState,
   Field,
   Modal,
+  RevenueChart,
   SectionCard,
   SkeletonLines,
+  SportStats,
   ToastStack,
   inputCls,
   inputMonoCls,
+  type RevenuePoint,
+  type SportStatRow,
   type ToastItem,
   type ToastKind,
 } from '@/components/admin/ui';
@@ -601,6 +606,91 @@ function OverviewTab({
     .slice(0, 5);
   const pendingPayouts = data.payouts.filter((p) => p.status === 'PENDING');
 
+  const revenuePoints = useMemo<RevenuePoint[]>(() => {
+    const days = 14;
+    const buckets = new Map<string, { value: number; orders: number }>();
+    const now = new Date();
+    for (let i = days - 1; i >= 0; i -= 1) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      buckets.set(d.toISOString().slice(0, 10), { value: 0, orders: 0 });
+    }
+    for (const t of data.transactions) {
+      if (t.status !== 'SUCCEEDED') continue;
+      const key = new Date(t.createdAt).toISOString().slice(0, 10);
+      const bucket = buckets.get(key);
+      if (bucket) {
+        bucket.value += t.amountRub;
+        bucket.orders += 1;
+      }
+    }
+    return [...buckets.entries()].map(([key, v]) => ({
+      label: new Date(`${key}T12:00:00`).toLocaleDateString('ru-RU', {
+        day: 'numeric',
+        month: 'short',
+      }),
+      value: v.value,
+      orders: v.orders,
+    }));
+  }, [data.transactions]);
+
+  const sportStats = useMemo<SportStatRow[]>(() => {
+    const labels: Record<string, string> = {
+      FOOTBALL: 'Футбол',
+      HOCKEY: 'Хоккей',
+      TENNIS: 'Теннис',
+      ESPORTS: 'Киберспорт',
+      BASKETBALL: 'Баскетбол',
+      MMA: 'ММА / Бокс',
+    };
+    const bySport = new Map<string, { settled: number; wins: number; losses: number; profit: number }>();
+    for (const p of data.predictions) {
+      if (p.resultStatus === 'PENDING' || !p.settlementVerified) continue;
+      const row = bySport.get(p.sport) ?? { settled: 0, wins: 0, losses: 0, profit: 0 };
+      row.settled += 1;
+      if (p.resultStatus === 'WIN') row.wins += 1;
+      if (p.resultStatus === 'LOSS') row.losses += 1;
+      row.profit += p.resultStatus === 'WIN' ? p.fixedOdds - 1 : p.resultStatus === 'LOSS' ? -1 : 0;
+      bySport.set(p.sport, row);
+    }
+    return [...bySport.entries()]
+      .map(([sport, r]) => ({
+        sport,
+        label: labels[sport] ?? sport,
+        settled: r.settled,
+        wins: r.wins,
+        losses: r.losses,
+        winRatePct: r.settled > 0 ? (r.wins / r.settled) * 100 : 0,
+        yieldPct: r.settled > 0 ? (r.profit / r.settled) * 100 : 0,
+      }))
+      .sort((a, b) => b.settled - a.settled)
+      .slice(0, 6);
+  }, [data.predictions]);
+
+  const activityFeed = useMemo(() => {
+    const items: Array<{ id: string; time: string; text: string; tone: 'emerald' | 'amber' | 'rose' | 'blue' | 'slate' }> = [];
+    for (const log of [...data.aiLogs].slice(0, 8)) {
+      items.push({
+        id: log.id,
+        time: log.createdAt,
+        text: log.message,
+        tone: log.level === 'SUCCESS' ? 'emerald' : log.level === 'ERROR' ? 'rose' : log.level === 'WARN' ? 'amber' : 'blue',
+      });
+    }
+    for (const t of [...data.transactions].slice(0, 4)) {
+      if (t.status === 'SUCCEEDED') {
+        items.push({
+          id: t.id,
+          time: t.createdAt,
+          text: `Оплата ${formatRub(t.amountRub)} — ${t.title}`,
+          tone: 'emerald',
+        });
+      }
+    }
+    return items
+      .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+      .slice(0, 10);
+  }, [data.aiLogs, data.transactions]);
+
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
@@ -619,6 +709,20 @@ function OverviewTab({
             </div>
           );
         })}
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-3">
+        <SectionCard title="Динамика выручки" subtitle="Оплаченные заказы за последние 14 дней" className="xl:col-span-2">
+          <RevenueChart points={revenuePoints} />
+        </SectionCard>
+
+        <SectionCard title="Эффективность по спорту" subtitle="Только подтверждённые расчёты">
+          {sportStats.length === 0 ? (
+            <EmptyState icon={<TrendingUp className="h-5 w-5" />} title="Пока нет рассчитанных событий" description="Статистика появится после первых подтверждённых расчётов." />
+          ) : (
+            <SportStats rows={sportStats} />
+          )}
+        </SectionCard>
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -771,6 +875,46 @@ function OverviewTab({
           )}
         </SectionCard>
       </div>
+
+      <SectionCard
+        title="Лента активности"
+        subtitle="Последние события автопилота и оплаты"
+        action={
+          <button
+            type="button"
+            onClick={() => onGoTab('AUTOPILOT')}
+            className="text-xs font-bold text-blue-600 hover:text-blue-800"
+          >
+            Журнал автопилота →
+          </button>
+        }
+      >
+        {activityFeed.length === 0 ? (
+          <EmptyState icon={<Activity className="h-5 w-5" />} title="Активности пока нет" />
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {activityFeed.map((item) => (
+              <div key={item.id} className="flex items-start gap-3 px-5 py-2.5">
+                <span
+                  className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
+                    item.tone === 'emerald'
+                      ? 'bg-emerald-500'
+                      : item.tone === 'rose'
+                        ? 'bg-rose-500'
+                        : item.tone === 'amber'
+                          ? 'bg-amber-500'
+                          : 'bg-blue-500'
+                  }`}
+                />
+                <p className="min-w-0 flex-1 text-xs leading-relaxed text-slate-700">{item.text}</p>
+                <span className="shrink-0 text-[10px] text-slate-400">
+                  <LocalDateTime value={item.time} format="full" />
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </SectionCard>
     </div>
   );
 }
