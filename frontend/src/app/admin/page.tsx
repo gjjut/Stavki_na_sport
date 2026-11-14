@@ -937,16 +937,24 @@ function PredictionsTab({
   const [showCreate, setShowCreate] = useState(false);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'ALL' | 'PENDING' | 'SETTLED'>('ALL');
+  const [sportFilter, setSportFilter] = useState<SportType | 'ALL'>('ALL');
+  const [page, setPage] = useState(1);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [priceEdit, setPriceEdit] = useState<{ item: PredictionRecord; value: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PredictionRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [settling, setSettling] = useState(false);
+
+  const PAGE_SIZE = 15;
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return predictions.filter((p) => {
       if (filter === 'PENDING' && p.resultStatus !== 'PENDING') return false;
       if (filter === 'SETTLED' && p.resultStatus === 'PENDING') return false;
+      if (sportFilter !== 'ALL' && p.sport !== sportFilter) return false;
       if (!q) return true;
       return (
         p.homeTeam.toLowerCase().includes(q) ||
@@ -955,7 +963,54 @@ function PredictionsTab({
         p.selectionTitle.toLowerCase().includes(q)
       );
     });
-  }, [predictions, search, filter]);
+  }, [predictions, search, filter, sportFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const paged = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, filter, sportFilter]);
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectPage = () => {
+    setSelectedIds((prev) => {
+      const pageIds = paged.map((p) => p.id);
+      const allSelected = pageIds.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (allSelected) pageIds.forEach((id) => next.delete(id));
+      else pageIds.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+
+  const confirmBulkDelete = async () => {
+    setBulkDeleting(true);
+    try {
+      let deleted = 0;
+      for (const id of selectedIds) {
+        const res = await fetch(`/api/v1/admin/predictions?id=${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        });
+        if (res.ok) deleted += 1;
+      }
+      onToast(`Удалено событий: ${deleted}`);
+      setSelectedIds(new Set());
+      setBulkDeleteOpen(false);
+      await onRefresh();
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
 
   const handleVerifiedSettlementCycle = async () => {
     setSettling(true);
@@ -1093,6 +1148,53 @@ function PredictionsTab({
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-1.5">
+        {(
+          [
+            ['ALL', 'Все виды'],
+            ['FOOTBALL', 'Футбол'],
+            ['HOCKEY', 'Хоккей'],
+            ['TENNIS', 'Теннис'],
+            ['ESPORTS', 'Киберспорт'],
+            ['BASKETBALL', 'Баскетбол'],
+            ['MMA', 'ММА'],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setSportFilter(id)}
+            className={`rounded-full px-3 py-1.5 text-[11px] font-bold transition ${
+              sportFilter === id
+                ? 'bg-blue-600 text-white'
+                : 'border border-slate-200 bg-white text-slate-600 hover:border-blue-300 hover:text-blue-700'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+        {selectedIds.size > 0 && (
+          <div className="ml-auto flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-1.5 text-white">
+            <span className="text-[11px] font-bold">Выбрано: {selectedIds.size}</span>
+            <button
+              type="button"
+              onClick={() => setBulkDeleteOpen(true)}
+              className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-2.5 py-1 text-[11px] font-bold hover:bg-rose-700"
+            >
+              <Trash2 className="h-3 w-3" />
+              Удалить
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="text-[11px] font-bold text-slate-400 hover:text-white"
+            >
+              Сбросить
+            </button>
+          </div>
+        )}
+      </div>
+
       <SectionCard title={`События (${filtered.length})`} subtitle="Управление прогнозами на витрине">
         {filtered.length === 0 ? (
           <EmptyState
@@ -1101,10 +1203,30 @@ function PredictionsTab({
             description="Попробуйте изменить запрос или сбросить фильтр."
           />
         ) : (
-          <div className="divide-y divide-slate-100">
-            {filtered.map((item) => (
-              <div key={item.id} className="px-5 py-4">
+          <>
+            <div className="flex items-center gap-3 border-b border-slate-100 px-5 py-2.5">
+              <input
+                type="checkbox"
+                checked={paged.length > 0 && paged.every((p) => selectedIds.has(p.id))}
+                onChange={toggleSelectPage}
+                className="h-4 w-4 rounded border-slate-300"
+                aria-label="Выбрать все на странице"
+              />
+              <span className="text-[11px] font-semibold text-slate-500">
+                Выбрать страницу ({paged.length})
+              </span>
+            </div>
+            <div className="divide-y divide-slate-100">
+            {paged.map((item) => (
+              <div key={item.id} className={`px-5 py-4 ${selectedIds.has(item.id) ? 'bg-blue-50/50' : ''}`}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(item.id)}
+                    onChange={() => toggleSelect(item.id)}
+                    className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300"
+                    aria-label={`Выбрать ${item.homeTeam} — ${item.awayTeam}`}
+                  />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[11px] font-bold text-slate-400">{item.leagueName}</span>
@@ -1245,7 +1367,33 @@ function PredictionsTab({
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between border-t border-slate-100 px-5 py-3">
+                <span className="text-[11px] font-semibold text-slate-500">
+                  Страница {safePage} из {totalPages}
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={safePage <= 1}
+                    onClick={() => setPage(safePage - 1)}
+                    className="rounded-lg border border-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                  >
+                    ← Назад
+                  </button>
+                  <button
+                    type="button"
+                    disabled={safePage >= totalPages}
+                    onClick={() => setPage(safePage + 1)}
+                    className="rounded-lg border border-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                  >
+                    Вперёд →
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </SectionCard>
 
@@ -1312,6 +1460,16 @@ function PredictionsTab({
         busy={deleting}
         onConfirm={confirmDelete}
         onCancel={() => setDeleteTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        title="Удалить выбранные события?"
+        description={`Будет удалено событий: ${selectedIds.size}. Действие нельзя отменить.`}
+        confirmLabel={`Удалить (${selectedIds.size})`}
+        busy={bulkDeleting}
+        onConfirm={confirmBulkDelete}
+        onCancel={() => setBulkDeleteOpen(false)}
       />
     </div>
   );
