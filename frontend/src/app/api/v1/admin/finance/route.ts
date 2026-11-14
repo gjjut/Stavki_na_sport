@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { mutateState, refundOrderTransaction } from '@/server/database';
+import { mutateState } from '@/server/database';
+import { applyAdminBalanceRefund, applyPayoutDecision } from '@/lib/admin-finance-policy';
 import { requireAdminAccount } from '@/server/guards';
 
 export async function PATCH(req: NextRequest) {
@@ -87,24 +88,16 @@ export async function PATCH(req: NextRequest) {
     }
 
     if (body.action === 'REFUND_ORDER') {
-      await refundOrderTransaction(body.orderId);
-      return NextResponse.json({ ok: true });
+      const refund = await mutateState((state) =>
+        applyAdminBalanceRefund(state, body.orderId, new Date().toISOString()),
+      );
+      return NextResponse.json({ ok: true, ...refund });
     }
 
     if (body.action === 'PROCESS_PAYOUT') {
-      await mutateState((state) => {
-        const payout = state.payouts.find((p) => p.id === body.payoutId);
-        if (!payout || payout.status !== 'PENDING') return;
-        payout.status = body.decision;
-        payout.processedAt = new Date().toISOString();
-
-        if (body.decision === 'REJECTED') {
-          const partner = state.users.find((u) => u.id === payout.userId);
-          if (partner) {
-            partner.affiliateBalanceRub += payout.amountRub;
-          }
-        }
-      });
+      await mutateState((state) =>
+        applyPayoutDecision(state, body.payoutId, body.decision, new Date().toISOString()),
+      );
       return NextResponse.json({ ok: true });
     }
 

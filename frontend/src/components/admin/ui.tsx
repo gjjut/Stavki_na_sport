@@ -333,7 +333,7 @@ export function RevenueChart({ points }: { points: RevenuePoint[] }) {
   return (
     <div>
       <div className="flex items-baseline justify-between px-5 pt-4">
-        <div className="text-xs font-bold text-slate-500">Выручка по дням</div>
+        <div className="text-xs font-bold text-slate-500">Продажи прогнозов по дням</div>
         {hovered ? (
           <div className="font-mono text-xs font-black text-slate-950">
             {hovered.label}: {hovered.value.toLocaleString('ru-RU')} ₽ · чеков {hovered.orders}
@@ -349,7 +349,7 @@ export function RevenueChart({ points }: { points: RevenuePoint[] }) {
         className="mt-1 w-full"
         onMouseLeave={() => setHoverIdx(null)}
         role="img"
-        aria-label="График выручки за последние дни"
+        aria-label="График продаж прогнозов за последние дни"
       >
         <defs>
           <linearGradient id="revenue-fill" x1="0" y1="0" x2="0" y2="1">

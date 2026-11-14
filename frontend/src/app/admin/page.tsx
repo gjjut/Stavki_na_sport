@@ -5,12 +5,9 @@ import Link from 'next/link';
 import {
   Activity,
   ArrowLeft,
-  Ban,
   Bot,
   CheckCircle2,
   Coins,
-  Download,
-  Gift,
   LayoutDashboard,
   Loader2,
   LogIn,
@@ -34,6 +31,11 @@ import {
 } from 'lucide-react';
 import { AdminAiChatPanel } from '@/components/admin/AdminAiChatPanel';
 import { AiAutopilotPanel } from '@/components/admin/AiAutopilotPanel';
+import { FinanceTab } from '@/components/admin/FinanceTab';
+import { UsersTab } from '@/components/admin/UsersTab';
+import { formatRub, type AdminUser } from '@/components/admin/admin-format';
+import { OrderStatusBadge } from '@/components/admin/AdminTableHelpers';
+import { aggregateSportStats, buildPredictionSalesChart, isPaidPredictionSale, paidAtMs } from '@/lib/admin-metrics';
 import {
   Badge,
   ConfirmDialog,
@@ -47,8 +49,6 @@ import {
   ToastStack,
   inputCls,
   inputMonoCls,
-  type RevenuePoint,
-  type SportStatRow,
   type ToastItem,
   type ToastKind,
 } from '@/components/admin/ui';
@@ -70,7 +70,6 @@ import type {
   PlatformSettings,
   PredictionRecord,
   PromoCodeRecord,
-  SafeSessionUser,
   SportType,
   StatsSummary,
 } from '@/server/types';
@@ -79,7 +78,7 @@ interface AdminOverviewPayload {
   settings: PlatformSettings;
   predictions: PredictionRecord[];
   promoCodes: PromoCodeRecord[];
-  users: SafeSessionUser[];
+  users: AdminUser[];
   transactions: OrderTransaction[];
   payouts: PayoutRequestRecord[];
   stats: StatsSummary;
@@ -134,10 +133,6 @@ function getAdminMatchStatusLabel(prediction: PredictionRecord): string {
   }
 }
 
-function formatRub(value: number): string {
-  return `${value.toLocaleString('ru-RU')} ₽`;
-}
-
 export default function AdminDashboardPage() {
   const [data, setData] = useState<AdminOverviewPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -181,21 +176,19 @@ export default function AdminDashboardPage() {
   }, [loadOverview]);
 
   const paidTransactions = useMemo(
-    () => (data?.transactions ?? []).filter((t) => t.status === 'SUCCEEDED'),
+    () => (data?.transactions ?? []).filter(isPaidPredictionSale),
     [data],
   );
   const totalRevenueRub = useMemo(
     () => paidTransactions.reduce((acc, t) => acc + t.amountRub, 0),
     [paidTransactions],
   );
-  const dayAgo = Date.now() - 86_400_000;
-  const todayRevenueRub = useMemo(
-    () =>
-      paidTransactions
-        .filter((t) => new Date(t.createdAt).getTime() >= dayAgo)
-        .reduce((acc, t) => acc + t.amountRub, 0),
-    [paidTransactions, dayAgo],
-  );
+  const todayRevenueRub = useMemo(() => {
+    const now = Date.now();
+    return paidTransactions
+      .filter((order) => paidAtMs(order) >= now - 86_400_000 && paidAtMs(order) <= now)
+      .reduce((acc, order) => acc + order.amountRub, 0);
+  }, [paidTransactions]);
   const buyersCount = useMemo(
     () => (data?.users ?? []).filter((u) => u.purchasedPredictionIds.length > 0).length,
     [data],
@@ -468,6 +461,7 @@ export default function AdminDashboardPage() {
                 <UsersTab
                   users={data.users}
                   predictions={data.predictions}
+                  transactions={data.transactions}
                   onRefresh={loadOverview}
                   onToast={showToast}
                 />
@@ -561,7 +555,7 @@ function OverviewTab({
 
   const kpis = [
     {
-      label: 'Выручка всего',
+      label: 'Продажи прогнозов',
       value: formatRub(totalRevenueRub),
       icon: Wallet,
       tone: 'text-slate-950',
@@ -575,7 +569,7 @@ function OverviewTab({
       bg: 'bg-blue-50 text-blue-600',
     },
     {
-      label: 'Оплаченных чеков',
+      label: 'Оплаченных заказов',
       value: String(paidCount),
       icon: ReceiptText,
       tone: 'text-slate-950',
@@ -606,65 +600,12 @@ function OverviewTab({
     .slice(0, 5);
   const pendingPayouts = data.payouts.filter((p) => p.status === 'PENDING');
 
-  const revenuePoints = useMemo<RevenuePoint[]>(() => {
-    const days = 14;
-    const buckets = new Map<string, { value: number; orders: number }>();
-    const now = new Date();
-    for (let i = days - 1; i >= 0; i -= 1) {
-      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-      buckets.set(d.toISOString().slice(0, 10), { value: 0, orders: 0 });
-    }
-    for (const t of data.transactions) {
-      if (t.status !== 'SUCCEEDED') continue;
-      const key = new Date(t.createdAt).toISOString().slice(0, 10);
-      const bucket = buckets.get(key);
-      if (bucket) {
-        bucket.value += t.amountRub;
-        bucket.orders += 1;
-      }
-    }
-    return [...buckets.entries()].map(([key, v]) => ({
-      label: new Date(`${key}T12:00:00`).toLocaleDateString('ru-RU', {
-        day: 'numeric',
-        month: 'short',
-      }),
-      value: v.value,
-      orders: v.orders,
-    }));
-  }, [data.transactions]);
+  const revenuePoints = useMemo(
+    () => buildPredictionSalesChart(data.transactions, new Date()),
+    [data.transactions],
+  );
 
-  const sportStats = useMemo<SportStatRow[]>(() => {
-    const labels: Record<string, string> = {
-      FOOTBALL: 'Футбол',
-      HOCKEY: 'Хоккей',
-      TENNIS: 'Теннис',
-      ESPORTS: 'Киберспорт',
-      BASKETBALL: 'Баскетбол',
-      MMA: 'ММА / Бокс',
-    };
-    const bySport = new Map<string, { settled: number; wins: number; losses: number; profit: number }>();
-    for (const p of data.predictions) {
-      if (p.resultStatus === 'PENDING' || !p.settlementVerified) continue;
-      const row = bySport.get(p.sport) ?? { settled: 0, wins: 0, losses: 0, profit: 0 };
-      row.settled += 1;
-      if (p.resultStatus === 'WIN') row.wins += 1;
-      if (p.resultStatus === 'LOSS') row.losses += 1;
-      row.profit += p.resultStatus === 'WIN' ? p.fixedOdds - 1 : p.resultStatus === 'LOSS' ? -1 : 0;
-      bySport.set(p.sport, row);
-    }
-    return [...bySport.entries()]
-      .map(([sport, r]) => ({
-        sport,
-        label: labels[sport] ?? sport,
-        settled: r.settled,
-        wins: r.wins,
-        losses: r.losses,
-        winRatePct: r.settled > 0 ? (r.wins / r.settled) * 100 : 0,
-        yieldPct: r.settled > 0 ? (r.profit / r.settled) * 100 : 0,
-      }))
-      .sort((a, b) => b.settled - a.settled)
-      .slice(0, 6);
-  }, [data.predictions]);
+  const sportStats = useMemo(() => aggregateSportStats(data.predictions), [data.predictions]);
 
   const activityFeed = useMemo(() => {
     const items: Array<{ id: string; time: string; text: string; tone: 'emerald' | 'amber' | 'rose' | 'blue' | 'slate' }> = [];
@@ -711,8 +652,9 @@ function OverviewTab({
         })}
       </div>
 
+      <p className="text-[11px] text-slate-500">Продажи — сумма заказов прогнозов со статусом «Оплачен»: пополнения и возвращённые заказы исключены, страховые выплаты не вычитаются. Это не денежный поток.</p>
       <div className="grid gap-5 xl:grid-cols-3">
-        <SectionCard title="Динамика выручки" subtitle="Оплаченные заказы за последние 14 дней" className="xl:col-span-2">
+        <SectionCard title="Динамика продаж прогнозов" subtitle="За 14 дней по времени оплаты; только текущий статус «Оплачен»" className="xl:col-span-2">
           <RevenueChart points={revenuePoints} />
         </SectionCard>
 
@@ -792,9 +734,7 @@ function OverviewTab({
                     <div className="font-mono text-xs font-black text-slate-950">
                       {formatRub(o.amountRub)}
                     </div>
-                    <Badge tone={o.status === 'SUCCEEDED' ? 'emerald' : o.status === 'REFUNDED' ? 'rose' : 'amber'}>
-                      {o.status === 'SUCCEEDED' ? 'Оплачен' : o.status === 'REFUNDED' ? 'Возврат' : 'Ожидает'}
-                    </Badge>
+                    <OrderStatusBadge status={o.status} />
                   </div>
                 </div>
               ))}
@@ -1921,640 +1861,6 @@ function PricingPromosTab({
 /* ════════════════════════════════════════════════════════════════════════
    ФИНАНСЫ
    ════════════════════════════════════════════════════════════════════════ */
-
-function FinanceTab({
-  transactions,
-  payouts,
-  onRefresh,
-  onToast,
-}: {
-  transactions: OrderTransaction[];
-  payouts: PayoutRequestRecord[];
-  onRefresh: () => Promise<void>;
-  onToast: (msg: string, kind?: ToastKind) => void;
-}) {
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'SUCCEEDED' | 'REFUNDED' | 'PENDING'>('ALL');
-  const [refundTarget, setRefundTarget] = useState<OrderTransaction | null>(null);
-  const [refunding, setRefunding] = useState(false);
-  const [payoutBusy, setPayoutBusy] = useState<string | null>(null);
-
-  const downloadOrdersCsv = () => {
-    const rows = transactions;
-    const header = [
-      'ID заказа',
-      'Дата и время',
-      'Email покупателя',
-      'Наименование',
-      'Сумма (RUB)',
-      'Способ оплаты',
-      'Статус',
-      'Промокод',
-      'Возврат по страховке',
-    ];
-    const escapeCell = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
-    const lines = [
-      header.map(escapeCell).join(';'),
-      ...rows.map((r) =>
-        [
-          r.id,
-          new Date(r.createdAt).toLocaleString('ru-RU'),
-          r.userEmail,
-          r.title,
-          r.amountRub,
-          r.paymentMethod === 'yookassa' ? 'ЮKassa (Карта/СБП)' : 'Внутренний баланс',
-          r.status,
-          r.promoCode || '',
-          r.insuranceCredited ? 'Да' : 'Нет',
-        ]
-          .map(escapeCell)
-          .join(';'),
-      ),
-    ];
-    const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `valuex_orders_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return transactions.filter((o) => {
-      if (statusFilter !== 'ALL' && o.status !== statusFilter) return false;
-      if (!q) return true;
-      return (
-        o.title.toLowerCase().includes(q) ||
-        o.userEmail.toLowerCase().includes(q) ||
-        o.id.toLowerCase().includes(q)
-      );
-    });
-  }, [transactions, search, statusFilter]);
-
-  const processPayout = async (p: PayoutRequestRecord, decision: 'PAID' | 'REJECTED') => {
-    setPayoutBusy(p.id);
-    try {
-      await fetch('/api/v1/admin/finance', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'PROCESS_PAYOUT', payoutId: p.id, decision }),
-      });
-      onToast(
-        decision === 'PAID'
-          ? 'Выплата отмечена как исполненная'
-          : 'Заявка отклонена, сумма возвращена на партнёрский счёт',
-      );
-      await onRefresh();
-    } finally {
-      setPayoutBusy(null);
-    }
-  };
-
-  const confirmRefund = async () => {
-    if (!refundTarget) return;
-    setRefunding(true);
-    try {
-      const res = await fetch('/api/v1/admin/finance', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'REFUND_ORDER', orderId: refundTarget.id }),
-      });
-      if (res.ok) {
-        onToast('Возврат выполнен на баланс клиента');
-        setRefundTarget(null);
-        await onRefresh();
-      } else {
-        onToast('Не удалось выполнить возврат', 'error');
-      }
-    } finally {
-      setRefunding(false);
-    }
-  };
-
-  return (
-    <div className="space-y-5">
-      <SectionCard
-        title="Заявки партнёров на выплату"
-        subtitle="После перевода средств по реквизитам отметьте заявку оплаченной"
-      >
-        {payouts.length === 0 ? (
-          <EmptyState icon={<Wallet className="h-5 w-5" />} title="Заявок на вывод пока нет" />
-        ) : (
-          <div className="divide-y divide-slate-100">
-            {payouts.map((p) => (
-              <div key={p.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-sm font-black text-slate-950">
-                      {formatRub(p.amountRub)}
-                    </span>
-                    <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-800">
-                      {p.requisites}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 text-[11px] text-slate-400">
-                    {p.userEmail} · <LocalDateTime value={p.createdAt} format="full" />
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {p.status === 'PENDING' ? (
-                    <>
-                      <button
-                        type="button"
-                        disabled={payoutBusy === p.id}
-                        onClick={() => processPayout(p, 'PAID')}
-                        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
-                      >
-                        Отметить выплаченной
-                      </button>
-                      <button
-                        type="button"
-                        disabled={payoutBusy === p.id}
-                        onClick={() => processPayout(p, 'REJECTED')}
-                        className="rounded-lg border border-rose-200 px-3 py-1.5 text-[11px] font-bold text-rose-600 hover:bg-rose-50 disabled:opacity-50"
-                      >
-                        Отклонить
-                      </button>
-                    </>
-                  ) : (
-                    <Badge tone={p.status === 'PAID' ? 'emerald' : 'rose'}>
-                      {p.status === 'PAID' ? 'Выплачено' : 'Отклонено'}
-                    </Badge>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </SectionCard>
-
-      <SectionCard
-        title={`Реестр заказов (${filtered.length})`}
-        subtitle="Все транзакции и возвраты страховки"
-        action={
-          <button
-            type="button"
-            onClick={downloadOrdersCsv}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-bold text-slate-800 hover:bg-white"
-          >
-            <Download className="h-3.5 w-3.5 text-blue-600" />
-            Скачать CSV
-          </button>
-        }
-      >
-        <div className="flex flex-wrap items-center gap-2.5 border-b border-slate-100 px-5 py-3">
-          <div className="relative w-full sm:w-72">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Поиск по названию, email или ID…"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs focus:border-blue-500 focus:bg-white focus:outline-none"
-            />
-          </div>
-          <div className="flex rounded-xl border border-slate-200 bg-white p-1">
-            {(
-              [
-                ['ALL', 'Все'],
-                ['SUCCEEDED', 'Оплачены'],
-                ['REFUNDED', 'Возвраты'],
-                ['PENDING', 'Ожидают'],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setStatusFilter(id)}
-                className={`rounded-lg px-3 py-1.5 text-[11px] font-bold transition ${
-                  statusFilter === id ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-900'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {filtered.length === 0 ? (
-          <EmptyState icon={<ReceiptText className="h-5 w-5" />} title="Заказов не найдено" />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-100 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  <th className="px-5 py-3">Заказ</th>
-                  <th className="px-5 py-3">Покупатель</th>
-                  <th className="px-5 py-3">Дата</th>
-                  <th className="px-5 py-3">Сумма</th>
-                  <th className="px-5 py-3">Статус</th>
-                  <th className="px-5 py-3 text-right">Действия</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filtered.map((order) => (
-                  <tr key={order.id} className="hover:bg-slate-50/60">
-                    <td className="px-5 py-3">
-                      <div className="font-bold text-slate-900">{order.title}</div>
-                      <div className="mt-0.5 flex flex-wrap gap-1">
-                        {order.promoCode && (
-                          <span className="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-blue-700">
-                            {order.promoCode}
-                          </span>
-                        )}
-                        {order.insuranceCredited && (
-                          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">
-                            Страховка выплачена
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-5 py-3 text-slate-600">{order.userEmail}</td>
-                    <td className="px-5 py-3 text-slate-500">
-                      <LocalDateTime value={order.createdAt} format="full" />
-                    </td>
-                    <td className="px-5 py-3 font-mono font-black text-slate-950">
-                      {formatRub(order.amountRub)}
-                    </td>
-                    <td className="px-5 py-3">
-                      <Badge tone={order.status === 'SUCCEEDED' ? 'emerald' : order.status === 'REFUNDED' ? 'rose' : 'amber'}>
-                        {order.status === 'SUCCEEDED' ? 'Оплачен' : order.status === 'REFUNDED' ? 'Возврат' : 'Ожидает'}
-                      </Badge>
-                    </td>
-                    <td className="px-5 py-3 text-right">
-                      {order.status === 'SUCCEEDED' && (
-                        <button
-                          type="button"
-                          onClick={() => setRefundTarget(order)}
-                          className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-rose-50 hover:text-rose-600"
-                        >
-                          Возврат на баланс
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </SectionCard>
-
-      <ConfirmDialog
-        open={refundTarget !== null}
-        title="Вернуть средства?"
-        description={
-          refundTarget
-            ? `${formatRub(refundTarget.amountRub)} будет возвращена на внутренний баланс покупателя, а доступ к прогнозу отозван.`
-            : ''
-        }
-        confirmLabel="Вернуть на баланс"
-        busy={refunding}
-        onConfirm={confirmRefund}
-        onCancel={() => setRefundTarget(null)}
-      />
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════════════
-   КЛИЕНТЫ
-   ════════════════════════════════════════════════════════════════════════ */
-
-type UserAction =
-  | { kind: 'balance'; user: SafeSessionUser }
-  | { kind: 'grant'; user: SafeSessionUser }
-  | { kind: 'revshare'; user: SafeSessionUser }
-  | { kind: 'password'; user: SafeSessionUser }
-  | { kind: 'block'; user: SafeSessionUser };
-
-function UsersTab({
-  users,
-  predictions,
-  onRefresh,
-  onToast,
-}: {
-  users: SafeSessionUser[];
-  predictions: PredictionRecord[];
-  onRefresh: () => Promise<void>;
-  onToast: (msg: string, kind?: ToastKind) => void;
-}) {
-  const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<'ALL' | 'BUYERS' | 'PARTNERS' | 'BLOCKED'>('ALL');
-  const [action, setAction] = useState<UserAction | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const [balanceAmount, setBalanceAmount] = useState('1000');
-  const [grantPredictionId, setGrantPredictionId] = useState('');
-  const [revsharePct, setRevsharePct] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-
-  const openAction = (next: UserAction) => {
-    setAction(next);
-    if (next.kind === 'balance') setBalanceAmount('1000');
-    if (next.kind === 'revshare') setRevsharePct(String(next.user.revsharePercent));
-    if (next.kind === 'password') setNewPassword('');
-    if (next.kind === 'grant') {
-      const pending = predictions.filter(
-        (p) => p.resultStatus === 'PENDING' && !next.user.purchasedPredictionIds.includes(p.id),
-      );
-      setGrantPredictionId(pending[0]?.id ?? '');
-    }
-  };
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return users.filter((u) => {
-      if (filter === 'BUYERS' && u.purchasedPredictionIds.length === 0) return false;
-      if (filter === 'PARTNERS' && u.affiliateTotalEarnedRub <= 0) return false;
-      if (filter === 'BLOCKED' && u.status !== 'BLOCKED') return false;
-      if (!q) return true;
-      return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
-    });
-  }, [users, search, filter]);
-
-  const runAction = async () => {
-    if (!action) return;
-    setBusy(true);
-    try {
-      let payload: Record<string, unknown> | null = null;
-      if (action.kind === 'balance') {
-        const amount = Number(balanceAmount);
-        if (!Number.isFinite(amount) || amount === 0) {
-          onToast('Введите корректную сумму', 'error');
-          return;
-        }
-        payload = { action: 'ADD_BALANCE', userId: action.user.id, amountRub: amount };
-      } else if (action.kind === 'grant') {
-        if (!grantPredictionId) {
-          onToast('Все актуальные матчи уже открыты у этого клиента', 'info');
-          return;
-        }
-        payload = { action: 'GRANT_PREDICTION', userId: action.user.id, predictionId: grantPredictionId };
-      } else if (action.kind === 'revshare') {
-        const pct = Number(revsharePct);
-        if (!Number.isFinite(pct) || pct < 5 || pct > 60) {
-          onToast('Партнёрский процент должен быть от 5 до 60%', 'error');
-          return;
-        }
-        payload = { action: 'SET_REVSHARE', userId: action.user.id, revsharePercent: pct };
-      } else if (action.kind === 'password') {
-        if (newPassword.length < 6) {
-          onToast('Пароль должен содержать минимум 6 символов', 'error');
-          return;
-        }
-        payload = { action: 'RESET_PASSWORD', userId: action.user.id, newPassword };
-      } else if (action.kind === 'block') {
-        payload = { action: 'TOGGLE_BLOCK', userId: action.user.id };
-      }
-      if (!payload) return;
-      const res = await fetch('/api/v1/admin/users', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        onToast('Не удалось выполнить действие', 'error');
-        return;
-      }
-      const messages: Record<UserAction['kind'], string> = {
-        balance: 'Баланс начислен',
-        grant: 'Доступ к прогнозу открыт',
-        revshare: 'Партнёрский процент обновлён',
-        password: 'Новый пароль установлен',
-        block:
-          action.user.status === 'BLOCKED'
-            ? 'Аккаунт разблокирован'
-            : 'Аккаунт заблокирован',
-      };
-      onToast(messages[action.kind]);
-      setAction(null);
-      await onRefresh();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const grantablePredictions = action?.kind === 'grant'
-    ? predictions.filter(
-        (p) => p.resultStatus === 'PENDING' && !action.user.purchasedPredictionIds.includes(p.id),
-      )
-    : [];
-
-  const modalMeta: Record<UserAction['kind'], { title: string; description: string; confirm: string }> = {
-    balance: { title: 'Начислить на баланс', description: 'Сумма будет добавлена на внутренний баланс клиента.', confirm: 'Начислить' },
-    grant: { title: 'Подарить прогноз', description: 'Клиент получит бесплатный доступ к выбранному событию.', confirm: 'Открыть доступ' },
-    revshare: { title: 'Партнёрский процент', description: 'Доля с продаж по реферальной ссылке клиента.', confirm: 'Сохранить' },
-    password: { title: 'Сменить пароль', description: 'Новый пароль будет действовать сразу.', confirm: 'Установить пароль' },
-    block: { title: 'Изменить блокировку', description: 'Заблокированный клиент не сможет входить и покупать.', confirm: 'Применить' },
-  };
-
-  return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <div className="relative w-full sm:w-72">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Поиск по email или имени…"
-            className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-xs focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-          />
-        </div>
-        <div className="flex rounded-xl border border-slate-200 bg-white p-1">
-          {(
-            [
-              ['ALL', 'Все'],
-              ['BUYERS', 'Покупатели'],
-              ['PARTNERS', 'Партнёры'],
-              ['BLOCKED', 'Заблокированные'],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setFilter(id)}
-              className={`rounded-lg px-3 py-1.5 text-[11px] font-bold transition ${
-                filter === id ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-900'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <SectionCard title={`Клиенты (${filtered.length})`} subtitle="Управление пользователями и партнёрами">
-        {filtered.length === 0 ? (
-          <EmptyState icon={<Users className="h-5 w-5" />} title="Клиентов не найдено" />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-100 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  <th className="px-5 py-3">Клиент</th>
-                  <th className="px-5 py-3">Баланс</th>
-                  <th className="px-5 py-3">Партнёрка</th>
-                  <th className="px-5 py-3">Открыто прогнозов</th>
-                  <th className="px-5 py-3 text-right">Действия</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filtered.map((u) => (
-                  <tr key={u.id} className="hover:bg-slate-50/60">
-                    <td className="px-5 py-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-bold text-slate-900">
-                          {u.displayName} ({u.email})
-                        </span>
-                        {u.role === 'ADMIN' && <Badge tone="blue">Администратор</Badge>}
-                        {u.status === 'BLOCKED' && <Badge tone="rose">Заблокирован</Badge>}
-                      </div>
-                    </td>
-                    <td className="px-5 py-3 font-mono font-bold text-slate-900">
-                      {formatRub(u.balanceRub)}
-                    </td>
-                    <td className="px-5 py-3 text-slate-600">
-                      <div className="font-mono font-bold">{formatRub(u.affiliateBalanceRub)}</div>
-                      <div className="text-[11px] text-slate-400">
-                        {u.revsharePercent}% · заработано {formatRub(u.affiliateTotalEarnedRub)}
-                      </div>
-                    </td>
-                    <td className="px-5 py-3 font-mono font-bold text-slate-900">
-                      {u.purchasedPredictionIds.length}
-                    </td>
-                    <td className="px-5 py-3">
-                      <div className="flex flex-wrap justify-end gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => openAction({ kind: 'balance', user: u })}
-                          className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50"
-                        >
-                          + ₽
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openAction({ kind: 'grant', user: u })}
-                          className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[11px] font-bold text-blue-700 hover:bg-blue-100"
-                        >
-                          <Gift className="h-3 w-3" />
-                          Подарить матч
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openAction({ kind: 'revshare', user: u })}
-                          className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50"
-                        >
-                          {u.revsharePercent}%
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openAction({ kind: 'password', user: u })}
-                          className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50"
-                        >
-                          Пароль
-                        </button>
-                        {u.role !== 'ADMIN' && (
-                          <button
-                            type="button"
-                            onClick={() => openAction({ kind: 'block', user: u })}
-                            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11px] font-bold ${
-                              u.status === 'BLOCKED'
-                                ? 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
-                                : 'border-rose-200 text-rose-600 hover:bg-rose-50'
-                            }`}
-                          >
-                            <Ban className="h-3 w-3" />
-                            {u.status === 'BLOCKED' ? 'Разблокировать' : 'Блок'}
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </SectionCard>
-
-      <Modal
-        open={action !== null}
-        onClose={() => setAction(null)}
-        title={action ? modalMeta[action.kind].title : ''}
-        description={
-          action
-            ? `${modalMeta[action.kind].description} Клиент: ${action.user.displayName} (${action.user.email})`
-            : undefined
-        }
-        footer={
-          <>
-            <button
-              type="button"
-              onClick={() => setAction(null)}
-              disabled={busy}
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              Отмена
-            </button>
-            <button
-              type="button"
-              onClick={runAction}
-              disabled={busy}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold text-white disabled:opacity-50 ${
-                action?.kind === 'block' && action.user.status !== 'BLOCKED'
-                  ? 'bg-rose-600 hover:bg-rose-700'
-                  : 'bg-blue-600 hover:bg-blue-700'
-              }`}
-            >
-              {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {action ? modalMeta[action.kind].confirm : ''}
-            </button>
-          </>
-        }
-      >
-        {action?.kind === 'balance' && (
-          <Field label="Сумма начисления (₽)" hint="Можно указать отрицательную сумму для списания.">
-            <input type="number" autoFocus value={balanceAmount} onChange={(e) => setBalanceAmount(e.target.value)} className={inputMonoCls} />
-          </Field>
-        )}
-        {action?.kind === 'grant' && (
-          <Field label="Событие для подарка">
-            {grantablePredictions.length === 0 ? (
-              <p className="text-xs text-slate-500">Все актуальные матчи уже открыты у этого клиента.</p>
-            ) : (
-              <select value={grantPredictionId} onChange={(e) => setGrantPredictionId(e.target.value)} className={inputCls}>
-                {grantablePredictions.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.homeTeam} — {p.awayTeam} · {p.leagueName}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
-        )}
-        {action?.kind === 'revshare' && (
-          <Field label="Партнёрский процент" hint="Допустимый диапазон: от 5 до 60%.">
-            <input type="number" min={5} max={60} autoFocus value={revsharePct} onChange={(e) => setRevsharePct(e.target.value)} className={inputMonoCls} />
-          </Field>
-        )}
-        {action?.kind === 'password' && (
-          <Field label="Новый пароль" hint="Минимум 6 символов.">
-            <input type="password" autoFocus value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className={inputCls} />
-          </Field>
-        )}
-        {action?.kind === 'block' && (
-          <p className="text-xs leading-relaxed text-slate-600">
-            {action.user.status === 'BLOCKED'
-              ? 'Аккаунт будет разблокирован и клиент снова сможет входить и покупать прогнозы.'
-              : 'Аккаунт будет заблокирован: клиент не сможет входить и покупать прогнозы, пока вы не разблокируете его.'}
-          </p>
-        )}
-      </Modal>
-    </div>
-  );
-}
 
 /* ════════════════════════════════════════════════════════════════════════
    НАСТРОЙКИ

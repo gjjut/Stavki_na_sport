@@ -213,6 +213,9 @@ export interface OrderTransaction {
   insuranceCredited?: boolean;
   insuredRefundedPredictionIds?: string[];
   insuranceRefundedAmountRub?: number;
+  refundDestination?: 'BALANCE';
+  refundBalanceAmountRub?: number;
+  refundedAt?: string;
   receiptEmail: string;
   confirmationUrl: string | null;
   affiliateUserId: string | null;
