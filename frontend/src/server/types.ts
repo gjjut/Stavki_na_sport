@@ -10,6 +10,14 @@ export type SportType =
   | 'MMA';
 
 export type MatchStatus = 'UPCOMING' | 'LIVE' | 'FINISHED';
+export type MatchLifecycleStatus =
+  | 'SCHEDULED'
+  | 'LIVE'
+  | 'FINISHED'
+  | 'POSTPONED'
+  | 'CANCELLED'
+  | 'UNKNOWN';
+export type VerificationPrecision = 'SOURCE_EXACT' | 'LIVE_OBSERVED' | 'FINAL_OBSERVED';
 export type ResultStatus = 'PENDING' | 'WIN' | 'LOSS' | 'PUSH' | 'CASHOUT';
 export type AccessTier = 'FREE' | 'PAID_SINGLE';
 
@@ -70,8 +78,24 @@ export interface PredictionRecord {
   awayTeam: string;
   homeLogoUrl?: string | null;
   awayLogoUrl?: string | null;
+  fonbetHomeTeamId?: number | null;
+  fonbetAwayTeamId?: number | null;
   matchStartsAt: string;
   matchStatus: MatchStatus;
+  matchLifecycleStatus?: MatchLifecycleStatus;
+  actualStartedAt?: string | null;
+  actualStartedAtPrecision?: VerificationPrecision | null;
+  actualFinishedAt?: string | null;
+  actualFinishedAtPrecision?: VerificationPrecision | null;
+  matchVerifiedAt?: string | null;
+  matchVerificationSource?: string | null;
+  matchVerificationConflict?: boolean;
+  finalScoreVerified?: boolean;
+  finalScoreVerifiedSources?: string[];
+  finalScoreIsOvertime?: boolean;
+  liveHomeScore?: number | null;
+  liveAwayScore?: number | null;
+  liveUpdatedAt?: string | null;
   stakePercent: number;
   stakeUnits: number;
   bookmakerSource: string;
@@ -83,6 +107,7 @@ export interface PredictionRecord {
   aiEdgePct?: number | null;
   researchSummary?: string | null;
   researchSources?: string[];
+  agentReport?: string | null;
 
   // Гарантия возврата стоимости на баланс сайта при минусе или возврате (PUSH)
   insuredOnLoss?: boolean;
@@ -120,6 +145,15 @@ export interface PublicPredictionDto {
   awayLogoUrl?: string | null;
   matchStartsAt: string;
   matchStatus: MatchStatus;
+  matchLifecycleStatus?: MatchLifecycleStatus;
+  actualStartedAt?: string | null;
+  actualStartedAtPrecision?: VerificationPrecision | null;
+  actualFinishedAt?: string | null;
+  actualFinishedAtPrecision?: VerificationPrecision | null;
+  matchVerifiedAt?: string | null;
+  matchVerificationSource?: string | null;
+  matchVerificationConflict?: boolean;
+  finalScoreVerified?: boolean;
   stakePercent: number;
   stakeUnits: number;
   bookmakerSource: string;
@@ -143,6 +177,10 @@ export interface PublicPredictionDto {
   oddsLockedAt: string;
   settledAt: string | null;
   researchSources?: string[];
+  agentReport?: string | null;
+  liveHomeScore?: number | null;
+  liveAwayScore?: number | null;
+  liveUpdatedAt?: string | null;
 }
 
 export interface PromoCodeRecord {
@@ -303,6 +341,8 @@ export interface AiAutopilotConfig {
   insureAiPicks: boolean; // включать ли страховку 100% на баланс при минусе
   autoSettleEnabled: boolean; // автопроверка счета после матча + выплата страховки
   openSourceResearchEnabled?: boolean; // сбор новостей, травм, турнирной таблицы и формы из открытых источников перед отбором
+  minAgentConfidencePct?: number; // минимальный консенсус команды (по умолчанию 70)
+  requireAgentConsensus?: boolean; // не публиковать без согласия специализированных агентов
   cronSecret: string;
   totalGeneratedCount: number;
   lastFeedSource: string | null;
@@ -359,6 +399,9 @@ export interface AiPredictionDraft {
   analysisFull: string;
   researchSummary?: string;
   researchSources?: string[];
+  agentReport?: string | null;
+  fonbetHomeTeamId?: number | null;
+  fonbetAwayTeamId?: number | null;
   createdAt: string;
 }
 
@@ -389,7 +432,13 @@ export interface AiAutopilotLogEntry {
   id: string;
   createdAt: string;
   level: 'INFO' | 'SUCCESS' | 'WARN' | 'ERROR';
-  stage: 'SCANNER' | 'LLM_ANALYST' | 'PUBLISHER' | 'SETTLEMENT';
+  stage:
+    | 'SCANNER'
+    | 'LLM_ANALYST'
+    | 'PUBLISHER'
+    | 'SETTLEMENT'
+    | 'MATCH_WATCH'
+    | 'AGENTS';
   message: string;
 }
 

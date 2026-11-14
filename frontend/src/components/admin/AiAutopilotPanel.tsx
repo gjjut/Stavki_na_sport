@@ -738,6 +738,16 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                   <p className="mt-2 line-clamp-3 text-[11px] leading-relaxed text-slate-500">
                     {d.analysisFull}
                   </p>
+                  {d.agentReport && (
+                    <details className="mt-2 rounded-lg border border-indigo-100 bg-indigo-50/70 p-2 text-[10px] text-slate-700">
+                      <summary className="cursor-pointer font-bold text-indigo-800">
+                        Отчёт AI-команды и причины допуска
+                      </summary>
+                      <pre className="mt-2 whitespace-pre-wrap font-sans leading-relaxed">
+                        {d.agentReport}
+                      </pre>
+                    </details>
+                  )}
                 </div>
 
                 <div className="mt-3 flex items-center justify-between border-t border-slate-200/80 pt-3">

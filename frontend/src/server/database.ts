@@ -526,6 +526,8 @@ function createInitialState(): PersistentState {
     insureAiPicks: true,
     autoSettleEnabled: true,
     openSourceResearchEnabled: true,
+    minAgentConfidencePct: 60,
+    requireAgentConsensus: true,
     cronSecret: process.env.AUTOPILOT_CRON_SECRET || 'valuex-autopilot-2026',
     totalGeneratedCount: 0,
     lastFeedSource: null,
@@ -600,12 +602,31 @@ function normalizeLoadedState(
   const predictions = (raw.predictions || fallback.predictions).map((p, idx) => {
     const legacyTier = p.accessTier as string;
     const normalizedTier: AccessTier = legacyTier === 'FREE' ? 'FREE' : 'PAID_SINGLE';
+    const finalScoreVerifiedSources = Array.isArray(p.finalScoreVerifiedSources)
+      ? Array.from(
+          new Set(
+            p.finalScoreVerifiedSources
+              .filter((source): source is string => typeof source === 'string')
+              .map((source) => source.trim())
+              .filter(Boolean),
+          ),
+        )
+      : [];
+    const invalidateUncorroboratedFinal =
+      p.resultStatus === 'PENDING' &&
+      p.finalScoreVerified === true &&
+      finalScoreVerifiedSources.length < 2;
     return {
       ...p,
       authorSource: p.authorSource ?? 'HUMAN',
       externalFixtureId: p.externalFixtureId ?? null,
       aiConfidencePct: p.aiConfidencePct ?? null,
       aiEdgePct: p.aiEdgePct ?? null,
+      finalScoreVerified: invalidateUncorroboratedFinal ? false : p.finalScoreVerified ?? false,
+      finalScoreVerifiedSources,
+      liveHomeScore: invalidateUncorroboratedFinal ? null : p.liveHomeScore ?? null,
+      liveAwayScore: invalidateUncorroboratedFinal ? null : p.liveAwayScore ?? null,
+      finalScoreIsOvertime: invalidateUncorroboratedFinal ? false : p.finalScoreIsOvertime ?? false,
       isFeatured: p.isFeatured ?? idx === 0,
       insuredOnLoss: p.insuredOnLoss ?? normalizedTier === 'PAID_SINGLE',
       accessTier: normalizedTier,
@@ -755,6 +776,11 @@ function normalizeLoadedState(
       Array.isArray(rawAi.sportsEnabled) && rawAi.sportsEnabled.length > 0
         ? rawAi.sportsEnabled
         : fallback.aiAutopilot.sportsEnabled,
+    minAgentConfidencePct: Number.isFinite(Number(rawAi.minAgentConfidencePct))
+      ? Math.max(0, Math.min(100, Number(rawAi.minAgentConfidencePct)))
+      : fallback.aiAutopilot.minAgentConfidencePct,
+    // Обязательный серверный fail-closed порог для любого выпуска.
+    requireAgentConsensus: true,
   };
 
   return {
@@ -962,15 +988,29 @@ export function toSafeSessionUser(user: UserAccount): SafeSessionUser {
 }
 
 export function resolveEffectiveMatchStatus(record: PredictionRecord): MatchStatus {
-  if (record.matchStatus === 'FINISHED' || record.resultStatus !== 'PENDING') {
-    return 'FINISHED';
+  if (record.resultStatus !== 'PENDING') return 'FINISHED';
+  if (record.matchLifecycleStatus === 'LIVE') return 'LIVE';
+  if (record.matchLifecycleStatus === 'FINISHED') return 'FINISHED';
+  // Отложенные/отменённые матчи не завершены: lifecycle остаётся доступен DTO,
+  // а отдельная проверка ниже закрывает продажу, пока статус не прояснится.
+  if (
+    record.matchLifecycleStatus === 'POSTPONED' ||
+    record.matchLifecycleStatus === 'CANCELLED'
+  ) {
+    return 'UPCOMING';
   }
-  if (record.matchStatus === 'LIVE') {
-    return 'LIVE';
+  // Для новых записей время расписания не доказывает, что игра началась.
+  // Статус LIVE устанавливается только наблюдением источника; старые записи
+  // без lifecycle продолжают работать по прежнему поведению.
+  if (
+    record.matchLifecycleStatus === 'SCHEDULED' ||
+    record.matchLifecycleStatus === 'UNKNOWN'
+  ) {
+    return 'UPCOMING';
   }
-  if (Date.now() >= new Date(record.matchStartsAt).getTime()) {
-    return 'LIVE';
-  }
+  if (record.matchStatus === 'FINISHED') return 'FINISHED';
+  if (record.matchStatus === 'LIVE') return 'LIVE';
+  if (Date.now() >= new Date(record.matchStartsAt).getTime()) return 'LIVE';
   return 'UPCOMING';
 }
 
@@ -1004,13 +1044,26 @@ export function toPublicPredictionDto(
     awayLogoUrl: record.awayLogoUrl ?? null,
     matchStartsAt: record.matchStartsAt,
     matchStatus: effectiveStatus,
+    matchLifecycleStatus: record.matchLifecycleStatus,
+    actualStartedAt: record.actualStartedAt ?? null,
+    actualStartedAtPrecision: record.actualStartedAtPrecision ?? null,
+    actualFinishedAt: record.actualFinishedAt ?? null,
+    actualFinishedAtPrecision: record.actualFinishedAtPrecision ?? null,
+    matchVerifiedAt: record.matchVerifiedAt ?? null,
+    matchVerificationSource: record.matchVerificationSource ?? null,
+    matchVerificationConflict: record.matchVerificationConflict ?? false,
+    finalScoreVerified: record.finalScoreVerified ?? false,
     stakePercent: record.stakePercent,
     stakeUnits: record.stakeUnits,
     bookmakerSource: record.bookmakerSource,
     analysisTeaser: record.analysisTeaser,
     isFeatured: Boolean(record.isFeatured),
     insuredOnLoss: Boolean(record.insuredOnLoss),
-    salesClosed: effectiveStatus !== 'UPCOMING',
+    salesClosed:
+      effectiveStatus !== 'UPCOMING' ||
+      record.matchLifecycleStatus === 'POSTPONED' ||
+      record.matchLifecycleStatus === 'CANCELLED' ||
+      Date.now() >= new Date(record.matchStartsAt).getTime(),
     isLocked: !unlocked,
     isPurchased: isBought,
     accessTier: record.accessTier,
@@ -1027,6 +1080,10 @@ export function toPublicPredictionDto(
     oddsLockedAt: record.oddsLockedAt,
     settledAt: record.settledAt,
     researchSources: record.researchSources ?? [],
+    agentReport: unlocked ? record.agentReport ?? null : null,
+    liveHomeScore: record.liveHomeScore ?? null,
+    liveAwayScore: record.liveAwayScore ?? null,
+    liveUpdatedAt: record.liveUpdatedAt ?? null,
   };
 }
 
@@ -1450,8 +1507,13 @@ export async function initiateOrderCheckout(params: {
     const matchedPreds = targetIds.map((id) => {
       const p = stateSnap.predictions.find((row) => row.id === id);
       if (!p) throw new Error('Одно из выбранных событий не найдено');
-      if (resolveEffectiveMatchStatus(p) !== 'UPCOMING') {
-        throw new Error(`Продажа закрыта: матч «${p.homeTeam} — ${p.awayTeam}» уже начался`);
+      if (
+        resolveEffectiveMatchStatus(p) !== 'UPCOMING' ||
+        p.matchLifecycleStatus === 'POSTPONED' ||
+        p.matchLifecycleStatus === 'CANCELLED' ||
+        Date.now() >= new Date(p.matchStartsAt).getTime()
+      ) {
+        throw new Error(`Продажа закрыта: матч «${p.homeTeam} — ${p.awayTeam}» уже начался, перенесён или отменён либо наступило время старта по расписанию`);
       }
       return p;
     });
@@ -1788,6 +1850,9 @@ export async function createPredictionByAdmin(input: {
   awayTeam: string;
   homeLogoUrl?: string | null;
   awayLogoUrl?: string | null;
+  fonbetHomeTeamId?: number | null;
+  fonbetAwayTeamId?: number | null;
+  agentReport?: string | null;
   matchStartsAt: string;
   selectionTitle: string;
   fixedOdds: number;
@@ -1842,8 +1907,25 @@ export async function createPredictionByAdmin(input: {
       awayTeam: input.awayTeam.trim(),
       homeLogoUrl: input.homeLogoUrl?.trim() || null,
       awayLogoUrl: input.awayLogoUrl?.trim() || null,
+      fonbetHomeTeamId: input.fonbetHomeTeamId ?? null,
+      fonbetAwayTeamId: input.fonbetAwayTeamId ?? null,
+      agentReport: input.agentReport?.trim() || null,
       matchStartsAt: startsIso,
       matchStatus: 'UPCOMING',
+      matchLifecycleStatus: 'SCHEDULED',
+      actualStartedAt: null,
+      actualStartedAtPrecision: null,
+      actualFinishedAt: null,
+      actualFinishedAtPrecision: null,
+      matchVerifiedAt: null,
+      matchVerificationSource: null,
+      matchVerificationConflict: false,
+      finalScoreVerified: false,
+      finalScoreVerifiedSources: [],
+      finalScoreIsOvertime: false,
+      liveHomeScore: null,
+      liveAwayScore: null,
+      liveUpdatedAt: null,
       stakePercent: stake,
       stakeUnits: stake,
       bookmakerSource: input.bookmakerSource?.trim() || 'Фонбет · Винлайн · Пари',

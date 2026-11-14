@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { SportType } from './types';
+import { teamNamesMatch } from './team-names';
+import { normalizeFonbetTeamImageUrl } from './fonbet-team-logos';
 
 export type CrestPattern =
   | 'stripes'
@@ -827,7 +829,10 @@ export function renderClubCrestSvg(
 </svg>`;
 }
 
-async function fetchImageBinary(url: string): Promise<CachedBinaryLogo | null> {
+async function fetchImageBinary(
+  url: string,
+  requireFonbetHost = false,
+): Promise<CachedBinaryLogo | null> {
   try {
     const res = await fetch(url, {
       headers: {
@@ -838,6 +843,7 @@ async function fetchImageBinary(url: string): Promise<CachedBinaryLogo | null> {
       cache: 'no-store',
     });
     if (!res.ok) return null;
+    if (requireFonbetHost && !normalizeFonbetTeamImageUrl(res.url)) return null;
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (!ct.startsWith('image/')) return null;
 
@@ -900,15 +906,25 @@ async function lookupSportsDbLogoUrl(
     });
     if (!res.ok) return null;
     const json = (await res.json()) as {
-      teams?: Array<{ strBadge?: string; strLogo?: string }>;
-      player?: Array<{ strCutout?: string; strThumb?: string }>;
+      teams?: Array<{ strTeam?: string; strBadge?: string; strLogo?: string }>;
+      player?: Array<{ strPlayer?: string; strCutout?: string; strThumb?: string }>;
     };
     if (isIndividual) {
-      const p = json.player?.[0];
-      return p?.strCutout || p?.strThumb || null;
+      for (const p of json.player || []) {
+        const url = p.strCutout || p.strThumb;
+        if (!url) continue;
+        if (p.strPlayer && !teamNamesMatch(p.strPlayer, query)) continue;
+        return url;
+      }
+      return null;
     }
-    const t = json.teams?.[0];
-    return t?.strBadge || t?.strLogo || null;
+    for (const t of json.teams || []) {
+      const url = t.strBadge || t.strLogo;
+      if (!url) continue;
+      if (t.strTeam && !teamNamesMatch(t.strTeam, query)) continue;
+      return url;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -977,16 +993,27 @@ async function discoverOfficialLogoBinary(params: {
   teamName: string;
   sport?: SportType;
   directUrl?: string | null;
+  enName?: string | null;
 }): Promise<CachedBinaryLogo | null> {
-  // 1. Прямая ссылка (например из фида БК / ESPN / ручного поля)
-  if (params.directUrl && /^https?:\/\//i.test(params.directUrl.trim())) {
-    const directImg = await fetchImageBinary(params.directUrl.trim());
+  const isIndividual = params.sport === 'TENNIS' || params.sport === 'MMA';
+  // Командные эмблемы — только прямой ресурс Фонбет, вложенный им в событие.
+  // Спортсменам можно передать прямой headshot из спортивного фида.
+  const fonbetImageUrl = normalizeFonbetTeamImageUrl(params.directUrl);
+  const individualImageUrl =
+    isIndividual && params.directUrl && /^https?:\/\//i.test(params.directUrl.trim())
+      ? params.directUrl.trim()
+      : null;
+  const directImageUrl = fonbetImageUrl || individualImageUrl;
+  if (directImageUrl) {
+    const directImg = await fetchImageBinary(directImageUrl, Boolean(fonbetImageUrl));
     if (directImg) return directImg;
   }
 
   const prof = findClubProfile(params.teamName, params.sport);
-  const isIndividual = params.sport === 'TENNIS' || params.sport === 'MMA';
-  const enQuery = prof?.enQuery || params.teamName;
+  // Для портретов спортсменов сохраняем существующий resolver официальных спортивных баз.
+  // Командные картинки без прямой ссылки Фонбет не подменяем внешними логотипами.
+  if (!isIndividual) return null;
+  const enQuery = (params.enName || '').trim() || prof?.enQuery || params.teamName;
   const ruWikiExact = prof?.ruWiki;
 
   // 2. Параллельно опрашиваем официальные спортивные базы (ESPN + TheSportsDB + Русская Википедия)
@@ -1024,6 +1051,7 @@ export async function resolveTeamLogoResponse(params: {
   teamName: string;
   sport?: SportType;
   directUrl?: string | null;
+  enName?: string | null;
 }): Promise<{
   contentType: string;
   body: Buffer | string;
@@ -1032,9 +1060,9 @@ export async function resolveTeamLogoResponse(params: {
   const cleanTeam = (params.teamName || 'Team').trim().slice(0, 90);
   const cacheKey = createHash('sha1')
     .update(
-      `${normalizeLookupName(cleanTeam)}__${params.sport || 'ANY'}__${
-        params.directUrl || ''
-      }`,
+      `fonbet-team-only-v2__${normalizeLookupName(cleanTeam)}__${params.sport || 'ANY'}__${
+        normalizeFonbetTeamImageUrl(params.directUrl) || ''
+      }__${(params.enName || '').trim()}`,
     )
     .digest('hex');
 
@@ -1083,7 +1111,7 @@ export async function resolveTeamLogoResponse(params: {
   if (Date.now() < negUntil) {
     return {
       contentType: 'image/svg+xml; charset=utf-8',
-      body: renderClubCrestSvg(cleanTeam, params.sport),
+      body: '',
       isOfficialBinary: false,
     };
   }
@@ -1093,6 +1121,7 @@ export async function resolveTeamLogoResponse(params: {
     teamName: cleanTeam,
     sport: params.sport,
     directUrl: params.directUrl,
+    enName: params.enName,
   });
 
   if (discovered) {
@@ -1130,7 +1159,7 @@ export async function resolveTeamLogoResponse(params: {
 
   return {
     contentType: 'image/svg+xml; charset=utf-8',
-    body: renderClubCrestSvg(cleanTeam, params.sport),
+    body: '',
     isOfficialBinary: false,
   };
 }

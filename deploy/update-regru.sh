@@ -52,8 +52,11 @@ NODE_OPTIONS="--max-old-space-size=1536" npm run build
 pm2 restart valuex-web || pm2 start npm --name "valuex-web" -- run start
 pm2 save
 
-# 4. Настройка системного планировщика Cron (ИИ-Автопилот каждые 15 мин + ежедневный бэкап БД)
+# 4. Настройка системного планировщика Cron и короткой команды valuex для Termius
 chmod +x "${PROJECT_DIR}/deploy/"*.sh || true
+if [[ -f "${PROJECT_DIR}/deploy/termius.sh" ]]; then
+  ln -sf "${PROJECT_DIR}/deploy/termius.sh" /usr/local/bin/valuex || true
+fi
 if ! command -v cron >/dev/null 2>&1 || [[ ! -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf ]]; then
   apt-get update -y && apt-get install -y cron fonts-dejavu-core || true
 fi

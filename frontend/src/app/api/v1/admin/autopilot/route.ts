@@ -38,6 +38,12 @@ export async function PATCH(req: NextRequest) {
         ...state.aiAutopilot,
         ...incoming,
       };
+      const agentConfidence = Number(state.aiAutopilot.minAgentConfidencePct ?? 60);
+      state.aiAutopilot.minAgentConfidencePct = Number.isFinite(agentConfidence)
+        ? Math.max(0, Math.min(100, agentConfidence))
+        : 60;
+      // Консенсус не отключается конфигурацией: при сбое/разногласии автопубликации нет.
+      state.aiAutopilot.requireAgentConsensus = true;
       if (body.config.mode && body.config.mode !== prevMode) {
         state.aiLogs.unshift({
           id: `ailog_${randomUUID().slice(0, 8)}`,

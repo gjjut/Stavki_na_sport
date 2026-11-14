@@ -85,7 +85,52 @@ export async function PATCH(req: NextRequest) {
       const updated = await mutateState((state) => {
         const pred = state.predictions.find((p) => p.id === body.predictionId);
         if (!pred) throw new Error('Событие не найдено');
+        const previousLifecycle = pred.matchLifecycleStatus;
         pred.matchStatus = body.matchStatus!;
+        pred.matchLifecycleStatus =
+          body.matchStatus === 'LIVE'
+            ? 'LIVE'
+            : body.matchStatus === 'FINISHED'
+              ? 'FINISHED'
+              : 'SCHEDULED';
+        const verifiedAt = new Date().toISOString();
+        pred.matchVerifiedAt = verifiedAt;
+        pred.matchVerificationSource = 'Ручная отметка администратора';
+        pred.finalScoreVerified = false;
+        pred.finalScoreVerifiedSources = [];
+        pred.liveHomeScore = null;
+        pred.liveAwayScore = null;
+        pred.finalScoreIsOvertime = false;
+        if (body.matchStatus === 'UPCOMING') {
+          pred.actualStartedAt = null;
+          pred.actualStartedAtPrecision = null;
+          pred.actualFinishedAt = null;
+          pred.actualFinishedAtPrecision = null;
+        }
+        if (body.matchStatus === 'LIVE') {
+          if (
+            previousLifecycle === 'FINISHED' ||
+            previousLifecycle === 'POSTPONED' ||
+            previousLifecycle === 'CANCELLED'
+          ) {
+            pred.actualStartedAt = null;
+            pred.actualStartedAtPrecision = null;
+          }
+          pred.actualFinishedAt = null;
+          pred.actualFinishedAtPrecision = null;
+          if (!pred.actualStartedAt) {
+            pred.actualStartedAt = verifiedAt;
+            pred.actualStartedAtPrecision = 'LIVE_OBSERVED';
+          }
+        }
+        if (
+          body.matchStatus === 'FINISHED' &&
+          pred.actualFinishedAtPrecision === 'FINAL_OBSERVED'
+        ) {
+          // This is an admin verification time, not a source-reported actual finish time.
+          pred.actualFinishedAt = null;
+          pred.actualFinishedAtPrecision = null;
+        }
         if (body.finalScore !== undefined) pred.finalScore = body.finalScore;
         return pred;
       });

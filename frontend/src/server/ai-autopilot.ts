@@ -10,6 +10,12 @@ import {
   type OpenSourceMatchIntel,
 } from './ai-research';
 import { sendTelegramChannelAnnouncement } from './integrations';
+import { runAgentCommittee, buildAgentAnalysis, type AgentCandidateInput } from './ai-agents';
+import { normalizeFonbetTeamImageUrl } from './fonbet-team-logos';
+import {
+  localizeTeamName,
+  matchTeamPairOrder,
+} from './team-names';
 import type {
   AccessTier,
   AiAutopilotConfig,
@@ -18,6 +24,7 @@ import type {
   AiDiagnosticsReport,
   AiDiagnosticsSampleMatch,
   AiPredictionDraft,
+  MatchLifecycleStatus,
   PredictionRecord,
   ResultStatus,
   SportType,
@@ -29,8 +36,12 @@ interface ScannedFixtureCandidate {
   leagueName: string;
   homeTeam: string;
   awayTeam: string;
+  homeTeamEn?: string | null;
+  awayTeamEn?: string | null;
   homeLogoUrl?: string | null;
   awayLogoUrl?: string | null;
+  fonbetHomeTeamId?: number | null;
+  fonbetAwayTeamId?: number | null;
   matchStartsAt: string;
   bookmakerSource: string;
   homeOdds: number;
@@ -157,223 +168,6 @@ const ESPN_ENDPOINTS: Array<{
   },
 ];
 
-// Расширенный русский словарь клубов РПЛ, Европы, НХЛ и НБА
-const EN_TO_RU_TEAMS: Record<string, string> = {
-  // Россия · Мир РПЛ
-  'Zenit St Petersburg': 'Зенит',
-  'FC Zenit Saint Petersburg': 'Зенит',
-  Zenit: 'Зенит',
-  Krasnodar: 'Краснодар',
-  'FC Krasnodar': 'Краснодар',
-  'Spartak Moscow': 'Спартак Москва',
-  'CSKA Moscow': 'ЦСКА Москва',
-  'Lokomotiv Moscow': 'Локомотив Москва',
-  'Dynamo Moscow': 'Динамо Москва',
-  'Dinamo Moscow': 'Динамо Москва',
-  'FC Rostov': 'Ростов',
-  Rostov: 'Ростов',
-  'Rubin Kazan': 'Рубин Казань',
-  'Krylia Sovetov': 'Крылья Советов',
-  'Krylya Sovetov': 'Крылья Советов',
-  'Akhmat Grozny': 'Ахмат',
-  'Pari Nizhny Novgorod': 'Пари НН',
-  'Nizhny Novgorod': 'Пари НН',
-  'Fakel Voronezh': 'Факел Воронеж',
-  'FC Orenburg': 'Оренбург',
-  Orenburg: 'Оренбург',
-  'FC Khimki': 'Химки',
-  Khimki: 'Химки',
-  'Akron Togliatti': 'Акрон Тольятти',
-  'Dynamo Makhachkala': 'Динамо Махачкала',
-  'Baltika Kaliningrad': 'Балтика',
-  'PFC Sochi': 'Сочи',
-  'Ural Yekaterinburg': 'Урал',
-  'Torpedo Moscow': 'Торпедо Москва',
-
-  // Англия · АПЛ
-  Arsenal: 'Арсенал',
-  Liverpool: 'Ливерпуль',
-  'Manchester City': 'Манчестер Сити',
-  'Manchester United': 'Манчестер Юнайтед',
-  Chelsea: 'Челси',
-  'Tottenham Hotspur': 'Тоттенхэм',
-  'Newcastle United': 'Ньюкасл Юнайтед',
-  'Aston Villa': 'Астон Вилла',
-  'Brighton & Hove Albion': 'Брайтон',
-  'West Ham United': 'Вест Хэм',
-  'Crystal Palace': 'Кристал Пэлас',
-  Fulham: 'Фулхэм',
-   Brentford: 'Брентфорд',
-  'AFC Bournemouth': 'Борнмут',
-  Bournemouth: 'Борнмут',
-  'Nottingham Forest': 'Ноттингем Форест',
-  Everton: 'Эвертон',
-  'Wolverhampton Wanderers': 'Вулверхэмптон',
-  'Leicester City': 'Лестер Сити',
-  'Leeds United': 'Лидс Юнайтед',
-  Southampton: 'Саутгемптон',
-  'Ipswich Town': 'Ипсвич Таун',
-
-  // Испания · Ла Лига
-  'Real Madrid': 'Реал Мадрид',
-  Barcelona: 'Барселона',
-  'Atletico Madrid': 'Атлетико Мадрид',
-  'Atlético Madrid': 'Атлетико Мадрид',
-  'Athletic Club': 'Атлетик Бильбао',
-  'Real Sociedad': 'Реал Сосьедад',
-  Villarreal: 'Вильярреал',
-  'Real Betis': 'Реал Бетис',
-  Sevilla: 'Севилья',
-  Valencia: 'Валенсия',
-  Girona: 'Жирона',
-  'Celta Vigo': 'Сельта',
-  Osasuna: 'Осасуна',
-  Getafe: 'Хетафе',
-  'Rayo Vallecano': 'Райо Вальекано',
-  Mallorca: 'Мальорка',
-
-  // Италия · Серия А
-  Internazionale: 'Интер Милан',
-  'Inter Milan': 'Интер Милан',
-  'AC Milan': 'Милан',
-  Juventus: 'Ювентус',
-  Napoli: 'Наполи',
-  Atalanta: 'Аталанта',
-  'AS Roma': 'Рома',
-  Lazio: 'Лацио',
-  Fiorentina: 'Фиорентина',
-  Bologna: 'Болонья',
-  Torino: 'Торино',
-  Udinese: 'Удинезе',
-  Genoa: 'Дженоа',
-  Como: 'Комо',
-  Parma: 'Парма',
-
-  // Германия и Франция + Еврокубки
-  'Bayern Munich': 'Бавария',
-  'Borussia Dortmund': 'Боруссия Дортмунд',
-  'Bayer Leverkusen': 'Байер Леверкузен',
-  'RB Leipzig': 'РБ Лейпциг',
-  'VfB Stuttgart': 'Штутгарт',
-  'Eintracht Frankfurt': 'Айнтрахт Франкфурт',
-  'SC Freiburg': 'Фрайбург',
-  'VfL Wolfsburg': 'Вольфсбург',
-  'Borussia Monchengladbach': 'Боруссия М',
-  'Werder Bremen': 'Вердер Бремен',
-  'Paris Saint-Germain': 'ПСЖ',
-  Marseille: 'Марсель',
-  'AS Monaco': 'Монако',
-  Monaco: 'Монако',
-  Lyon: 'Лион',
-  Lille: 'Лилль',
-  Nice: 'Ницца',
-  Lens: 'Ланс',
-  Benfica: 'Бенфика',
-  'Sporting CP': 'Спортинг',
-  'FC Porto': 'Порту',
-  Ajax: 'Аякс',
-  PSV: 'ПСВ Эйндховен',
-  Feyenoord: 'Фейеноорд',
-  Galatasaray: 'Галатасарай',
-  Fenerbahce: 'Фенербахче',
-  Celtic: 'Селтик',
-
-  // НХЛ
-  'Washington Capitals': 'Вашингтон Кэпиталз',
-  'Tampa Bay Lightning': 'Тампа-Бэй Лайтнинг',
-  'Florida Panthers': 'Флорида Пантерз',
-  'New York Rangers': 'Нью-Йорк Рейнджерс',
-  'New York Islanders': 'Нью-Йорк Айлендерс',
-  'Pittsburgh Penguins': 'Питтсбург Пингвинз',
-  'Edmonton Oilers': 'Эдмонтон Ойлерз',
-  'Colorado Avalanche': 'Колорадо Эвеланш',
-  'Toronto Maple Leafs': 'Торонто Мэйпл Лифс',
-  'Vegas Golden Knights': 'Вегас Голден Найтс',
-  'Dallas Stars': 'Даллас Старз',
-  'Carolina Hurricanes': 'Каролина Харрикейнз',
-  'New Jersey Devils': 'Нью-Джерси Девилз',
-  'Boston Bruins': 'Бостон Брюинз',
-  'Minnesota Wild': 'Миннесота Уайлд',
-  'Winnipeg Jets': 'Виннипег Джетс',
-  'Vancouver Canucks': 'Ванкувер Кэнакс',
-  'Los Angeles Kings': 'Лос-Анджелес Кингз',
-  'Detroit Red Wings': 'Детройт Ред Уингз',
-  'Philadelphia Flyers': 'Филадельфия Флайерз',
-  'Columbus Blue Jackets': 'Коламбус Блю Джекетс',
-  'Montreal Canadiens': 'Монреаль Канадиенс',
-  'Ottawa Senators': 'Оттава Сенаторз',
-
-  // НБА
-  'Boston Celtics': 'Бостон Селтикс',
-  'Denver Nuggets': 'Денвер Наггетс',
-  'Los Angeles Lakers': 'Лос-Анджелес Лейкерс',
-  'LA Clippers': 'ЛА Клипперс',
-  'Golden State Warriors': 'Голден Стэйт Уорриорз',
-  'Milwaukee Bucks': 'Милуоки Бакс',
-  'Phoenix Suns': 'Финикс Санз',
-  'Oklahoma City Thunder': 'Оклахома-Сити Тандер',
-  'New York Knicks': 'Нью-Йорк Никс',
-  'Cleveland Cavaliers': 'Кливленд Кавальерс',
-  'Dallas Mavericks': 'Даллас Маверикс',
-  'Minnesota Timberwolves': 'Миннесота Тимбервулвз',
-  'Miami Heat': 'Майами Хит',
-  'Philadelphia 76ers': 'Филадельфия Сиксерс',
-  'Houston Rockets': 'Хьюстон Рокетс',
-  'Memphis Grizzlies': 'Мемфис Гриззлис',
-  'Sacramento Kings': 'Сакраменто Кингз',
-  'Indiana Pacers': 'Индиана Пэйсерс',
-};
-
-function transliterateEnToRu(input: string): string {
-  // Если уже есть кириллица — возвращаем как есть
-  if (/[а-яА-ЯёЁ]/.test(input)) return input;
-  let s = input;
-  const digraphs: Array<[RegExp, string]> = [
-    [/shch/gi, 'щ'],
-    [/sch/gi, 'ш'],
-    [/ch/gi, 'ч'],
-    [/sh/gi, 'ш'],
-    [/zh/gi, 'ж'],
-    [/kh/gi, 'х'],
-    [/ts/gi, 'ц'],
-    [/ph/gi, 'ф'],
-    [/th/gi, 'т'],
-    [/ck/gi, 'к'],
-    [/qu/gi, 'кв'],
-  ];
-  for (const [re, rep] of digraphs) {
-    s = s.replace(re, (m) =>
-      m[0] === m[0].toUpperCase() ? rep[0].toUpperCase() + rep.slice(1) : rep,
-    );
-  }
-  const map: Record<string, string> = {
-    a: 'а', b: 'б', c: 'к', d: 'д', e: 'е', f: 'ф', g: 'г', h: 'х',
-    i: 'и', j: 'дж', k: 'к', l: 'л', m: 'м', n: 'н', o: 'о', p: 'п',
-    q: 'к', r: 'р', s: 'с', t: 'т', u: 'у', v: 'в', w: 'у', x: 'кс',
-    y: 'й', z: 'з',
-  };
-  return s
-    .split('')
-    .map((ch) => {
-      const low = ch.toLowerCase();
-      const mapped = map[low];
-      if (!mapped) return ch;
-      return ch === ch.toUpperCase()
-        ? mapped[0].toUpperCase() + mapped.slice(1)
-        : mapped;
-    })
-    .join('');
-}
-
-function localizeTeamName(name: string, sport?: SportType): string {
-  const trimmed = name.trim();
-  if (EN_TO_RU_TEAMS[trimmed]) return EN_TO_RU_TEAMS[trimmed];
-  // Для киберспорта оставляем оригинальные теги команд (Team Spirit, NAVI, MOUZ, FaZe)
-  if (sport === 'ESPORTS') return trimmed;
-  // Для тенниса, UFC и прочих команд без словаря аккуратно транслитерируем в кириллицу
-  return transliterateEnToRu(trimmed);
-}
-
 /**
  * Жесткий фильтр мусорных смол-маркетов, статистических под-событий и кибер-симуляций
  */
@@ -460,6 +254,34 @@ const TIER1_LEAGUE_KEYWORDS = [
   'international',
 ];
 
+function parsePositiveTeamId(raw: unknown): number | null {
+  const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function sameFixtureByNamesAndTime(
+  candidate: Pick<ScannedFixtureCandidate, 'sport' | 'homeTeam' | 'awayTeam' | 'matchStartsAt'>,
+  existing: Pick<PredictionRecord, 'sport' | 'homeTeam' | 'awayTeam' | 'matchStartsAt'> | Pick<AiPredictionDraft, 'sport' | 'homeTeam' | 'awayTeam' | 'matchStartsAt'>,
+): boolean {
+  if (candidate.sport !== existing.sport) return false;
+  if (
+    matchTeamPairOrder(
+      candidate.homeTeam,
+      candidate.awayTeam,
+      existing.homeTeam,
+      existing.awayTeam,
+      candidate.sport,
+    ) === null
+  ) {
+    return false;
+  }
+  const candidateStart = Date.parse(candidate.matchStartsAt);
+  const existingStart = Date.parse(existing.matchStartsAt);
+  return Number.isFinite(candidateStart) &&
+    Number.isFinite(existingStart) &&
+    Math.abs(candidateStart - existingStart) <= 36 * 60 * 60_000;
+}
+
 function isCleanMatchAndLeague(
   leagueName: string,
   homeTeam: string,
@@ -483,15 +305,6 @@ function getLeaguePriorityBonus(leagueName: string): number {
     if (lower.includes(kw)) return 2.1;
   }
   return 0;
-}
-
-function normalizeTeamKey(home: string, away: string): string {
-  const clean = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/фк|хк|пфк|бк|fc|hc|bc/g, '')
-      .replace(/[^a-zа-я0-9]/g, '');
-  return `${clean(home)}__${clean(away)}`;
 }
 
 async function appendAutopilotLog(
@@ -724,6 +537,12 @@ async function scanFromFonbetRu(
       name?: string;
       team1?: string;
       team2?: string;
+      team1Id?: number | string;
+      team2Id?: number | string;
+      team1Logo?: string;
+      team2Logo?: string;
+      logo1?: string;
+      logo2?: string;
       startTime: number;
     }>;
     customFactors?: Array<{
@@ -737,6 +556,7 @@ async function scanFromFonbetRu(
 
   const lineUrls = await discoverFonbetLineUrls();
   let payload: FonbetPayload | null = null;
+  let usedMirror: string | null = null;
 
   for (const mirror of lineUrls) {
     const data = await fetchJsonWithHeaders<FonbetPayload>(mirror, 11_500, {
@@ -745,11 +565,29 @@ async function scanFromFonbetRu(
     });
     if (data?.events && data.events.length > 0 && data.sports) {
       payload = data;
+      usedMirror = mirror;
       break;
     }
   }
 
   if (!payload?.events || !payload.sports) return [];
+
+  // Английские названия тех же событий (lang=en, те же id) — для точного
+  // матчинга официальных эмблем команд в ESPN/TheSportsDB и сверки счёта.
+  const enNamesByEventId = new Map<number, { t1: string; t2: string }>();
+  if (usedMirror) {
+    const enUrl = usedMirror.replace('lang=ru', 'lang=en');
+    const enData = await fetchJsonWithHeaders<FonbetPayload>(enUrl, 11_500, {
+      Origin: 'https://www.fon.bet',
+      Referer: 'https://www.fon.bet/',
+    });
+    for (const ev of enData?.events || []) {
+      if (ev.level !== 1) continue;
+      const t1 = ev.team1?.trim() || '';
+      const t2 = ev.team2?.trim() || '';
+      if (t1 && t2) enNamesByEventId.set(ev.id, { t1, t2 });
+    }
+  }
 
   const sportNodes = new Map<number, { id: number; parentId?: number; name: string }>();
   for (const sp of payload.sports) {
@@ -871,8 +709,14 @@ async function scanFromFonbetRu(
       leagueName,
       homeTeam: t1,
       awayTeam: t2,
+      homeTeamEn: enNamesByEventId.get(ev.id)?.t1 || null,
+      awayTeamEn: enNamesByEventId.get(ev.id)?.t2 || null,
+      homeLogoUrl: normalizeFonbetTeamImageUrl(ev.team1Logo || ev.logo1),
+      awayLogoUrl: normalizeFonbetTeamImageUrl(ev.team2Logo || ev.logo2),
+      fonbetHomeTeamId: parsePositiveTeamId(ev.team1Id),
+      fonbetAwayTeamId: parsePositiveTeamId(ev.team2Id),
       matchStartsAt: new Date(startMs).toISOString(),
-      bookmakerSource: 'Фонбет · Винлайн · Пари',
+      bookmakerSource: 'Фонбет',
       homeOdds: Number(p1.toFixed(2)),
       drawOdds: px ? Number(px.toFixed(2)) : null,
       awayOdds: Number(p2.toFixed(2)),
@@ -1070,10 +914,8 @@ async function scanFromLeonRu(
           leagueName: lg.title,
           homeTeam: home.trim(),
           awayTeam: away.trim(),
-          homeLogoUrl: homeCompLeon?.logo || null,
-          awayLogoUrl: awayCompLeon?.logo || null,
           matchStartsAt: new Date(ev.kickoff).toISOString(),
-          bookmakerSource: 'Фонбет · Леон · Винлайн',
+          bookmakerSource: 'БК Леон',
           homeOdds: Number(p1.toFixed(2)),
           drawOdds: px ? Number(px.toFixed(2)) : null,
           awayOdds: Number(p2.toFixed(2)),
@@ -1201,22 +1043,13 @@ async function scanFromLocalizedLiveCenter(
         const realP2 = americanToDecimal(oddsObj?.awayTeamOdds?.moneyLine);
         const realPx = americanToDecimal(oddsObj?.drawOdds?.moneyLine);
         const overUnder = oddsObj?.overUnder ?? null;
+        // Расписание и сезонные записи не заменяют котировку: исключаем матчи,
+        // для которых фид не дал действительную линию букмекера.
+        if (!realP1 || !realP2 || (feed.sport === 'FOOTBALL' && !realPx)) continue;
 
-        const parseWins = (rec: string) => {
-          const nums = rec.split('-').map((n) => Number(n));
-          return Number.isFinite(nums[0]) && nums[0] > 0 ? nums[0] : 10;
-        };
-        const hWins = parseWins(homeRec) + 1.4;
-        const aWins = parseWins(awayRec);
-        const ratio = hWins / Math.max(1, hWins + aWins);
-
-        const p1 =
-          realP1 ??
-          Number(Math.min(2.28, Math.max(1.72, 1 / Math.max(0.43, ratio))).toFixed(2));
-        const p2 =
-          realP2 ?? Number(Math.max(1.76, 3.88 - p1).toFixed(2));
-        const px =
-          realPx ?? (feed.sport === 'FOOTBALL' ? 3.5 : null);
+        const p1 = realP1;
+        const p2 = realP2;
+        const px = realPx;
 
         const best = pickOptimalValueMarket({
           sport: feed.sport,
@@ -1255,7 +1088,7 @@ async function scanFromLocalizedLiveCenter(
           homeLogoUrl,
           awayLogoUrl,
           matchStartsAt: new Date(ev.date).toISOString(),
-          bookmakerSource: 'Фонбет · Винлайн · Пари',
+          bookmakerSource: 'ESPN · Match Center',
           homeOdds: p1,
           drawOdds: px,
           awayOdds: p2,
@@ -1386,7 +1219,7 @@ function buildQuantitativeFallbackPool(
       homeTeam: t.homeTeam,
       awayTeam: t.awayTeam,
       matchStartsAt: new Date(now + t.hoursAhead * 3600_000).toISOString(),
-      bookmakerSource: 'Фонбет · Винлайн · Пари',
+      bookmakerSource: 'Локальный резервный стенд · синтетические данные (не котировка)',
       homeOdds: t.odds,
       drawOdds: t.sport === 'FOOTBALL' ? 3.65 : null,
       awayOdds:
@@ -2058,286 +1891,115 @@ export async function testLlmConnectionAndModels(input: {
  * ЭТАП ОТБОРА (ИИ-Комитет): из широкого шортлиста матчей и собранных фактов из открытых источников
  * нейросеть отсеивает мутные/равные игры и оставляет ТОЛЬКО матчи с максимальной реальной вероятностью захода.
  */
-async function selectBestCandidatesWithAiCommittee(
-  shortlist: Array<{
-    cand: ScannedFixtureCandidate;
-    intel: OpenSourceMatchIntel;
-  }>,
-  limitCount: number,
-  config: AiAutopilotConfig,
-): Promise<
-  Array<{
-    cand: ScannedFixtureCandidate;
-    intel: OpenSourceMatchIntel;
-  }>
-> {
-  if (shortlist.length <= limitCount) return shortlist;
-
-  // Базовый рейтинг надежности по открытым данным + чистой вероятности БК
-  const sortedByData = [...shortlist].sort(
-    (a, b) =>
-      b.intel.reliabilityScore +
-      b.cand.valueEdgePct * 3 -
-      (a.intel.reliabilityScore + a.cand.valueEdgePct * 3),
-  );
-
-  if (
-    config.llmProvider === 'BUILTIN_QUANT' ||
-    config.llmApiKey.trim().length <= 8
-  ) {
-    return sortedByData.slice(0, limitCount);
-  }
-
-  const candidateBases = buildCandidateLlmBaseUrls(
-    config.llmBaseUrl,
-    config.llmProvider,
-  );
-
-  const committeeSystemPrompt = [
-    'Ты — строгий риск-менеджер и глава аналитического отдела спортивного сервиса VALUEX.',
-    `Перед тобой список из ${shortlist.length} реальных предстоящих матчей с котировками БК РФ и собранной сводкой из открытых источников (новости СМИ, таблица, чистая вероятность без маржи, факторы риска).`,
-    `Твоя задача — НЕ брать игры наобум, а отобрать РОВНО ${limitCount} самых надежных и предсказуемых матчей, которые имеют наибольшие реальные шансы сыграть в плюс.`,
-    'Отбраковывай товарищеские игры, матчи равных непредсказуемых середняков без перевеса и игры, где в новостях указаны серьезные травмы ключевых игроков фаворита.',
-    'Старайся брать разные виды спорта, если среди них есть сильные варианты.',
-    'Верни ответ СТРОГО в чистом JSON формате: {"selectedIds":["id1","id2"],"reason":"короткое объяснение отбора на русском"}',
-  ].join(' ');
-
-  const committeePayload = sortedByData.map(({ cand, intel }) => ({
-    id: cand.externalFixtureId,
-    sport: cand.sport,
-    league: cand.leagueName,
-    match: `${cand.homeTeam} — ${cand.awayTeam}`,
-    odds: {
-      p1: cand.homeOdds,
-      draw: cand.drawOdds,
-      p2: cand.awayOdds,
-      suggestedMarket: cand.suggestedMarket,
-      suggestedOdds: cand.suggestedOdds,
-    },
-    reliabilityScore: intel.reliabilityScore,
-    openSourceFacts: intel.formattedBrief,
-  }));
-
-  for (const base of candidateBases) {
-    try {
-      const out = await postLlmChatCompletion({
-        baseUrl: base,
-        apiKey: config.llmApiKey.trim(),
-        model: config.llmModel.trim() || 'deepseek/deepseek-v4.1-flash-free',
-        temperature: 0.15,
-        timeoutMs: 18_000,
-        messages: [
-          { role: 'system', content: committeeSystemPrompt },
-          { role: 'user', content: JSON.stringify(committeePayload) },
-        ],
-      });
-
-      if (out.ok && out.content) {
-        const rawText = out.content;
-        const jStart = rawText.indexOf('{');
-        const jEnd = rawText.lastIndexOf('}');
-        if (jStart >= 0 && jEnd > jStart) {
-          const parsed = JSON.parse(rawText.slice(jStart, jEnd + 1)) as {
-            selectedIds?: string[];
-            reason?: string;
-          };
-          if (Array.isArray(parsed.selectedIds) && parsed.selectedIds.length > 0) {
-            const picked = sortedByData.filter((item) =>
-              parsed.selectedIds!.includes(item.cand.externalFixtureId),
-            );
-            for (const fallbackItem of sortedByData) {
-              if (picked.length >= limitCount) break;
-              if (!picked.includes(fallbackItem)) picked.push(fallbackItem);
-            }
-            if (parsed.reason) {
-              await appendAutopilotLog(
-                'INFO',
-                'LLM_ANALYST',
-                `ИИ-отбор лучших матчей по открытым источникам: ${parsed.reason.slice(0, 220)}`,
-              );
-            }
-            return picked.slice(0, limitCount);
-          }
-        }
-      }
-    } catch {
-      // пробуем следующее зеркало или сортировку по надежности
-    }
-  }
-
-  return sortedByData.slice(0, limitCount);
+interface CandidateWithIntel {
+  cand: ScannedFixtureCandidate;
+  intel: OpenSourceMatchIntel;
 }
 
-async function generateAnalystDossier(
-  candidate: ScannedFixtureCandidate,
+interface CandidateWithAgentEvaluation extends CandidateWithIntel {
+  agentInput: AgentCandidateInput;
+  evaluation: Awaited<ReturnType<typeof runAgentCommittee>>['evaluations'][number];
+  leaderSummary: string;
+}
+
+async function evaluateCandidatesWithAgentCommittee(
+  shortlist: CandidateWithIntel[],
+  limitCount: number,
   config: AiAutopilotConfig,
-  intel?: OpenSourceMatchIntel,
-): Promise<{
-  selectionTitle: string;
-  fixedOdds: number;
-  stakeUnits: number;
-  confidencePct: number;
-  valueEdgePct: number;
-  analysisTeaser: string;
-  analysisFull: string;
-}> {
-  const recommendedStake =
-    candidate.valueEdgePct >= 5.2
-      ? 2.0
-      : candidate.valueEdgePct >= 4.2
-        ? 1.5
-        : 1.0;
+): Promise<CandidateWithAgentEvaluation[]> {
+  if (shortlist.length === 0) return [];
 
-  if (
-    config.llmProvider !== 'BUILTIN_QUANT' &&
-    config.llmApiKey.trim().length > 8
-  ) {
-    const candidateBases = buildCandidateLlmBaseUrls(
-      config.llmBaseUrl,
-      config.llmProvider,
-    );
-    const systemPrompt = [
-      'Ты — главный спортивный аналитик российского сервиса прогнозов VALUEX.',
-      'Твоя главная задача — дать максимально правдивый, обоснованный и реалистичный прогноз с высокими шансами захода.',
-      'СТРОЖАЙШЕЕ ПРАВИЛО ЧЕСТНОСТИ (АНТИ-ВЫДУМКА): Опирайся ТОЛЬКО на переданные реальные коэффициенты БК РФ и собранные факты из открытых источников (openSourceIntel). КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдумывать несуществующие счета прошлых игр, фамилии травмированных игроков или вымышленную статистику, которых нет во входных данных!',
-      'Если в openSourceIntel указаны конкретные новости СМИ или турнирные показатели — аккуратно используй именно их. Если новостей по матчу мало — опирайся на реальную разницу в классе команд по линии букмекеров, фактор домашнего поля, турнирную мотивацию и математическую оценку вероятности без маржи.',
-      'Пиши живым, понятным обычному человеку русским языком БЕЗ заумного жаргона (не пиши слова EV, PPDA, xGA, ростер, вето).',
-      'КРИТИЧЕСКИ ВАЖНО: В поле analysisTeaser (1-2 интригующих предложения) ЗАПРЕЩЕНО называть выбранную ставку и коэффициент — это открытое превью карточки до покупки!',
-      'Выбирай ТОЛЬКО надежный, подстрахованный рынок из реальной линии (коэффициент строго в диапазоне 1.60–2.25, без авантюрных высоких кэфов!): "Победа 1", "Победа 2", "Победа 1 в матче", "Победа 2 в матче", "1X", "X2", "Фора 1 (0)", "Фора 2 (0)", "Фора 1 (-1.0)", "Фора 2 (+1.5)", "Тотал больше (2.5)", "Тотал меньше (5.5)", "Индивидуальный тотал 1 больше (1.5)" или "Обе забьют: Да".',
-      'В поле analysisFull напиши честный и убедительный разбор на 3 абзаца: 1) Реальная расстановка сил, форма и факты из открытых источников; 2) Почему именно выбранный исход наиболее надежен и защищен от случайностей; 3) Рекомендация по банку и минимально допустимому коэффициенту в Фонбет/Винлайн/Пари.',
-      'JSON: {"selectionTitle":"...","fixedOdds":1.85,"stakeUnits":1.5,"confidencePct":74,"valueEdgePct":4.8,"analysisTeaser":"...","analysisFull":"..."}',
-    ].join(' ');
+  const agentInputs: AgentCandidateInput[] = shortlist.map(({ cand, intel }) => ({
+    id: cand.externalFixtureId,
+    sport: cand.sport,
+    leagueName: cand.leagueName,
+    homeTeam: cand.homeTeam,
+    awayTeam: cand.awayTeam,
+    market: cand.suggestedMarket,
+    odds: cand.suggestedOdds,
+    homeOdds: cand.homeOdds,
+    drawOdds: cand.drawOdds,
+    awayOdds: cand.awayOdds,
+    overOdds: cand.overOdds,
+    underOdds: cand.underOdds,
+    fairHomeProbPct: intel.fairHomeProbPct,
+    fairDrawProbPct: intel.fairDrawProbPct,
+    fairAwayProbPct: intel.fairAwayProbPct,
+    reliabilityScore: intel.reliabilityScore,
+    sources: Array.from(new Set([...intel.sourcesChecked, cand.bookmakerSource])),
+    facts: Array.from(
+      new Set([
+        cand.contextNotes,
+        ...intel.teamRecordsAndForm,
+        ...intel.webSnippets,
+      ]),
+    ).filter(Boolean).slice(0, 16),
+    headlines: intel.newsHeadlines.slice(0, 8),
+    riskFlags: intel.riskFlags.slice(0, 8),
+  }));
 
-    const userPrompt = JSON.stringify({
-      sport: candidate.sport,
-      tournament: candidate.leagueName,
-      match: `${candidate.homeTeam} — ${candidate.awayTeam}`,
-      kickoffUtc: candidate.matchStartsAt,
-      ruBookmakerOdds: {
-        source: candidate.bookmakerSource,
-        p1: candidate.homeOdds,
-        draw: candidate.drawOdds,
-        p2: candidate.awayOdds,
-        totalLine: candidate.totalLine,
-        over: candidate.overOdds,
-        under: candidate.underOdds,
-      },
-      quantPick: {
-        market: candidate.suggestedMarket,
-        odds: candidate.suggestedOdds,
-        edgePct: candidate.valueEdgePct,
-      },
-      openSourceIntel: intel
-        ? {
-            reliabilityScore: intel.reliabilityScore,
-            fairHomeProbPct: intel.fairHomeProbPct,
-            fairDrawProbPct: intel.fairDrawProbPct,
-            fairAwayProbPct: intel.fairAwayProbPct,
-            newsHeadlines: intel.newsHeadlines,
-            teamRecordsAndForm: intel.teamRecordsAndForm,
-            webSnippets: intel.webSnippets,
-            riskFlags: intel.riskFlags,
-          }
-        : null,
-      notes: candidate.contextNotes,
-    });
+  const minimumConfidencePct = Math.max(
+    0,
+    Math.min(100, config.minAgentConfidencePct ?? 60),
+  );
+  const baseUrls = buildCandidateLlmBaseUrls(
+    config.llmBaseUrl,
+    config.llmProvider,
+    config.llmApiKey,
+  );
+  const committee = await runAgentCommittee({
+    candidates: agentInputs,
+    limit: limitCount,
+    minimumConfidencePct,
+    minimumEdgePct: Math.max(0, config.minValueEdgePct),
+    // Для любого прямого выпуска/черновика консенсус обязателен. Отключенный LLM не открывает обходной путь.
+    requireConsensus: true,
+    apiKey: config.llmApiKey,
+    model: config.llmModel.trim() || 'deepseek-v4.1-flash',
+    baseUrls,
+    complete: async (request) => {
+      const result = await postLlmChatCompletion({
+        baseUrl: request.baseUrl,
+        apiKey: request.apiKey,
+        model: request.model,
+        messages: request.messages,
+        temperature: request.temperature,
+        maxTokens: request.maxTokens,
+        timeoutMs: request.timeoutMs,
+      });
+      return { ok: result.ok, content: result.content, rawError: result.rawError };
+    },
+  });
 
-    for (const base of candidateBases) {
-      try {
-        const out = await postLlmChatCompletion({
-          baseUrl: base,
-          apiKey: config.llmApiKey.trim(),
-          model: config.llmModel.trim() || 'deepseek/deepseek-v4.1-flash-free',
-          temperature: 0.3,
-          timeoutMs: 20_000,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-        });
+  const evaluationsById = new Map(
+    committee.evaluations.map((evaluation) => [evaluation.id, evaluation]),
+  );
+  const shortlistById = new Map(shortlist.map((item) => [item.cand.externalFixtureId, item]));
+  const selected = committee.selectedIds.flatMap((id) => {
+    const item = shortlistById.get(id);
+    const agentInput = agentInputs.find((candidate) => candidate.id === id);
+    const evaluation = evaluationsById.get(id);
+    if (!item || !agentInput || !evaluation?.accepted) return [];
+    return [{ ...item, agentInput, evaluation, leaderSummary: committee.leaderSummary }];
+  });
 
-        if (out.ok && out.content) {
-          const rawText = out.content;
-          const jsonStart = rawText.indexOf('{');
-          const jsonEnd = rawText.lastIndexOf('}');
-          const slice =
-            jsonStart >= 0 && jsonEnd > jsonStart
-              ? rawText.slice(jsonStart, jsonEnd + 1)
-              : rawText;
-          const parsed = JSON.parse(slice) as {
-            selectionTitle?: string;
-            fixedOdds?: number;
-            stakeUnits?: number;
-            confidencePct?: number;
-            valueEdgePct?: number;
-            analysisTeaser?: string;
-            analysisFull?: string;
-          };
+  const acceptedIds = new Set(committee.selectedIds);
+  const rejected = committee.evaluations
+    .filter((evaluation) => !acceptedIds.has(evaluation.id))
+    .slice(0, 8)
+    .map((evaluation) => `${evaluation.id}: ${evaluation.rejectionReason || 'не прошёл финальный отбор лидера'}`);
+  const summary = [
+    `Агенты ответили: ${committee.modelAgentsAvailable}/3; консенсус отобранных: ${selected.length}/${shortlist.length}.`,
+    committee.leaderSummary,
+    ...rejected,
+  ].join(' | ').slice(0, 1_200);
+  await appendAutopilotLog(
+    selected.length > 0 ? 'SUCCESS' : 'WARN',
+    'AGENTS',
+    summary,
+  );
 
-          if (
-            parsed.selectionTitle &&
-            parsed.analysisTeaser &&
-            parsed.analysisFull
-          ) {
-            return {
-              selectionTitle: parsed.selectionTitle.trim(),
-              fixedOdds: Number(
-                Math.min(
-                  3.2,
-                  Math.max(
-                    1.55,
-                    Number(parsed.fixedOdds) || candidate.suggestedOdds,
-                  ),
-                ).toFixed(2),
-              ),
-              stakeUnits: Number(
-                Math.min(
-                  2.5,
-                  Math.max(1.0, Number(parsed.stakeUnits) || recommendedStake),
-                ).toFixed(1),
-              ),
-              confidencePct: Math.min(
-                86,
-                Math.max(
-                  60,
-                  Math.round(parsed.confidencePct || candidate.confidencePct),
-                ),
-              ),
-              valueEdgePct: Number(
-                (parsed.valueEdgePct || candidate.valueEdgePct).toFixed(1),
-              ),
-              analysisTeaser: parsed.analysisTeaser.trim(),
-              analysisFull: parsed.analysisFull.trim(),
-            };
-          }
-        }
-      } catch {
-        // Пробуем следующее зеркало или переходим на встроенное ядро
-      }
-    }
-  }
-
-  return {
-    selectionTitle: candidate.suggestedMarket,
-    fixedOdds: candidate.suggestedOdds,
-    stakeUnits: recommendedStake,
-    confidencePct: candidate.confidencePct,
-    valueEdgePct: candidate.valueEdgePct,
-    analysisTeaser: `Детальный разбор матча «${candidate.homeTeam} — ${candidate.awayTeam}» (${candidate.leagueName}): нашли выгодный коэффициент в российской линии БК с запасом прочности.`,
-    analysisFull: [
-      `1. Реальная расстановка сил и данные открытых источников: ${
-        intel?.newsHeadlines?.[0]
-          ? `${candidate.contextNotes} Свежая сводка СМИ: «${intel.newsHeadlines[0]}».`
-          : candidate.contextNotes
-      }`,
-      `2. Почему выбран именно этот исход: В линии российских букмекеров (${candidate.bookmakerSource}) на вариант «${candidate.suggestedMarket}» сейчас дают выгодный коэффициент ${candidate.suggestedOdds.toFixed(2)}${
-        intel?.fairHomeProbPct !== null && intel?.fairHomeProbPct !== undefined
-          ? ` (чистая математическая оценка рынка без маржи: Хозяева ${intel.fairHomeProbPct}% / Гости ${intel.fairAwayProbPct}%)`
-          : ''
-      }.`,
-      `3. Как лучше поставить: Спокойная одиночная ставка на сумму ${recommendedStake.toFixed(1)}% от вашего игрового банка (выгодно брать при коэффициенте не ниже ${Math.max(1.55, candidate.suggestedOdds - 0.08).toFixed(2)}).`,
-    ].join('\n\n'),
-  };
+  return selected;
 }
 
 function classifyMarketFamily(market: string): string {
@@ -2410,14 +2072,12 @@ export async function runAiScanAndGenerateCycle(options?: {
   const stateSnapshot = await readState();
   const config = stateSnapshot.aiAutopilot;
 
-  const existingKeys = new Set<string>();
+  const existingFixtureIds = new Set<string>();
   for (const p of stateSnapshot.predictions) {
-    if (p.externalFixtureId) existingKeys.add(p.externalFixtureId);
-    existingKeys.add(normalizeTeamKey(p.homeTeam, p.awayTeam));
+    if (p.externalFixtureId) existingFixtureIds.add(p.externalFixtureId);
   }
   for (const d of stateSnapshot.aiDrafts) {
-    existingKeys.add(d.externalFixtureId);
-    existingKeys.add(normalizeTeamKey(d.homeTeam, d.awayTeam));
+    existingFixtureIds.add(d.externalFixtureId);
   }
 
   let rawCandidates = await scanFromFonbetRu(config);
@@ -2446,14 +2106,19 @@ export async function runAiScanAndGenerateCycle(options?: {
     1,
     options?.maxCountOverride ?? config.maxPicksPerRun,
   );
-  const eligible = rawCandidates.filter(
-    (c) =>
-      !existingKeys.has(c.externalFixtureId) &&
-      !existingKeys.has(normalizeTeamKey(c.homeTeam, c.awayTeam)) &&
-      c.valueEdgePct >= config.minValueEdgePct &&
-      !c.leagueName.toLowerCase().includes('товарищ') &&
-      !c.leagueName.toLowerCase().includes('friendly'),
-  );
+  const hasVerifiedBookmakerLine =
+    feedSource.startsWith('Фонбет РФ') || feedSource.startsWith('Леон РФ');
+  const existingMatches = [...stateSnapshot.predictions, ...stateSnapshot.aiDrafts];
+  const eligible = hasVerifiedBookmakerLine
+    ? rawCandidates.filter(
+        (c) =>
+          !existingFixtureIds.has(c.externalFixtureId) &&
+          !existingMatches.some((match) => sameFixtureByNamesAndTime(c, match)) &&
+          c.valueEdgePct >= config.minValueEdgePct &&
+          !c.leagueName.toLowerCase().includes('товарищ') &&
+          !c.leagueName.toLowerCase().includes('friendly'),
+      )
+    : [];
 
   // Шаг 1: формируем расширенный шортлист из реальной линии разных видов спорта
   const shortlistSize = Math.min(10, Math.max(limitCount * 3, 6));
@@ -2472,7 +2137,9 @@ export async function runAiScanAndGenerateCycle(options?: {
     await appendAutopilotLog(
       'INFO',
       'SCANNER',
-      `${options?.triggerLabel || 'Сканирование'} (${feedSource}, найдено в линии: ${rawCandidates.length}): все подходящие топ-матчи уже добавлены.`,
+      hasVerifiedBookmakerLine
+        ? `${options?.triggerLabel || 'Сканирование'} (${feedSource}, найдено в линии: ${rawCandidates.length}): подходящих новых матчей нет.`
+        : `${options?.triggerLabel || 'Сканирование'} (${feedSource}): выпуск остановлен — нет подтверждённой котировки букмекера; расписание и синтетические коэффициенты не используются.`,
     );
     return {
       scannedCount: rawCandidates.length,
@@ -2522,8 +2189,9 @@ export async function runAiScanAndGenerateCycle(options?: {
     }),
   );
 
-  // Шаг 3: ИИ-Комитет отбраковывает сомнительные матчи и выбирает ТОЛЬКО игры с максимальным шансом захода
-  const selectedWithIntel = await selectBestCandidatesWithAiCommittee(
+  // Шаг 3: три специализированных агента оценивают фактическую линию и данные;
+  // без двух PASS, при вето или сбое LLM кандидат не проходит к выпуску.
+  const selectedWithAgents = await evaluateCandidatesWithAgentCommittee(
     shortlistWithIntel,
     limitCount,
     config,
@@ -2541,16 +2209,31 @@ export async function runAiScanAndGenerateCycle(options?: {
 
   let createdCount = 0;
 
-  for (let idx = 0; idx < selectedWithIntel.length; idx++) {
-    const { cand, intel } = selectedWithIntel[idx];
-    const dossier = await generateAnalystDossier(cand, config, intel);
+  for (let idx = 0; idx < selectedWithAgents.length; idx++) {
+    const { cand, intel, agentInput, evaluation, leaderSummary } = selectedWithAgents[idx];
+    const agentAnalysis = buildAgentAnalysis({
+      candidate: agentInput,
+      evaluation,
+      leaderSummary,
+    });
+    // Рынок и цена остаются именно теми, что были зафиксированы в линии; LLM их не переписывает.
+    const dossier = {
+      selectionTitle: cand.suggestedMarket,
+      fixedOdds: cand.suggestedOdds,
+      stakeUnits: agentAnalysis.stakeUnits,
+      confidencePct: evaluation.estimatedWinProbabilityPct,
+      valueEdgePct: evaluation.valueEdgePct,
+      analysisTeaser: agentAnalysis.teaser,
+      analysisFull: agentAnalysis.full,
+      agentReport: agentAnalysis.report,
+    };
 
     const nextSeq = stateSnapshot.aiAutopilot.totalGeneratedCount + idx + 1;
     const forceFreeToKeepStorefrontWarm =
       config.freeEveryNthPick > 0 &&
       !hasActiveFreeOnStorefront &&
-      selectedWithIntel.length >= 2 &&
-      idx === selectedWithIntel.length - 1;
+      selectedWithAgents.length >= 2 &&
+      idx === selectedWithAgents.length - 1;
     const isFreeLeadMagnet =
       forceFreeToKeepStorefrontWarm ||
       (config.freeEveryNthPick > 0 && nextSeq % config.freeEveryNthPick === 0);
@@ -2567,8 +2250,11 @@ export async function runAiScanAndGenerateCycle(options?: {
         leagueName: cand.leagueName,
         homeTeam: cand.homeTeam,
         awayTeam: cand.awayTeam,
-        homeLogoUrl: cand.homeLogoUrl ?? null,
-        awayLogoUrl: cand.awayLogoUrl ?? null,
+        homeLogoUrl: normalizeFonbetTeamImageUrl(cand.homeLogoUrl),
+        awayLogoUrl: normalizeFonbetTeamImageUrl(cand.awayLogoUrl),
+        fonbetHomeTeamId: cand.fonbetHomeTeamId ?? null,
+        fonbetAwayTeamId: cand.fonbetAwayTeamId ?? null,
+        agentReport: dossier.agentReport,
         matchStartsAt: cand.matchStartsAt,
         selectionTitle: dossier.selectionTitle,
         fixedOdds: dossier.fixedOdds,
@@ -2601,8 +2287,11 @@ export async function runAiScanAndGenerateCycle(options?: {
         leagueName: cand.leagueName,
         homeTeam: cand.homeTeam,
         awayTeam: cand.awayTeam,
-        homeLogoUrl: cand.homeLogoUrl ?? null,
-        awayLogoUrl: cand.awayLogoUrl ?? null,
+        homeLogoUrl: normalizeFonbetTeamImageUrl(cand.homeLogoUrl),
+        awayLogoUrl: normalizeFonbetTeamImageUrl(cand.awayLogoUrl),
+        fonbetHomeTeamId: cand.fonbetHomeTeamId ?? null,
+        fonbetAwayTeamId: cand.fonbetAwayTeamId ?? null,
+        agentReport: dossier.agentReport,
         matchStartsAt: cand.matchStartsAt,
         selectionTitle: dossier.selectionTitle,
         fixedOdds: dossier.fixedOdds,
@@ -2772,8 +2461,11 @@ export async function approveAiDraftToStorefront(
     leagueName: draft.leagueName,
     homeTeam: draft.homeTeam,
     awayTeam: draft.awayTeam,
-    homeLogoUrl: draft.homeLogoUrl ?? null,
-    awayLogoUrl: draft.awayLogoUrl ?? null,
+    homeLogoUrl: normalizeFonbetTeamImageUrl(draft.homeLogoUrl),
+    awayLogoUrl: normalizeFonbetTeamImageUrl(draft.awayLogoUrl),
+    fonbetHomeTeamId: draft.fonbetHomeTeamId ?? null,
+    fonbetAwayTeamId: draft.fonbetAwayTeamId ?? null,
+    agentReport: draft.agentReport ?? null,
     matchStartsAt: draft.matchStartsAt,
     selectionTitle: draft.selectionTitle,
     fixedOdds: draft.fixedOdds,
@@ -2814,10 +2506,13 @@ export function evaluateMarketByScore(
   homeScore: number,
   awayScore: number,
   isOvertime = false,
+  sport?: SportType,
 ): ResultStatus | null {
   const s = selectionTitle.toLowerCase().trim();
   const total = homeScore + awayScore;
   const diff = homeScore - awayScore;
+  const regulationSport = sport === 'FOOTBALL' || sport === 'HOCKEY';
+  const winnerOnlySport = sport === 'TENNIS' || sport === 'MMA' || sport === 'ESPORTS';
 
   // Ищем число линии как в скобках (-1.0), так и без скобок (Тотал больше 2.5 / Фора 1 -1.5)
   const parenMatch = s.match(/\(([+-]?\d+(?:[.,]\d+)?)\)/);
@@ -2832,35 +2527,62 @@ export function evaluateMarketByScore(
     (s.includes('победа 1') || s.startsWith('п1')) &&
     (s.includes('в матче') || s.includes('от') || s.includes('итогов'))
   ) {
+    // В футболе отметка ОТ/пенальти не всегда говорит, что score — результат серии;
+    // не рассчитываем такой рынок без отдельной структуры для пенальти.
+    if (sport === 'FOOTBALL' && isOvertime) return null;
     return homeScore > awayScore ? 'WIN' : 'LOSS';
   }
   if (
     (s.includes('победа 2') || s.startsWith('п2')) &&
     (s.includes('в матче') || s.includes('от') || s.includes('итогов'))
   ) {
+    if (sport === 'FOOTBALL' && isOvertime) return null;
     return awayScore > homeScore ? 'WIN' : 'LOSS';
   }
 
-  // Победа в основное время
+  // Для футбола/хоккея стандартный П1/П2 — исход основного времени;
+  // если была ОТ/серия буллитов, основное время завершилось вничью.
   if (s === 'победа 1' || s === 'п1' || s.startsWith('победа 1 ')) {
-    if (isOvertime) return 'LOSS';
+    if (regulationSport && isOvertime) return 'LOSS';
     return homeScore > awayScore ? 'WIN' : 'LOSS';
   }
   if (s === 'победа 2' || s === 'п2' || s.startsWith('победа 2 ')) {
-    if (isOvertime) return 'LOSS';
+    if (regulationSport && isOvertime) return 'LOSS';
     return awayScore > homeScore ? 'WIN' : 'LOSS';
   }
+
+  // Для тенниса, MMA и киберспорта без доверенной структуры счёта
+  // автоматически рассчитываем только победителя, а не тоталы/форы.
+  if (winnerOnlySport) return null;
+
   if (s === 'ничья' || s === 'x' || s === 'х') {
-    if (isOvertime) return 'WIN';
+    if (regulationSport && isOvertime) return 'WIN';
     return homeScore === awayScore ? 'WIN' : 'LOSS';
   }
   if (s === '1x' || s === '1х' || s.includes('первая не проиграет')) {
-    if (isOvertime) return 'WIN';
+    if (regulationSport && isOvertime) return 'WIN';
     return homeScore >= awayScore ? 'WIN' : 'LOSS';
   }
   if (s === 'x2' || s === 'х2' || s.includes('вторая не проиграет')) {
-    if (isOvertime) return 'WIN';
+    if (regulationSport && isOvertime) return 'WIN';
     return awayScore >= homeScore ? 'WIN' : 'LOSS';
+  }
+
+  // После ОТ у обычного футбольного/хоккейного счёта недостаточно данных,
+  // чтобы восстановить regulation totals, BTTS или ненулевую фору.
+  if (regulationSport && isOvertime) {
+    if (s.includes('фора') && lineVal !== null && Math.abs(lineVal) < 0.01) return 'PUSH';
+    if (
+      s.includes('обе забьют') ||
+      s.includes('тотал') ||
+      s.startsWith('тб') ||
+      s.startsWith('тм') ||
+      s.includes('итб') ||
+      s.includes('итм') ||
+      s.includes('фора')
+    ) {
+      return null;
+    }
   }
 
   if (s.includes('обе забьют') && (s.includes('тб') || s.includes('больше'))) {
@@ -2906,14 +2628,24 @@ export function evaluateMarketByScore(
       return 'LOSS';
     }
     if (s.includes('фора 1')) {
-      const effDiff = isOvertime && Math.abs(lineVal) < 0.01 ? 0 : diff;
+      const regulationScoreUnknown = regulationSport && isOvertime;
+      const legacyOvertimeZeroHandicap = sport === undefined && isOvertime;
+      const effDiff =
+        (regulationScoreUnknown || legacyOvertimeZeroHandicap) && Math.abs(lineVal) < 0.01
+          ? 0
+          : diff;
       const adj = effDiff + lineVal;
       if (adj > 0.25) return 'WIN';
       if (Math.abs(adj) <= 0.01) return 'PUSH';
       return 'LOSS';
     }
     if (s.includes('фора 2')) {
-      const effDiff = isOvertime && Math.abs(lineVal) < 0.01 ? 0 : -diff;
+      const regulationScoreUnknown = regulationSport && isOvertime;
+      const legacyOvertimeZeroHandicap = sport === undefined && isOvertime;
+      const effDiff =
+        (regulationScoreUnknown || legacyOvertimeZeroHandicap) && Math.abs(lineVal) < 0.01
+          ? 0
+          : -diff;
       const adj = effDiff + lineVal;
       if (adj > 0.25) return 'WIN';
       if (Math.abs(adj) <= 0.01) return 'PUSH';
@@ -2924,110 +2656,121 @@ export function evaluateMarketByScore(
   return null;
 }
 
-/**
- * Сбор официальных итоговых счетов из шлюза результатов Фонбет РФ + резервного Матч-центра
- */
-async function fetchCompletedScoresMap(): Promise<
-  Map<string, { homeScore: number; awayScore: number; isOvertime?: boolean }>
-> {
-  const map = new Map<
-    string,
-    { homeScore: number; awayScore: number; isOvertime?: boolean }
-  >();
+interface MatchObservation {
+  externalFixtureId: string;
+  sport: SportType | null;
+  lifecycle: MatchLifecycleStatus;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number | null;
+  awayScore: number | null;
+  isOvertime: boolean;
+  scheduledAt: string | null;
+  actualStartedAt: string | null;
+  actualFinishedAt: string | null;
+  source: string;
+  observedAt: string;
+}
 
-  const datesToCheck = [
-    new Date().toISOString().slice(0, 10),
-    new Date(Date.now() - 86_400_000).toISOString().slice(0, 10),
-  ];
-
-  for (const dateStr of datesToCheck) {
-    for (const host of STATIC_FONBET_RESULTS_HOSTS) {
-      const url = `${host}/results/results.json.php?locale=ru&lineDate=${dateStr}`;
-      const data = await fetchJsonWithHeaders<{
-        events?: Array<{
-          id: number | string;
-          team1?: string;
-          team2?: string;
-          name?: string;
-          status?: number;
-          score?: string;
-          score1?: number;
-          score2?: number;
-        }>;
-        sections?: Array<{
-          events?: Array<{
-            id: number | string;
-            team1?: string;
-            team2?: string;
-            name?: string;
-            status?: number;
-            score?: string;
-            score1?: number;
-            score2?: number;
-          }>;
-        }>;
-      }>(url, 5000, {
-        Origin: 'https://www.fon.bet',
-        Referer: 'https://www.fon.bet/',
-      });
-
-      const allEvents = [
-        ...(data?.events || []),
-        ...(data?.sections?.flatMap((sec) => sec.events || []) || []),
-      ];
-      if (!allEvents.length) continue;
-
-      for (const ev of allEvents) {
-        if (ev.status !== undefined && ev.status !== 3) continue;
-        let hs = typeof ev.score1 === 'number' ? ev.score1 : NaN;
-        let as = typeof ev.score2 === 'number' ? ev.score2 : NaN;
-        const rawScoreStr = typeof ev.score === 'string' ? ev.score : '';
-        const isOvertime = /\b(от|от\.|бул|б\.|ot|so)\b/i.test(rawScoreStr);
-
-        if ((Number.isNaN(hs) || Number.isNaN(as)) && rawScoreStr) {
-          const m = rawScoreStr.match(/(\d+)\s*[:\-]\s*(\d+)/);
-          if (m) {
-            hs = Number(m[1]);
-            as = Number(m[2]);
-          }
-        }
-
-        let t1 = ev.team1?.trim() || '';
-        let t2 = ev.team2?.trim() || '';
-        if ((!t1 || !t2) && ev.name) {
-          const parts = ev.name.split(/\s+[—–-]\s+/);
-          if (parts.length === 2) {
-            t1 = parts[0].trim();
-            t2 = parts[1].trim();
-          }
-        }
-
-        if (Number.isFinite(hs) && Number.isFinite(as)) {
-          map.set(`fonbet_${ev.id}`, { homeScore: hs, awayScore: as, isOvertime });
-          if (t1 && t2) {
-            map.set(normalizeTeamKey(t1, t2), {
-              homeScore: hs,
-              awayScore: as,
-              isOvertime,
-            });
-          }
-        }
-      }
-      break;
-    }
+function parseObservationTimestamp(raw: unknown): string | null {
+  const numeric =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && /^\d{10,13}$/.test(raw.trim())
+        ? Number(raw.trim())
+        : NaN;
+  if (Number.isFinite(numeric) && numeric > 0) {
+    const milliseconds = numeric > 10_000_000_000 ? numeric : numeric * 1000;
+    const date = new Date(milliseconds);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
   }
+  if (typeof raw === 'string' && raw.trim()) {
+    const date = new Date(raw.trim());
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+  return null;
+}
 
-  // Резервное табло Матч-центра (за последние 2 суток)
-  const scoreRange = `${formatYmdCompact(Date.now() - 2 * 86_400_000)}-${formatYmdCompact(
-    Date.now(),
+function parseScorePart(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0) return raw;
+  if (typeof raw === 'string' && /^\s*\d+\s*$/.test(raw)) {
+    const value = Number(raw.trim());
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  return null;
+}
+
+function parseScorePair(
+  homeRaw: unknown,
+  awayRaw: unknown,
+  scoreText?: string | null,
+): { homeScore: number | null; awayScore: number | null } {
+  const homeScore = parseScorePart(homeRaw);
+  const awayScore = parseScorePart(awayRaw);
+  if (homeScore !== null && awayScore !== null) return { homeScore, awayScore };
+  const match = typeof scoreText === 'string'
+    ? scoreText.match(/(?:^|\D)(\d+)\s*[:\-]\s*(\d+)(?:\D|$)/)
+    : null;
+  if (!match) return { homeScore: null, awayScore: null };
+  const parsedHome = Number(match[1]);
+  const parsedAway = Number(match[2]);
+  return Number.isSafeInteger(parsedHome) && Number.isSafeInteger(parsedAway)
+    ? { homeScore: parsedHome, awayScore: parsedAway }
+    : { homeScore: null, awayScore: null };
+}
+
+function isOvertimeScore(scoreText?: string | null, detail?: string | null): boolean {
+  const text = `${scoreText || ''} ${detail || ''}`;
+  const overtimeMarker = /(^|[^a-zа-яё0-9])(?:ot|от|overtime)\.?(?=$|[^a-zа-яё0-9])/i.test(text);
+  const shootoutMarker =
+    /(?:^|[(/])\s*(?:so|s\/o)\s*(?=$|[)\s.,/])/i.test(text) ||
+    /(^|[^a-zа-яё0-9])SO(?=$|[^a-zа-яё0-9])/.test(text);
+  return overtimeMarker || shootoutMarker || /буллит|пенальт|shoot-?out/i.test(text);
+}
+
+function lifecycleFromEspnStatus(status: {
+  type?: {
+    state?: string;
+    completed?: boolean;
+    name?: string;
+    description?: string;
+    detail?: string;
+  };
+} | undefined): MatchLifecycleStatus {
+  const type = status?.type;
+  const state = (type?.state || '').toLowerCase();
+  const detail = `${type?.name || ''} ${type?.description || ''} ${type?.detail || ''}`.toLowerCase();
+  if (/cancel/.test(detail)) return 'CANCELLED';
+  if (/postpon/.test(detail)) return 'POSTPONED';
+  if (type?.completed === true || state === 'post') return 'FINISHED';
+  if (state === 'in') return 'LIVE';
+  if (state === 'pre') return 'SCHEDULED';
+  return 'UNKNOWN';
+}
+
+async function fetchEspnMatchObservations(): Promise<MatchObservation[]> {
+  const scoreRange = `${formatYmdCompact(Date.now() - 3 * 86_400_000)}-${formatYmdCompact(
+    Date.now() + 2 * 86_400_000,
   )}`;
-
-  await Promise.all(
+  const observations = await Promise.all(
     ESPN_ENDPOINTS.map(async (feed) => {
       const payload = await fetchJsonWithHeaders<{
         events?: Array<{
           id: string;
-          status?: { type?: { completed?: boolean } };
+          date?: string;
+          status?: {
+            actualStartTime?: string | number;
+            actualStartedAt?: string | number;
+            actualFinishTime?: string | number;
+            actualFinishedAt?: string | number;
+            type?: {
+              state?: string;
+              completed?: boolean;
+              name?: string;
+              description?: string;
+              detail?: string;
+            };
+          };
           competitions?: Array<{
             competitors?: Array<{
               homeAway?: 'home' | 'away';
@@ -3037,105 +2780,701 @@ async function fetchCompletedScoresMap(): Promise<
             }>;
           }>;
         }>;
-      }>(`${feed.url}?dates=${scoreRange}`, 4500);
-      if (!payload?.events) return;
-
-      for (const ev of payload.events) {
-        if (!ev.status?.type?.completed) continue;
-        const comp = ev.competitions?.[0];
-        const comps = comp?.competitors || [];
-        const h = comps.find((c) => c.homeAway === 'home') || comps[0];
-        const a = comps.find((c) => c.homeAway === 'away') || comps[1];
-        const hs = Number(h?.score);
-        const as = Number(a?.score);
-        const rawH = h?.team?.displayName || h?.athlete?.displayName || '';
-        const rawA = a?.team?.displayName || a?.athlete?.displayName || '';
-        if (Number.isFinite(hs) && Number.isFinite(as)) {
-          map.set(`espn_${ev.id}`, { homeScore: hs, awayScore: as });
-          if (rawH && rawA) {
-            map.set(normalizeTeamKey(rawH, rawA), { homeScore: hs, awayScore: as });
-            map.set(
-              normalizeTeamKey(
-                localizeTeamName(rawH, feed.sport),
-                localizeTeamName(rawA, feed.sport),
-              ),
-              { homeScore: hs, awayScore: as },
-            );
-          }
-        }
+      }>(`${feed.url}?dates=${scoreRange}`, 5000);
+      const observedAt = new Date().toISOString();
+      const rows: MatchObservation[] = [];
+      for (const event of payload?.events || []) {
+        const lifecycle = lifecycleFromEspnStatus(event.status);
+        if (lifecycle === 'UNKNOWN') continue;
+        const competitors = event.competitions?.[0]?.competitors || [];
+        const home = competitors.find((row) => row.homeAway?.toLowerCase() === 'home') || competitors[0];
+        const away = competitors.find((row) => row.homeAway?.toLowerCase() === 'away') || competitors[1];
+        const homeTeam = home?.team?.displayName || home?.athlete?.displayName || '';
+        const awayTeam = away?.team?.displayName || away?.athlete?.displayName || '';
+        if (!homeTeam || !awayTeam) continue;
+        const score = parseScorePair(home?.score, away?.score);
+        const details = `${event.status?.type?.name || ''} ${event.status?.type?.detail || ''}`;
+        rows.push({
+          externalFixtureId: `espn_${event.id}`,
+          sport: feed.sport,
+          lifecycle,
+          homeTeam,
+          awayTeam,
+          homeScore: score.homeScore,
+          awayScore: score.awayScore,
+          isOvertime: isOvertimeScore(null, details),
+          scheduledAt: parseObservationTimestamp(event.date),
+          actualStartedAt: parseObservationTimestamp(
+            event.status?.actualStartTime ?? event.status?.actualStartedAt,
+          ),
+          actualFinishedAt: parseObservationTimestamp(
+            event.status?.actualFinishTime ?? event.status?.actualFinishedAt,
+          ),
+          source: 'ESPN Scoreboard',
+          observedAt,
+        });
       }
+      return rows;
     }),
   );
+  return observations.flat();
+}
 
-  return map;
+async function fetchFonbetLiveObservations(): Promise<MatchObservation[]> {
+  type LineEvent = {
+    id: number | string;
+    level?: number;
+    sportId?: number;
+    place?: string;
+    name?: string;
+    team1?: string;
+    team2?: string;
+    startTime?: number | string;
+    score?: string;
+    score1?: number | string;
+    score2?: number | string;
+  };
+  const urls = await discoverFonbetLineUrls();
+  for (const url of urls.slice(0, 5)) {
+    const data = await fetchJsonWithHeaders<{ events?: LineEvent[] }>(url, 5000, {
+      Origin: 'https://www.fon.bet',
+      Referer: 'https://www.fon.bet/',
+    });
+    if (!Array.isArray(data?.events) || data.events.length === 0) continue;
+    const observedAt = new Date().toISOString();
+    const rows: MatchObservation[] = [];
+    for (const event of data.events) {
+      if (event.level !== undefined && event.level !== 1) continue;
+      let homeTeam = event.team1?.trim() || '';
+      let awayTeam = event.team2?.trim() || '';
+      if ((!homeTeam || !awayTeam) && event.name) {
+        const parts = event.name.split(/\s+[—–-]\s+/);
+        if (parts.length === 2) {
+          homeTeam = parts[0].trim();
+          awayTeam = parts[1].trim();
+        }
+      }
+      if (!homeTeam || !awayTeam) continue;
+      const place = (event.place || '').toLowerCase();
+      const lifecycle: MatchLifecycleStatus = place === 'live' || place.includes('live')
+        ? 'LIVE'
+        : place.includes('postpon')
+          ? 'POSTPONED'
+          : place.includes('cancel')
+            ? 'CANCELLED'
+            : 'UNKNOWN';
+      if (lifecycle === 'UNKNOWN') continue;
+      const score = parseScorePair(event.score1, event.score2, event.score);
+      rows.push({
+        externalFixtureId: `fonbet_${event.id}`,
+        sport: null,
+        lifecycle,
+        homeTeam,
+        awayTeam,
+        homeScore: score.homeScore,
+        awayScore: score.awayScore,
+        isOvertime: isOvertimeScore(event.score),
+        scheduledAt: parseObservationTimestamp(event.startTime),
+        actualStartedAt: null,
+        actualFinishedAt: null,
+        source: 'Fonbet live line',
+        observedAt,
+      });
+    }
+    if (rows.length > 0) return rows;
+  }
+  return [];
+}
+
+async function fetchFonbetFinalObservations(): Promise<MatchObservation[]> {
+  type ResultEvent = {
+    id: number | string;
+    team1?: string;
+    team2?: string;
+    name?: string;
+    status?: number | string;
+    score?: string;
+    score1?: number | string;
+    score2?: number | string;
+    startTime?: number | string;
+    finishTime?: number | string;
+    endTime?: number | string;
+  };
+  const datesToCheck = [0, 1, 2].map((daysAgo) =>
+    new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10),
+  );
+  const observations: MatchObservation[] = [];
+
+  for (const dateStr of datesToCheck) {
+    for (const host of STATIC_FONBET_RESULTS_HOSTS) {
+      const data = await fetchJsonWithHeaders<{
+        events?: ResultEvent[];
+        sections?: Array<{ events?: ResultEvent[] }>;
+      }>(`${host}/results/results.json.php?locale=ru&lineDate=${dateStr}`, 5000, {
+        Origin: 'https://www.fon.bet',
+        Referer: 'https://www.fon.bet/',
+      });
+      const events = [
+        ...(data?.events || []),
+        ...(data?.sections?.flatMap((section) => section.events || []) || []),
+      ];
+      if (events.length === 0) continue;
+      const observationCountBeforeMirror = observations.length;
+      const observedAt = new Date().toISOString();
+      for (const event of events) {
+        // Принимаем только явный финальный статус; пустой/неизвестный status не является подтверждением.
+        if (Number(event.status) !== 3) continue;
+        let homeTeam = event.team1?.trim() || '';
+        let awayTeam = event.team2?.trim() || '';
+        if ((!homeTeam || !awayTeam) && event.name) {
+          const parts = event.name.split(/\s+[—–-]\s+/);
+          if (parts.length === 2) {
+            homeTeam = parts[0].trim();
+            awayTeam = parts[1].trim();
+          }
+        }
+        if (!homeTeam || !awayTeam) continue;
+        const score = parseScorePair(event.score1, event.score2, event.score);
+        observations.push({
+          externalFixtureId: `fonbet_${event.id}`,
+          sport: null,
+          lifecycle: 'FINISHED',
+          homeTeam,
+          awayTeam,
+          homeScore: score.homeScore,
+          awayScore: score.awayScore,
+          isOvertime: isOvertimeScore(event.score),
+          scheduledAt: parseObservationTimestamp(event.startTime),
+          actualStartedAt: null,
+          actualFinishedAt: parseObservationTimestamp(event.finishTime ?? event.endTime),
+          source: 'Fonbet results',
+          observedAt,
+        });
+      }
+      if (
+        observations
+          .slice(observationCountBeforeMirror)
+          .some((observation) => observation.homeScore !== null && observation.awayScore !== null)
+      ) {
+        break;
+      }
+    }
+  }
+  return observations;
+}
+
+async function fetchMatchObservations(): Promise<MatchObservation[]> {
+  const [fonbetLive, fonbetFinal, espn] = await Promise.all([
+    fetchFonbetLiveObservations(),
+    fetchFonbetFinalObservations(),
+    fetchEspnMatchObservations(),
+  ]);
+  return [...fonbetLive, ...fonbetFinal, ...espn];
+}
+
+function matchObservationToPrediction(
+  prediction: PredictionRecord,
+  observation: MatchObservation,
+): { order: 'DIRECT' | 'SWAPPED'; exactId: boolean } | null {
+  if (observation.sport && observation.sport !== prediction.sport) return null;
+  const order = matchTeamPairOrder(
+    observation.homeTeam,
+    observation.awayTeam,
+    prediction.homeTeam,
+    prediction.awayTeam,
+    prediction.sport,
+  );
+  if (!order) return null;
+  const exactId = Boolean(
+    prediction.externalFixtureId &&
+      observation.externalFixtureId === prediction.externalFixtureId,
+  );
+  if (!exactId) {
+    const predictedAt = Date.parse(prediction.matchStartsAt);
+    const observedAt = observation.scheduledAt ? Date.parse(observation.scheduledAt) : NaN;
+    if (
+      !Number.isFinite(predictedAt) ||
+      !Number.isFinite(observedAt) ||
+      Math.abs(predictedAt - observedAt) > 36 * 60 * 60_000
+    ) {
+      return null;
+    }
+  }
+  return { order, exactId };
+}
+
+function getOrderedObservationScore(
+  observation: MatchObservation,
+  order: 'DIRECT' | 'SWAPPED',
+): { homeScore: number; awayScore: number } | null {
+  if (observation.homeScore === null || observation.awayScore === null) return null;
+  return order === 'DIRECT'
+    ? { homeScore: observation.homeScore, awayScore: observation.awayScore }
+    : { homeScore: observation.awayScore, awayScore: observation.homeScore };
+}
+
+function analyzeFinalScoreSources(
+  rows: Array<{
+    observation: MatchObservation;
+    score: { homeScore: number; awayScore: number };
+  }>,
+): {
+  sources: Set<string>;
+  scores: Set<string>;
+  agree: boolean;
+  conflict: boolean;
+} {
+  const scoresBySource = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const score = `${row.score.homeScore}:${row.score.awayScore}`;
+    if (!scoresBySource.has(row.observation.source)) {
+      scoresBySource.set(row.observation.source, new Set());
+    }
+    scoresBySource.get(row.observation.source)!.add(score);
+  }
+  const allScores = Array.from(scoresBySource.values()).flatMap((values) => Array.from(values));
+  const scores = new Set(allScores);
+  const hasInternalSourceConflict = Array.from(scoresBySource.values()).some(
+    (values) => values.size > 1,
+  );
+  return {
+    sources: new Set(Array.from(scoresBySource.keys())),
+    scores,
+    agree: scoresBySource.size >= 2 && scores.size === 1 && !hasInternalSourceConflict,
+    conflict: scores.size > 1 || hasInternalSourceConflict,
+  };
+}
+
+export async function runMatchStatusWatchCycle(): Promise<{
+  checkedCount: number;
+  updatedCount: number;
+  conflictCount: number;
+}> {
+  const state = await readState();
+  const nowMs = Date.now();
+  const monitored = state.predictions.filter((prediction) => {
+    if (prediction.resultStatus !== 'PENDING') return false;
+    const startsAt = Date.parse(prediction.matchStartsAt);
+    return Number.isFinite(startsAt) && startsAt >= nowMs - 7 * 86_400_000 && startsAt <= nowMs + 24 * 60 * 60_000;
+  });
+  if (monitored.length === 0) return { checkedCount: 0, updatedCount: 0, conflictCount: 0 };
+
+  const observations = await fetchMatchObservations();
+  if (observations.length === 0) return { checkedCount: monitored.length, updatedCount: 0, conflictCount: 0 };
+
+  let updatedCount = 0;
+  let conflictCount = 0;
+  let verifiedFinalCount = 0;
+  const sourceLog: string[] = [];
+  const matchedByPrediction = new Map<string, Array<{
+    observation: MatchObservation;
+    order: 'DIRECT' | 'SWAPPED';
+    exactId: boolean;
+  }>>();
+  const idConflictIds = new Set<string>();
+
+  for (const prediction of monitored) {
+    const idObservations = prediction.externalFixtureId
+      ? observations.filter((observation) => observation.externalFixtureId === prediction.externalFixtureId)
+      : [];
+    const idPairMismatch = idObservations.some((observation) =>
+      !matchTeamPairOrder(
+        observation.homeTeam,
+        observation.awayTeam,
+        prediction.homeTeam,
+        prediction.awayTeam,
+        prediction.sport,
+      ),
+    );
+    const matches = observations.flatMap((observation) => {
+      const matched = matchObservationToPrediction(prediction, observation);
+      return matched ? [{ observation, order: matched.order, exactId: matched.exactId }] : [];
+    });
+    if (matches.length > 0 || idPairMismatch) matchedByPrediction.set(prediction.id, matches);
+    if (idPairMismatch) idConflictIds.add(prediction.id);
+
+    const finalMatches = matches.filter((row) => row.observation.lifecycle === 'FINISHED');
+    const finalsWithScores = finalMatches.flatMap((row) => {
+      const score = getOrderedObservationScore(row.observation, row.order);
+      return score ? [{ ...row, score }] : [];
+    });
+    const scoreEvidence = analyzeFinalScoreSources(finalsWithScores);
+    const sourcesAgree = scoreEvidence.agree;
+    const hasScoreConflict = scoreEvidence.conflict || idPairMismatch;
+    const persistentConflict = prediction.matchVerificationConflict && !sourcesAgree;
+    const conflict = hasScoreConflict || persistentConflict;
+    if (conflict && !prediction.matchVerificationConflict) conflictCount += 1;
+    if (finalMatches.length > 0 && sourcesAgree && !conflict) {
+      verifiedFinalCount += 1;
+    }
+
+    const liveMatches = matches
+      .filter((row) => row.observation.lifecycle === 'LIVE')
+      .sort((a, b) => Number(b.exactId) - Number(a.exactId));
+    const scheduledMatches = matches.filter((row) => row.observation.lifecycle === 'SCHEDULED');
+    const cancelledMatch = matches.find((row) => row.observation.lifecycle === 'CANCELLED');
+    const postponedMatch = matches.find((row) => row.observation.lifecycle === 'POSTPONED');
+    const preferredFinal = [...finalMatches].sort((a, b) => Number(b.exactId) - Number(a.exactId))[0];
+    const preferredLive = liveMatches[0];
+    const observationAt = preferredFinal?.observation.observedAt ||
+      preferredLive?.observation.observedAt ||
+      scheduledMatches[0]?.observation.observedAt ||
+      cancelledMatch?.observation.observedAt ||
+      postponedMatch?.observation.observedAt;
+    if (observationAt) sourceLog.push(`${prediction.homeTeam}—${prediction.awayTeam}`);
+  }
+
+  const nowIso = new Date().toISOString();
+  const mutation = await mutateState((current) => {
+    let changed = 0;
+    let conflicts = 0;
+    for (const prediction of current.predictions) {
+      const matches = matchedByPrediction.get(prediction.id) || [];
+      if ((!matches.length && !idConflictIds.has(prediction.id)) || prediction.resultStatus !== 'PENDING') continue;
+      const idObservations = prediction.externalFixtureId
+        ? observations.filter((observation) => observation.externalFixtureId === prediction.externalFixtureId)
+        : [];
+      const idPairMismatch = idObservations.some((observation) =>
+        !matchTeamPairOrder(
+          observation.homeTeam,
+          observation.awayTeam,
+          prediction.homeTeam,
+          prediction.awayTeam,
+          prediction.sport,
+        ),
+      );
+      const finalMatches = matches.filter((row) => row.observation.lifecycle === 'FINISHED');
+      const finalsWithScores = finalMatches.flatMap((row) => {
+        const score = getOrderedObservationScore(row.observation, row.order);
+        return score ? [{ ...row, score }] : [];
+      });
+      const scoreEvidence = analyzeFinalScoreSources(finalsWithScores);
+      const sourcesAgree = scoreEvidence.agree;
+      const conflict = scoreEvidence.conflict || idPairMismatch ||
+        (prediction.matchVerificationConflict && !sourcesAgree);
+      if (idPairMismatch) {
+        const hadConflictingEvidence = Boolean(
+          prediction.finalScoreVerified ||
+            prediction.finalScoreVerifiedSources?.length ||
+            prediction.liveHomeScore !== null && prediction.liveHomeScore !== undefined ||
+            prediction.liveAwayScore !== null && prediction.liveAwayScore !== undefined ||
+            prediction.finalScoreIsOvertime,
+        );
+        if (!prediction.matchVerificationConflict) conflicts += 1;
+        if (
+          !prediction.matchVerificationConflict ||
+          hadConflictingEvidence ||
+          prediction.matchVerificationSource !== 'External fixture ID / названия команд расходятся'
+        ) {
+          changed += 1;
+        }
+        prediction.matchVerificationConflict = true;
+        prediction.finalScoreVerified = false;
+        prediction.finalScoreVerifiedSources = [];
+        prediction.liveHomeScore = null;
+        prediction.liveAwayScore = null;
+        prediction.finalScoreIsOvertime = false;
+        prediction.matchVerifiedAt = nowIso;
+        prediction.matchVerificationSource = 'External fixture ID / названия команд расходятся';
+        continue;
+      }
+      const liveMatches = matches
+        .filter((row) => row.observation.lifecycle === 'LIVE')
+        .sort((a, b) => Number(b.exactId) - Number(a.exactId));
+      const scheduledMatches = matches.filter((row) => row.observation.lifecycle === 'SCHEDULED');
+      const cancelledMatch = matches.find((row) => row.observation.lifecycle === 'CANCELLED');
+      const postponedMatch = matches.find((row) => row.observation.lifecycle === 'POSTPONED');
+      const finalMatch = [...finalMatches].sort((a, b) => Number(b.exactId) - Number(a.exactId))[0];
+      const liveMatch = liveMatches[0];
+
+      if (finalMatch) {
+        const scoreRow = finalsWithScores.find((row) => row.observation === finalMatch.observation) || finalsWithScores[0];
+        const sourceNames = Array.from(new Set(finalMatches.map((row) => row.observation.source)));
+        const wasFinal = prediction.matchLifecycleStatus === 'FINISHED';
+        const previousVerifiedScore = prediction.finalScoreVerified;
+        const previousConflict = prediction.matchVerificationConflict;
+        const previousHomeScore = prediction.liveHomeScore;
+        const previousAwayScore = prediction.liveAwayScore;
+        const previousOvertime = prediction.finalScoreIsOvertime;
+        const previousVerifiedSources = (prediction.finalScoreVerifiedSources || []).join('|');
+        const previousVerificationSource = prediction.matchVerificationSource;
+        const previousActualStartedAt = prediction.actualStartedAt;
+        const previousActualFinishedAt = prediction.actualFinishedAt;
+        prediction.matchStatus = 'FINISHED';
+        prediction.matchLifecycleStatus = 'FINISHED';
+        if (
+          finalMatch.observation.actualStartedAt &&
+          prediction.actualStartedAtPrecision !== 'SOURCE_EXACT'
+        ) {
+          prediction.actualStartedAt = finalMatch.observation.actualStartedAt;
+          prediction.actualStartedAtPrecision = 'SOURCE_EXACT';
+        }
+        if (finalMatch.observation.actualFinishedAt) {
+          prediction.actualFinishedAt = finalMatch.observation.actualFinishedAt;
+          prediction.actualFinishedAtPrecision = 'SOURCE_EXACT';
+        } else if (prediction.actualFinishedAtPrecision === 'FINAL_OBSERVED') {
+          // Earlier versions used the poll time as if it were the actual finish time.
+          // Keep the observation timestamp in matchVerifiedAt instead.
+          prediction.actualFinishedAt = null;
+          prediction.actualFinishedAtPrecision = null;
+        }
+        prediction.matchVerifiedAt = finalMatch.observation.observedAt || nowIso;
+        prediction.matchVerificationSource = sourceNames.join(' + ');
+        prediction.matchVerificationConflict = conflict;
+        prediction.finalScoreVerified = Boolean(scoreRow) && sourcesAgree && !conflict;
+        prediction.finalScoreVerifiedSources = prediction.finalScoreVerified
+          ? Array.from(scoreEvidence.sources)
+          : [];
+        if (prediction.finalScoreVerified && scoreRow) {
+          prediction.liveHomeScore = scoreRow.score.homeScore;
+          prediction.liveAwayScore = scoreRow.score.awayScore;
+          // A positive OT/shootout marker is useful even when another feed omits it.
+          prediction.finalScoreIsOvertime = finalsWithScores.some(
+            (row) => row.observation.isOvertime,
+          );
+          prediction.liveUpdatedAt = scoreRow.observation.observedAt;
+        } else {
+          // Keep an uncorroborated final score out of settlement and public score fields.
+          prediction.liveHomeScore = null;
+          prediction.liveAwayScore = null;
+          prediction.finalScoreIsOvertime = false;
+          prediction.liveUpdatedAt = finalMatch.observation.observedAt || nowIso;
+        }
+        if (
+          !wasFinal ||
+          previousVerifiedScore !== prediction.finalScoreVerified ||
+          previousConflict !== prediction.matchVerificationConflict ||
+          previousHomeScore !== prediction.liveHomeScore ||
+          previousAwayScore !== prediction.liveAwayScore ||
+          previousOvertime !== prediction.finalScoreIsOvertime ||
+          previousVerifiedSources !== (prediction.finalScoreVerifiedSources || []).join('|') ||
+          previousVerificationSource !== prediction.matchVerificationSource ||
+          previousActualStartedAt !== prediction.actualStartedAt ||
+          previousActualFinishedAt !== prediction.actualFinishedAt
+        ) changed += 1;
+        if (conflict && !previousConflict) conflicts += 1;
+        continue;
+      }
+
+      if (liveMatch) {
+        const score = getOrderedObservationScore(liveMatch.observation, liveMatch.order);
+        const priorLifecycle = prediction.matchLifecycleStatus;
+        const wasLive = priorLifecycle === 'LIVE';
+        const previousMatchStatus = prediction.matchStatus;
+        const previousSource = prediction.matchVerificationSource;
+        const startWasMissing = !prediction.actualStartedAt;
+        const hadStaleFinalEvidence = Boolean(
+          prediction.finalScoreVerified ||
+            prediction.finalScoreVerifiedSources?.length ||
+            prediction.actualFinishedAt ||
+            (!wasLive &&
+              (prediction.liveHomeScore !== null && prediction.liveHomeScore !== undefined ||
+                prediction.liveAwayScore !== null && prediction.liveAwayScore !== undefined)),
+        );
+        const scoreChanged = Boolean(
+          score &&
+            (prediction.liveHomeScore !== score.homeScore || prediction.liveAwayScore !== score.awayScore),
+        );
+        prediction.matchStatus = 'LIVE';
+        prediction.matchLifecycleStatus = 'LIVE';
+        if (!wasLive) {
+          prediction.liveHomeScore = null;
+          prediction.liveAwayScore = null;
+          prediction.liveUpdatedAt = null;
+          prediction.actualFinishedAt = null;
+          prediction.actualFinishedAtPrecision = null;
+          if (
+            priorLifecycle === 'FINISHED' ||
+            priorLifecycle === 'POSTPONED' ||
+            priorLifecycle === 'CANCELLED'
+          ) {
+            prediction.actualStartedAt = null;
+            prediction.actualStartedAtPrecision = null;
+          }
+        }
+        prediction.finalScoreVerified = false;
+        prediction.finalScoreVerifiedSources = [];
+        prediction.finalScoreIsOvertime = false;
+        if (!prediction.actualStartedAt) {
+          prediction.actualStartedAt = liveMatch.observation.actualStartedAt || liveMatch.observation.observedAt || nowIso;
+          prediction.actualStartedAtPrecision = liveMatch.observation.actualStartedAt
+            ? 'SOURCE_EXACT'
+            : 'LIVE_OBSERVED';
+        }
+        prediction.matchVerifiedAt = liveMatch.observation.observedAt || nowIso;
+        prediction.matchVerificationSource = liveMatch.observation.source;
+        if (score) {
+          prediction.liveHomeScore = score.homeScore;
+          prediction.liveAwayScore = score.awayScore;
+          prediction.liveUpdatedAt = liveMatch.observation.observedAt || nowIso;
+        }
+        if (
+          !wasLive ||
+          previousMatchStatus !== 'LIVE' ||
+          previousSource !== liveMatch.observation.source ||
+          startWasMissing ||
+          scoreChanged ||
+          hadStaleFinalEvidence
+        ) {
+          changed += 1;
+        }
+        continue;
+      }
+
+      if (cancelledMatch || postponedMatch) {
+        const row = cancelledMatch || postponedMatch!;
+        const nextStatus = row.observation.lifecycle;
+        const needsReset = Boolean(
+          prediction.matchLifecycleStatus !== nextStatus ||
+            prediction.matchStatus !== 'UPCOMING' ||
+            prediction.finalScoreVerified ||
+            prediction.finalScoreVerifiedSources?.length ||
+            prediction.liveHomeScore !== null && prediction.liveHomeScore !== undefined ||
+            prediction.liveAwayScore !== null && prediction.liveAwayScore !== undefined ||
+            prediction.actualFinishedAt,
+        );
+        if (needsReset) changed += 1;
+        prediction.matchStatus = 'UPCOMING';
+        prediction.matchLifecycleStatus = nextStatus;
+        prediction.finalScoreVerified = false;
+        prediction.finalScoreVerifiedSources = [];
+        prediction.liveHomeScore = null;
+        prediction.liveAwayScore = null;
+        prediction.liveUpdatedAt = null;
+        prediction.finalScoreIsOvertime = false;
+        prediction.actualFinishedAt = null;
+        prediction.actualFinishedAtPrecision = null;
+        prediction.matchVerifiedAt = row.observation.observedAt || nowIso;
+        prediction.matchVerificationSource = row.observation.source;
+        continue;
+      }
+
+      if (scheduledMatches.length > 0 && prediction.matchLifecycleStatus !== 'LIVE') {
+        const row = scheduledMatches[0];
+        const wasRescheduled =
+          prediction.matchLifecycleStatus === 'FINISHED' ||
+          prediction.matchLifecycleStatus === 'POSTPONED' ||
+          prediction.matchLifecycleStatus === 'CANCELLED';
+        const needsReset = Boolean(
+          prediction.matchLifecycleStatus !== 'SCHEDULED' ||
+            prediction.matchStatus !== 'UPCOMING' ||
+            prediction.finalScoreVerified ||
+            prediction.finalScoreVerifiedSources?.length ||
+            prediction.liveHomeScore !== null && prediction.liveHomeScore !== undefined ||
+            prediction.liveAwayScore !== null && prediction.liveAwayScore !== undefined ||
+            prediction.actualFinishedAt,
+        );
+        if (needsReset) changed += 1;
+        prediction.matchStatus = 'UPCOMING';
+        prediction.matchLifecycleStatus = 'SCHEDULED';
+        prediction.finalScoreVerified = false;
+        prediction.finalScoreVerifiedSources = [];
+        prediction.liveHomeScore = null;
+        prediction.liveAwayScore = null;
+        prediction.liveUpdatedAt = null;
+        prediction.finalScoreIsOvertime = false;
+        prediction.actualFinishedAt = null;
+        prediction.actualFinishedAtPrecision = null;
+        if (wasRescheduled) {
+          prediction.actualStartedAt = null;
+          prediction.actualStartedAtPrecision = null;
+        }
+        prediction.matchVerifiedAt = row.observation.observedAt || nowIso;
+        prediction.matchVerificationSource = row.observation.source;
+      }
+    }
+    return { changedCount: changed, conflictCount: conflicts };
+  });
+
+  updatedCount = mutation.changedCount;
+  conflictCount = Math.max(conflictCount, mutation.conflictCount);
+  if (updatedCount > 0 || conflictCount > 0) {
+    await appendAutopilotLog(
+      conflictCount > 0 ? 'WARN' : 'INFO',
+      'MATCH_WATCH',
+      `Сверка статусов: просмотрено ${monitored.length}, обновлено ${updatedCount}, финальных счётов подтверждено ${verifiedFinalCount}, конфликтов источников ${conflictCount}.${sourceLog.length ? ` Примеры: ${sourceLog.slice(0, 4).join(', ')}.` : ''}`,
+    );
+  }
+  return { checkedCount: monitored.length, updatedCount, conflictCount };
 }
 
 /**
- * Автоматический расчет завершенных событий + автовыплата страховок 100% на баланс
+ * Автосверка опирается на наблюдаемый LIVE/FINAL статус и проверенный счёт,
+ * а не на истечение времени матча по расписанию.
  */
 export async function runAutoSettlementCycle(): Promise<{
   checkedCount: number;
   settledCount: number;
   compensatedBuyers: number;
 }> {
+  await runMatchStatusWatchCycle();
   const state = await readState();
-  const now = Date.now();
+  const duePredictions = state.predictions.filter(
+    (prediction) =>
+      prediction.resultStatus === 'PENDING' &&
+      prediction.matchLifecycleStatus === 'FINISHED',
+  );
 
-  const duePredictions = state.predictions.filter((p) => {
-    if (p.resultStatus !== 'PENDING') return false;
-    const elapsedMin = (now - new Date(p.matchStartsAt).getTime()) / 60_000;
-    const minDuration = p.sport === 'FOOTBALL' ? 120 : 150;
-    return elapsedMin >= minDuration;
-  });
-
-  await mutateState((s) => {
-    s.aiAutopilot.lastSettleAt = new Date().toISOString();
+  await mutateState((current) => {
+    current.aiAutopilot.lastSettleAt = new Date().toISOString();
   });
 
   if (duePredictions.length === 0) {
     return { checkedCount: 0, settledCount: 0, compensatedBuyers: 0 };
   }
 
-  const scoresMap = await fetchCompletedScoresMap();
   let settledCount = 0;
   let compensatedBuyers = 0;
-
-  for (const pred of duePredictions) {
-    const scorePair =
-      (pred.externalFixtureId ? scoresMap.get(pred.externalFixtureId) : undefined) ||
-      scoresMap.get(normalizeTeamKey(pred.homeTeam, pred.awayTeam));
-
-    if (!scorePair) continue;
-
+  for (const prediction of duePredictions) {
+    // Exact kickoff/end timestamps are optional feed metadata. Settlement instead
+    // requires a verified final lifecycle, two persisted independent score sources,
+    // and a valid timestamp/source for when the final observation was recorded.
+    const verifiedSources = new Set(
+      (prediction.finalScoreVerifiedSources || []).map((source) => source.trim()).filter(Boolean),
+    );
+    if (
+      !prediction.finalScoreVerified ||
+      verifiedSources.size < 2 ||
+      prediction.matchVerificationConflict ||
+      !prediction.matchVerifiedAt ||
+      !Number.isFinite(Date.parse(prediction.matchVerifiedAt)) ||
+      !prediction.matchVerificationSource?.trim() ||
+      !Number.isSafeInteger(prediction.liveHomeScore) ||
+      !Number.isSafeInteger(prediction.liveAwayScore)
+    ) {
+      continue;
+    }
+    const homeScore = prediction.liveHomeScore as number;
+    const awayScore = prediction.liveAwayScore as number;
     const evaluated = evaluateMarketByScore(
-      pred.selectionTitle,
-      scorePair.homeScore,
-      scorePair.awayScore,
-      Boolean(scorePair.isOvertime),
+      prediction.selectionTitle,
+      homeScore,
+      awayScore,
+      Boolean(prediction.finalScoreIsOvertime),
+      prediction.sport,
     );
     if (!evaluated) continue;
 
-    const finalScoreStr = `${scorePair.homeScore}:${scorePair.awayScore}${
-      scorePair.isOvertime ? ' (ОТ)' : ''
+    const finalScore = `${homeScore}:${awayScore}${
+      prediction.finalScoreIsOvertime ? ' (ОТ)' : ''
     }`;
-    const res = await settlePredictionByAdmin({
-      predictionId: pred.id,
+    const result = await settlePredictionByAdmin({
+      predictionId: prediction.id,
       resultStatus: evaluated,
-      finalScore: finalScoreStr,
+      finalScore,
       pushResultToTelegram: true,
     });
-
     settledCount += 1;
-    compensatedBuyers += res.compensatedUsers;
+    compensatedBuyers += result.compensatedUsers;
 
     await appendAutopilotLog(
       evaluated === 'WIN' ? 'SUCCESS' : 'INFO',
       'SETTLEMENT',
-      `Авторасчет «${pred.homeTeam} — ${pred.awayTeam}» (${finalScoreStr}): ${
-        evaluated === 'WIN' ? 'Зашел' : evaluated === 'PUSH' ? 'Возврат' : 'Не зашел'
+      `Расчёт подтверждённого финального счёта «${prediction.homeTeam} — ${prediction.awayTeam}» (${finalScore}, ${prediction.matchVerificationSource || 'источник не указан'}): ${
+        evaluated === 'WIN' ? 'Зашёл' : evaluated === 'PUSH' ? 'Возврат' : 'Не зашёл'
       }.${
-        res.compensatedUsers > 0
-          ? ` Возвращена страховка на баланс ${res.compensatedUsers} покупателям!`
+        result.compensatedUsers > 0
+          ? ` Возвращена страховка на баланс ${result.compensatedUsers} покупателям.`
           : ''
       }`,
     );
@@ -3298,6 +3637,8 @@ export async function runScheduledAutopilotTick(): Promise<{
     if (cfg.autoSettleEnabled) {
       const settleRes = await runAutoSettlementCycle();
       settled = settleRes.settledCount;
+    } else {
+      await runMatchStatusWatchCycle();
     }
 
     if (cfg.mode !== 'FULL_AUTOPILOT') {

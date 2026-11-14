@@ -67,6 +67,29 @@ const LEAGUE_PRESETS: Array<{ label: string; sport: SportType; league: string }>
   { label: 'UFC', sport: 'MMA', league: 'UFC · Номерной турнир' },
 ];
 
+function getAdminMatchStatusLabel(prediction: PredictionRecord): string {
+  switch (prediction.matchLifecycleStatus) {
+    case 'SCHEDULED':
+      return 'Запланирован';
+    case 'LIVE':
+      return 'LIVE';
+    case 'FINISHED':
+      return 'Завершён';
+    case 'POSTPONED':
+      return 'Перенесён';
+    case 'CANCELLED':
+      return 'Отменён';
+    case 'UNKNOWN':
+      return 'Статус не подтверждён';
+    default:
+      return prediction.matchStatus === 'LIVE'
+        ? 'LIVE'
+        : prediction.matchStatus === 'FINISHED'
+          ? 'Завершён'
+          : 'Предстоящий';
+  }
+}
+
 export default function AdminDashboardPage() {
   const [data, setData] = useState<AdminOverviewPayload | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -857,6 +880,32 @@ export default function AdminDashboardPage() {
                         Исход: <strong>{item.selectionTitle}</strong> @{' '}
                         <strong className="font-mono">{item.fixedOdds.toFixed(2)}</strong>
                       </div>
+                      {item.authorSource === 'AI_AUTOPILOT' && (
+                        <div className="mt-1 text-[10px] text-slate-500">
+                          Статус: {getAdminMatchStatusLabel(item)}
+                          {item.actualStartedAt ? ` · старт наблюдался ${new Date(item.actualStartedAt).toLocaleString('ru-RU')}` : ''}
+                          {item.actualFinishedAt
+                            ? ` · ${item.actualFinishedAtPrecision === 'SOURCE_EXACT' ? 'фактический финиш' : 'финиш зафиксирован'} ${new Date(item.actualFinishedAt).toLocaleString('ru-RU')}`
+                            : ''}
+                          {item.matchVerifiedAt ? ` · проверено ${new Date(item.matchVerifiedAt).toLocaleString('ru-RU')}` : ''}
+                          {item.matchVerificationSource ? ` · ${item.matchVerificationSource}` : ''}
+                          {Number.isInteger(item.liveHomeScore) && Number.isInteger(item.liveAwayScore)
+                            ? ` · счёт ${item.liveHomeScore}:${item.liveAwayScore}`
+                            : ''}
+                          {item.finalScoreVerified ? ' · счёт подтверждён' : ''}
+                          {item.matchVerificationConflict ? ' · конфликт источников' : ''}
+                        </div>
+                      )}
+                      {item.agentReport && (
+                        <details className="mt-2 rounded-lg border border-indigo-100 bg-indigo-50/70 p-2 text-[10px] text-slate-700">
+                          <summary className="cursor-pointer font-bold text-indigo-800">
+                            Сохранённый отчёт AI-команды
+                          </summary>
+                          <pre className="mt-2 whitespace-pre-wrap font-sans leading-relaxed">
+                            {item.agentReport}
+                          </pre>
+                        </details>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-1.5">

@@ -136,10 +136,38 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
           </div>
 
           {prediction.resultStatus === 'PENDING' ? (
-            prediction.matchStatus === 'LIVE' ? (
+            prediction.matchLifecycleStatus === 'LIVE' || prediction.matchStatus === 'LIVE' ? (
               <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-rose-50 px-2.5 py-0.5 text-[11px] font-bold text-rose-600">
                 <Radio className="h-3 w-3 animate-pulse" />
-                <span>Идет матч</span>
+                <span>
+                  {Number.isInteger(prediction.liveHomeScore) && Number.isInteger(prediction.liveAwayScore)
+                    ? `LIVE ${prediction.liveHomeScore}:${prediction.liveAwayScore}`
+                    : 'LIVE подтверждён'}
+                </span>
+              </span>
+            ) : prediction.matchLifecycleStatus === 'POSTPONED' || prediction.matchLifecycleStatus === 'CANCELLED' ? (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-800">
+                <Clock className="h-3 w-3" />
+                <span>{prediction.matchLifecycleStatus === 'POSTPONED' ? 'Перенесён' : 'Отменён'}</span>
+              </span>
+            ) : prediction.matchLifecycleStatus === 'FINISHED' ||
+              (!prediction.matchLifecycleStatus && prediction.matchStatus === 'FINISHED') ? (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-700">
+                <CheckCircle2 className="h-3 w-3" />
+                <span>
+                  {prediction.finalScoreVerified &&
+                  Number.isInteger(prediction.liveHomeScore) &&
+                  Number.isInteger(prediction.liveAwayScore)
+                    ? `Финиш ${prediction.liveHomeScore}:${prediction.liveAwayScore}`
+                    : prediction.finalScoreVerified
+                      ? 'Финиш · счёт проверен'
+                      : 'Финиш · проверяем счёт'}
+                </span>
+              </span>
+            ) : new Date(prediction.matchStartsAt).getTime() <= nowMs ? (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-800">
+                <Clock className="h-3 w-3" />
+                <span>Старт по расписанию · ждём LIVE</span>
               </span>
             ) : (
               (() => {
