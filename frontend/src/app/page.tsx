@@ -20,6 +20,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { SiteShell } from '@/components/layout/SiteShell';
+import { LocalDateTime } from '@/components/LocalDateTime';
 import { PredictionCard } from '@/components/predictions/PredictionCard';
 import {
   HeroFeaturedSkeleton,
@@ -112,6 +113,10 @@ export default function HomePage() {
   const bundle2Pct = data?.brand.bundle2DiscountPct ?? 15;
   const bundle3Pct = data?.brand.bundle3DiscountPct ?? 25;
   const allTimeStats = data?.statsByPeriod.ALL_TIME;
+  const verifiedNetProfit =
+    (allTimeStats?.settledCount ?? 0) > 0 ? allTimeStats?.netProfitUnits ?? null : null;
+  const hasDecisiveResults =
+    (allTimeStats?.wins ?? 0) + (allTimeStats?.losses ?? 0) > 0;
 
   const allPredictions = data?.predictions ?? [];
   const activeList = allPredictions.filter((p) => p.resultStatus === 'PENDING');
@@ -276,7 +281,9 @@ export default function HomePage() {
                     Прирост к банку
                   </div>
                   <div className="mt-0.5 font-mono text-lg font-black text-emerald-400 sm:text-xl">
-                    +{allTimeStats ? allTimeStats.netProfitUnits.toFixed(1) : '18.4'}%
+                    {verifiedNetProfit === null
+                      ? '—'
+                      : `${verifiedNetProfit >= 0 ? '+' : ''}${verifiedNetProfit.toFixed(1)}%`}
                   </div>
                   <div className="text-[10px] text-slate-400">Открытый архив</div>
                 </div>
@@ -286,7 +293,7 @@ export default function HomePage() {
                     Точность побед
                   </div>
                   <div className="mt-0.5 font-mono text-lg font-black text-white sm:text-xl">
-                    {allTimeStats ? allTimeStats.winRatePct.toFixed(0) : '68'}%
+                    {hasDecisiveResults ? `${allTimeStats?.winRatePct.toFixed(0)}%` : '—'}
                   </div>
                   <div className="text-[10px] text-slate-400">На дистанции</div>
                 </div>
@@ -296,7 +303,9 @@ export default function HomePage() {
                     Средний коэфф.
                   </div>
                   <div className="mt-0.5 font-mono text-lg font-black text-blue-400 sm:text-xl">
-                    {allTimeStats ? allTimeStats.avgOdds.toFixed(2) : '1.94'}
+                    {(allTimeStats?.settledCount ?? 0) > 0
+                      ? allTimeStats?.avgOdds.toFixed(2)
+                      : '—'}
                   </div>
                   <div className="text-[10px] text-slate-400">По линии БК РФ</div>
                 </div>
@@ -326,17 +335,10 @@ export default function HomePage() {
                     </span>
                     <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-300">
                       <Clock className="h-3.5 w-3.5 text-blue-400" />
-                      <span>
-                        {new Date(featuredEvent.matchStartsAt).toLocaleString(
-                          'ru-RU',
-                          {
-                            day: '2-digit',
-                            month: 'short',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          },
-                        )}
-                      </span>
+                      <LocalDateTime
+                        value={featuredEvent.matchStartsAt}
+                        format="compact"
+                      />
                     </span>
                   </div>
 
@@ -790,7 +792,9 @@ export default function HomePage() {
                     Динамика игрового банка по месяцам
                   </span>
                   <span className="font-mono text-xs font-bold text-emerald-600">
-                    +{allTimeStats?.netProfitUnits.toFixed(1) ?? '18.4'}% к начальному банку
+                    {verifiedNetProfit === null
+                      ? '—'
+                      : `${verifiedNetProfit >= 0 ? '+' : ''}${verifiedNetProfit.toFixed(1)}%`} к начальному банку
                   </span>
                 </div>
                 <EquityCurveChart points={data?.equityCurve ?? []} />

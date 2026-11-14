@@ -2,9 +2,6 @@
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  experimental: {
-    instrumentationHook: true,
-  },
   async headers() {
     return [
       {

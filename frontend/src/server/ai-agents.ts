@@ -53,7 +53,8 @@ export interface AgentCommitteeResult {
   evaluations: AgentEvaluation[];
   selectedIds: string[];
   leaderSummary: string;
-  modelAgentsAvailable: number;
+  leaderModelReviewed: boolean;
+  specialistRolesResponded: number;
 }
 
 export interface AgentChatRequest {
@@ -136,8 +137,16 @@ function probabilityFromAvailableMarketData(candidate: AgentCandidateInput): num
   const d = candidate.fairDrawProbPct;
   const a = candidate.fairAwayProbPct;
 
-  if (market === 'победа 1' || market === 'п1') return h;
-  if (market === 'победа 2' || market === 'п2') return a;
+  if (
+    market === 'победа 1' ||
+    market === 'п1' ||
+    market.startsWith('победа 1 (основное время)')
+  ) return h;
+  if (
+    market === 'победа 2' ||
+    market === 'п2' ||
+    market.startsWith('победа 2 (основное время)')
+  ) return a;
   if (market === 'ничья' || market === 'x' || market === 'х') return d;
   if (market === '1x' || market === '1х') {
     return h !== null && d !== null ? h + d : null;
@@ -179,7 +188,7 @@ function unavailableOpinion(
     probabilityPct: null,
     confidencePct: 0,
     riskScore: baselineRisk(candidate),
-    reason: 'Агент не ответил; автоматическая оценка не заменяет независимое заключение.',
+    reason: 'Агент не ответил; автоматическая оценка не заменяет дополнительную проверку.',
   };
 }
 
@@ -222,7 +231,7 @@ async function runOneAgent(
   }));
 
   const systemPrompt = [
-    `Ты — ${profile.name} в независимой мультиагентной команде VALUEX.`,
+    `Ты — специализированная роль «${profile.name}» в многоэтапной системе оценки VALUEX.`,
     `Твоя единственная зона ответственности: ${profile.responsibility}.`,
     profile.instructions,
     'Оцени вероятность выигрыша именно предложенного исхода отдельно от уверенности в своей оценке. Это модельная оценка, не гарантия. Не выдавай точность выше, чем позволяют факты. Вето используй только при существенном конкретном риске; при нехватке данных — CAUTION.',
@@ -326,8 +335,8 @@ function makeEvaluation(
   const valueEdgePct = Number(
     (estimatedWinProbabilityPct - marketImpliedProbabilityPct).toFixed(1),
   );
-  const enoughIndependentOpinions = available.length >= 2 && passing.length >= 2;
-  const consensusOk = !options.requireConsensus || enoughIndependentOpinions;
+  const enoughPassingOpinions = available.length >= 2 && passing.length >= 2;
+  const consensusOk = !options.requireConsensus || enoughPassingOpinions;
   let rejectionReason: string | null = null;
 
   if (vetoes.length > 0) {
@@ -349,7 +358,9 @@ function makeEvaluation(
         `${opinion.agent}: ${opinion.verdict}, вероятность исхода ${opinion.probabilityPct ?? 'нет данных'}%, уверенность ${opinion.confidencePct}%, риск ${opinion.riskScore}/100 — ${opinion.reason}`,
     ),
     `Риск-менеджер: риск ${riskScore}/100; разброс оценок ${Math.round(spread)} п.п.; консенсусная вероятность ${estimatedWinProbabilityPct}%; средняя уверенность агентов ${confidencePct}%; перевес к подразумеваемой вероятности ${valueEdgePct} п.п.`,
-    rejectionReason ? `РЕШЕНИЕ: ОТКЛОНЁН — ${rejectionReason}` : 'РЕШЕНИЕ: ДОПУЩЕН к финальной проверке главного аналитика.',
+    rejectionReason
+      ? `РЕШЕНИЕ: ОТКЛОНЁН — ${rejectionReason}`
+      : 'РЕШЕНИЕ: прошёл количественные пороги и агентский консенсус; допущен к финальному отбору.',
   ].join('\n');
 
   return {
@@ -412,8 +423,9 @@ export async function runAgentCommittee(params: {
     .slice(0, Math.max(0, params.limit));
 
   let leaderSummary = eligible.length
-    ? `Из ${params.candidates.length} кандидатов пороги и агентский консенсус прошли ${eligible.length}; отобраны ${eligible.map((item) => item.id).join(', ')}.`
-    : `Из ${params.candidates.length} кандидатов ни один не прошёл пороги уверенности, value edge, риска и консенсуса; автопубликация запрещена.`;
+    ? `Серверные пороги и консенсус оставили ${eligible.length} кандидатов: ${eligible.map((item) => item.id).join(', ')}.`
+    : `Ни один кандидат не прошёл пороги уверенности, value edge, риска и консенсуса; выпуск запрещён.`;
+  let leaderModelReviewed = false;
 
   if (eligible.length > 0 && params.apiKey.trim()) {
     const compact = eligible.map((evaluation) => ({
@@ -430,7 +442,7 @@ export async function runAgentCommittee(params: {
       })),
     }));
     const leaderPrompt = [
-      'Ты — главный аналитик VALUEX. Три специализированных агента уже проверили фактические котировки, сведения и риски.',
+      'Ты — дополнительная роль финального аналитика VALUEX. Доступны результаты ответивших специализированных ролей, фактические котировки, сведения и риски.',
       'Сделай только финальную проверку противоречий: не повышай вероятность, не снимай вето, не меняй рынок или коэффициент. При сомнении или явном противоречии исключай кандидата.',
       'Ответ только JSON: {"selectedIds":["id"],"summary":"краткое обоснование на русском"}. Выбирай только из переданных id и не добавляй новых кандидатов.',
     ].join(' ');
@@ -461,9 +473,11 @@ export async function runAgentCommittee(params: {
         const selectedSet = new Set(selected);
         const filtered = eligible.filter((evaluation) => selectedSet.has(evaluation.id));
         eligible.splice(0, eligible.length, ...filtered);
-        if (typeof parsed.summary === 'string' && parsed.summary.trim()) {
-          leaderSummary = parsed.summary.replace(/\s+/g, ' ').trim().slice(0, 360);
-        }
+        leaderModelReviewed = true;
+        leaderSummary =
+          typeof parsed.summary === 'string' && parsed.summary.trim()
+            ? parsed.summary.replace(/\s+/g, ' ').trim().slice(0, 360)
+            : `Дополнительная роль финального аналитика оставила ${filtered.length} из ${allow.size} кандидатов.`;
         break;
       } catch {
         // Консенсус трёх специалистов остается основным фильтром; лидер не добавляет кандидатов.
@@ -475,7 +489,8 @@ export async function runAgentCommittee(params: {
     evaluations,
     selectedIds: eligible.map((evaluation) => evaluation.id),
     leaderSummary,
-    modelAgentsAvailable: profilesWithResponses.filter((rows) => rows.size > 0).length,
+    leaderModelReviewed,
+    specialistRolesResponded: profilesWithResponses.filter((rows) => rows.size > 0).length,
   };
 }
 
@@ -489,18 +504,24 @@ export function buildAgentAnalysis(params: {
     .filter((opinion) => opinion.verdict === 'PASS')
     .map((opinion) => `${opinion.agent}: ${opinion.reason}`)
     .slice(0, 3);
+  // A valid response may report zero confidence; the fallback opinion has no probability.
+  const answeredRoleCount = evaluation.opinions.filter(
+    (opinion) => opinion.probabilityPct !== null,
+  ).length;
   const riskText = candidate.riskFlags.length
     ? candidate.riskFlags.join('; ')
     : 'Подтверждённых критических флагов в собранных данных нет; отсутствие новости не означает отсутствие риска.';
-  const teaser = `Команда аналитиков сравнила котировки и доступные проверяемые сведения о матче «${candidate.homeTeam} — ${candidate.awayTeam}». Публикуются только варианты, прошедшие независимые проверки и контроль риска.`;
+  const teaser = `Аналитическая система сравнила котировки и доступные проверяемые сведения о матче «${candidate.homeTeam} — ${candidate.awayTeam}». Публикуются только варианты, прошедшие несколько специализированных проверок и контроль риска.`;
   const full = [
-    `ИТОГ КОМАНДЫ АГЕНТОВ: выбран рынок «${candidate.market}» по зафиксированной котировке ${candidate.odds.toFixed(2)}. Консенсусная модельная вероятность исхода — ${evaluation.estimatedWinProbabilityPct}%, расчётный перевес к подразумеваемой вероятности линии — ${evaluation.valueEdgePct} п.п. Это оценка, не гарантия результата.`,
-    `ПРОВЕРКА СПЕЦИАЛИСТОВ: ${strongestReasons.length ? strongestReasons.join(' | ') : 'агенты не обнаружили достаточных подтверждённых фактов для уверенного позитивного вывода.'} Главный аналитик: ${params.leaderSummary}`,
+    `ИТОГ МНОГОЭТАПНОЙ AI-ПРОВЕРКИ: выбран рынок «${candidate.market}» по зафиксированной котировке ${candidate.odds.toFixed(2)}. Консенсусная модельная вероятность исхода — ${evaluation.estimatedWinProbabilityPct}%, расчётный перевес к подразумеваемой вероятности линии — ${evaluation.valueEdgePct} п.п. Это оценка, не гарантия результата.`,
+    `МЕТОД: три специализированные роли одной настроенной AI-модели; по этому кандидату ответили ${answeredRoleCount}/3 роли. Это не три независимые модели.`,
+    `ОЦЕНКИ СПЕЦИАЛИЗИРОВАННЫХ РОЛЕЙ: ${strongestReasons.length ? strongestReasons.join(' | ') : 'роли не обнаружили достаточных подтверждённых фактов для уверенного позитивного вывода.'}`,
+    `ФИНАЛЬНЫЙ ОТБОР: ${params.leaderSummary}`,
     `РИСК-МЕНЕДЖЕР: общий индекс риска ${evaluation.riskScore}/100; доступные факторы: ${riskText}. Рекомендуемый консервативный флэт — ${evaluation.riskScore < 35 ? '1.0' : '0.5'}% банка; не увеличивайте сумму из-за одной оценки модели.`,
   ].join('\n\n');
   const report = [
     evaluation.report,
-    `Главный аналитик: ${params.leaderSummary}`,
+    `Финальный отбор: ${params.leaderSummary}`,
   ].join('\n\n');
   return {
     teaser,

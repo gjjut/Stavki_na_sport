@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-tipster_db}
       POSTGRES_USER: ${POSTGRES_USER:-tipster_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-strong_postgres_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set_POSTGRES_PASSWORD_in_.env}
     ports:
       - '127.0.0.1:5432:5432'
     volumes:
@@ -22,15 +22,17 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-}
     container_name: valuex_web
     restart: unless-stopped
     env_file:
       - path: ./.env
         required: false
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-tipster_user}:${POSTGRES_PASSWORD:-strong_postgres_password}@postgres:5432/${POSTGRES_DB:-tipster_db}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tipster_user}:${POSTGRES_PASSWORD:?Set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-tipster_db}
     ports:
-      - '3000:3000'
+      - '127.0.0.1:3000:3000'
     volumes:
       - appdata:/app/.data
     depends_on:

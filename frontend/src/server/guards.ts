@@ -3,7 +3,7 @@ import { readState } from './database';
 import type { UserAccount } from './types';
 
 export async function getOptionalViewer(): Promise<UserAccount | null> {
-  const uid = getSessionUserIdFromCookies();
+  const uid = await getSessionUserIdFromCookies();
   if (!uid) return null;
   const state = await readState();
   return state.users.find((u) => u.id === uid) ?? null;

@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hashPassword } from '@/server/auth';
-import { mutateState, readState } from '@/server/database';
+import {
+  mutateState,
+  readState,
+  toAdminSettingsDto,
+} from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
 import {
   fetchTelegramBotUsername,
@@ -18,16 +22,28 @@ export async function PATCH(req: NextRequest) {
       newAdminPassword?: string;
     };
 
+    const incomingSettings = { ...body.settings };
+    delete incomingSettings.telegramBotTokenConfigured;
+    delete incomingSettings.yookassaSecretKeyConfigured;
+    const incomingBotToken = incomingSettings.telegramBotToken?.trim() || '';
+    const incomingYooKassaSecret = incomingSettings.yookassaSecretKey?.trim() || '';
+
     let resolvedBotUsername: string | undefined;
-    if (body.settings.telegramBotToken?.trim()) {
-      const uname = await fetchTelegramBotUsername(body.settings.telegramBotToken);
+    if (incomingBotToken) {
+      const uname = await fetchTelegramBotUsername(incomingBotToken);
       if (uname) resolvedBotUsername = uname;
     }
 
     const nextSettings = await mutateState((state) => {
       state.settings = {
         ...state.settings,
-        ...body.settings,
+        ...incomingSettings,
+        yookassaSecretKey: incomingYooKassaSecret
+          ? incomingYooKassaSecret
+          : state.settings.yookassaSecretKey,
+        telegramBotToken: incomingBotToken
+          ? incomingBotToken
+          : state.settings.telegramBotToken,
         ...(resolvedBotUsername !== undefined
           ? { telegramBotUsername: resolvedBotUsername }
           : {}),
@@ -38,7 +54,10 @@ export async function PATCH(req: NextRequest) {
         if (body.newAdminEmail && body.newAdminEmail.includes('@')) {
           adminRow.email = body.newAdminEmail.trim().toLowerCase();
         }
-        if (body.newAdminPassword && body.newAdminPassword.length >= 6) {
+        if (body.newAdminPassword) {
+          if (body.newAdminPassword.length < 12) {
+            throw new Error('Новый пароль администратора должен содержать минимум 12 символов.');
+          }
           adminRow.passwordHash = hashPassword(body.newAdminPassword);
         }
       }
@@ -46,7 +65,7 @@ export async function PATCH(req: NextRequest) {
       return state.settings;
     });
 
-    return NextResponse.json({ settings: nextSettings });
+    return NextResponse.json({ settings: toAdminSettingsDto(nextSettings) });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка сохранения настроек' },

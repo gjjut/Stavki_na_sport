@@ -9,7 +9,11 @@ import {
   runAutoSettlementCycle,
   testLlmConnectionAndModels,
 } from '@/server/ai-autopilot';
-import { mutateState, readState } from '@/server/database';
+import {
+  mutateState,
+  readState,
+  toAdminAutopilotDto,
+} from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
 import type { AiAutopilotConfig } from '@/server/types';
 
@@ -17,12 +21,23 @@ export async function PATCH(req: NextRequest) {
   try {
     await requireAdminAccount();
     const body = (await req.json()) as {
-      config: Partial<AiAutopilotConfig>;
+      config: Partial<AiAutopilotConfig> & { cronSecret?: unknown };
     };
+
+    const incomingConfig = { ...body.config };
+    delete incomingConfig.llmApiKeyConfigured;
+    delete incomingConfig.cronSecret;
+    const submittedApiKey =
+      typeof incomingConfig.llmApiKey === 'string'
+        ? incomingConfig.llmApiKey.trim()
+        : '';
+    if (submittedApiKey && (submittedApiKey.length <= 8 || /\s/.test(submittedApiKey))) {
+      throw new Error('API-ключ выглядит некорректно; он не сохранён.');
+    }
 
     const nextConfig = await mutateState((state) => {
       const prevMode = state.aiAutopilot.mode;
-      const incoming = { ...body.config };
+      const incoming = { ...incomingConfig };
       if (
         typeof incoming.llmBaseUrl === 'string' &&
         incoming.llmBaseUrl.includes('/console')
@@ -37,6 +52,7 @@ export async function PATCH(req: NextRequest) {
       state.aiAutopilot = {
         ...state.aiAutopilot,
         ...incoming,
+        llmApiKey: submittedApiKey || state.aiAutopilot.llmApiKey,
       };
       const agentConfidence = Number(state.aiAutopilot.minAgentConfidencePct ?? 60);
       state.aiAutopilot.minAgentConfidencePct = Number.isFinite(agentConfidence)
@@ -65,7 +81,10 @@ export async function PATCH(req: NextRequest) {
       return state.aiAutopilot;
     });
 
-    return NextResponse.json({ aiAutopilot: nextConfig });
+    return NextResponse.json({
+      aiAutopilot: toAdminAutopilotDto(nextConfig),
+      keySavedNow: Boolean(submittedApiKey),
+    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка сохранения автопилота' },
@@ -96,18 +115,22 @@ export async function POST(req: NextRequest) {
       | { action: 'CLEAR_LOGS' };
 
     if (body.action === 'TEST_LLM') {
+      const stateBeforeTest = await readState();
+      const submittedKey = body.llmApiKey?.trim() || '';
+      const savedKey = stateBeforeTest.aiAutopilot.llmApiKey.trim();
+      const keyForTest = submittedKey || savedKey;
       const result = await testLlmConnectionAndModels({
         llmProvider: body.llmProvider,
         llmBaseUrl: body.llmBaseUrl,
-        llmApiKey: body.llmApiKey,
+        llmApiKey: keyForTest,
         llmModel: body.llmModel,
       });
 
-      // Автосохранение ключа, URL, провайдера (включая авто-распознавание sk-pv- -> PLUSVIBE) и модели при проверке!
-      if (body.llmApiKey?.trim() && !/\s/.test(body.llmApiKey.trim())) {
-        const trimmedKey = body.llmApiKey.trim();
+      // API reachability and persistence are separate facts: a failed probe does not discard a valid key.
+      let keySavedNow = false;
+      if (submittedKey.length > 8 && !/\s/.test(submittedKey)) {
         const isPlusVibe =
-          trimmedKey.startsWith('sk-pv-') ||
+          submittedKey.startsWith('sk-pv-') ||
           result.detectedProvider === 'PLUSVIBE' ||
           body.llmProvider === 'PLUSVIBE';
 
@@ -134,14 +157,21 @@ export async function POST(req: NextRequest) {
               : (body.llmProvider as AiAutopilotConfig['llmProvider']);
           state.aiAutopilot.llmBaseUrl =
             result.resolvedBaseUrl || body.llmBaseUrl.trim();
-          state.aiAutopilot.llmApiKey = trimmedKey;
+          state.aiAutopilot.llmApiKey = submittedKey;
           state.aiAutopilot.llmModel = result.ok
             ? result.testedModel || bestFallback
             : bestFallback;
         });
+        keySavedNow = true;
       }
 
-      return NextResponse.json(result);
+      const keyConfigured = keySavedNow || savedKey.length > 8;
+      return NextResponse.json({
+        ...result,
+        keySaved: keyConfigured,
+        keySavedNow,
+        keyConfigured,
+      });
     }
 
     if (body.action === 'RUN_DIAGNOSTICS') {
@@ -185,12 +215,26 @@ export async function POST(req: NextRequest) {
 
     if (body.action === 'APPROVE_ALL_DRAFTS') {
       const state = await readState();
-      let count = 0;
-      for (const d of state.aiDrafts) {
-        await approveAiDraftToStorefront(d.id);
-        count += 1;
+      const drafts = state.aiDrafts;
+      let approvedCount = 0;
+      const failedDrafts: Array<{ id: string; error: string }> = [];
+      for (const draft of drafts) {
+        try {
+          await approveAiDraftToStorefront(draft.id);
+          approvedCount += 1;
+        } catch (err) {
+          failedDrafts.push({
+            id: draft.id,
+            error: err instanceof Error ? err.message : 'Не удалось проверить и выпустить черновик',
+          });
+        }
       }
-      return NextResponse.json({ approvedCount: count });
+      return NextResponse.json({
+        requestedCount: drafts.length,
+        approvedCount,
+        failedDrafts,
+        complete: drafts.length > 0 && failedDrafts.length === 0,
+      });
     }
 
     if (body.action === 'DELETE_DRAFT') {

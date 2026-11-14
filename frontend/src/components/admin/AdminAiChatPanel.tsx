@@ -104,6 +104,8 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
   hasApiKey,
   onRefresh,
 }) => {
+  const hasConfiguredExternalModel =
+    hasApiKey && llmProvider !== 'BUILTIN_QUANT';
   const [messages, setMessages] = useState<AiChatMessage[]>(initialMessages);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -111,7 +113,7 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   // Встроенная прямо в чат быстрая настройка и диагностика API-ключа!
-  const [setupOpen, setSetupOpen] = useState<boolean>(!hasApiKey);
+  const [setupOpen, setSetupOpen] = useState<boolean>(!hasConfiguredExternalModel);
   const [providerDraft, setProviderDraft] = useState<AiLlmProvider>(
     llmProvider === 'BUILTIN_QUANT' ? 'PLUSVIBE' : llmProvider,
   );
@@ -179,10 +181,16 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
         testedModel?: string;
         availableModels?: string[];
         balanceRub?: number | null;
+        keySaved?: boolean;
+        keySavedNow?: boolean;
+        keyConfigured?: boolean;
         message?: string;
         error?: string;
       };
 
+      if (!res.ok) {
+        throw new Error(json.error || json.message || `Проверка вернула HTTP ${res.status}`);
+      }
       if (typeof json.balanceRub === 'number') {
         setBalanceRub(json.balanceRub);
       }
@@ -198,26 +206,24 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
       setBaseUrlDraft(nextUrl);
       setModelDraft(nextModel);
 
-      // Принудительно сохраняем в базу даже если нужно выбрать другую модель вручную
-      if (apiKeyDraft.trim().length > 8) {
-        await fetch('/api/v1/admin/autopilot', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            config: {
-              llmProvider: nextProvider,
-              llmBaseUrl: nextUrl,
-              llmApiKey: apiKeyDraft.trim(),
-              llmModel: nextModel,
-            },
-          }),
-        });
-      }
-
+      const keySaved = json.keySaved === true;
+      const keySavedNow = json.keySavedNow === true;
+      const connectionNote = json.ok
+        ? keySavedNow
+          ? ' Тестовый API-запрос успешен; новый ключ отдельно сохранён на сервере.'
+          : keySaved
+            ? ' Тестовый API-запрос успешен; ранее сохранённый ключ оставлен на сервере.'
+            : ' Тестовый API-запрос успешен, но ключ на сервере не сохранён.'
+        : keySavedNow
+          ? ' API-запрос не подтвердил доступ, но новый ключ сохранён на сервере.'
+          : keySaved
+            ? ' API-запрос не подтвердил доступ; ранее сохранённый ключ не изменён.'
+            : ' Ключ на сервере не сохранён.';
       setKeyResult({
         ok: Boolean(json.ok),
-        message: json.message || json.error || 'Проверка выполнена',
+        message: `${json.message || json.error || 'Проверка выполнена'}${connectionNote}`,
       });
+      if (keySaved) setApiKeyDraft('');
       await onRefresh();
     } catch (err) {
       setKeyResult({
@@ -230,24 +236,42 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
   };
 
   const handleSelectModelFromDropdown = async (nextModel: string) => {
-    setModelDraft(nextModel);
-    await fetch('/api/v1/admin/autopilot', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        config: {
-          llmProvider: providerDraft,
-          llmBaseUrl: baseUrlDraft,
-          llmApiKey: apiKeyDraft.trim(),
-          llmModel: nextModel,
-        },
-      }),
-    });
-    setKeyResult({
-      ok: true,
-      message: `Модель переключена на «${nextModel}» и сохранена! Теперь напишите любое сообщение в чат ниже.`,
-    });
-    await onRefresh();
+    setKeyResult(null);
+    try {
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config: {
+            llmProvider: providerDraft,
+            llmBaseUrl: baseUrlDraft,
+            llmApiKey: apiKeyDraft.trim(),
+            llmModel: nextModel,
+          },
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        keySavedNow?: boolean;
+      };
+      if (!res.ok) {
+        throw new Error(json.error || `Не удалось сохранить модель (HTTP ${res.status})`);
+      }
+      setModelDraft(nextModel);
+      setApiKeyDraft('');
+      setKeyResult({
+        ok: true,
+        message: json.keySavedNow
+          ? `Модель «${nextModel}» сохранена; новый API-ключ отдельно записан на сервер. Доступность API этим действием не проверялась.`
+          : `Модель «${nextModel}» сохранена. Это не подтверждает доступность API — проверьте соединение отдельно или отправьте запрос в чат.`,
+      });
+      await onRefresh();
+    } catch (err) {
+      setKeyResult({
+        ok: false,
+        message: err instanceof Error ? err.message : 'Не удалось сохранить модель',
+      });
+    }
   };
 
   const sendMessage = async (textOverride?: string) => {
@@ -301,10 +325,9 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
     setMessages([]);
   };
 
-  const maskedKey =
-    llmApiKey && llmApiKey.trim().length > 8
-      ? `${llmApiKey.trim().slice(0, 6)}...${llmApiKey.trim().slice(-4)}`
-      : 'не сохранен';
+  const maskedKey = hasApiKey
+    ? 'сохранён на сервере, значение скрыто'
+    : 'не сохранён';
 
   return (
     <div className="mt-6 grid gap-6 lg:grid-cols-12">
@@ -319,21 +342,22 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
             <div>
               <div className="flex flex-wrap items-center gap-2 text-sm font-black">
                 <span>ИИ-Управляющий и Главный аналитик сайта</span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+                <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-slate-200">
                   <Globe className="h-3 w-3" />
-                  <span>Поиск в сети + Управление БД</span>
+                  <span>Инструменты сайта · поиск по доступности</span>
                 </span>
               </div>
               <div className="mt-0.5 text-[11px] text-slate-300">
-                {hasApiKey ? (
+                {hasConfiguredExternalModel ? (
                   <span>
-                    Активен ключ <code className="text-emerald-300">{maskedKey}</code> ·{' '}
+                    В настройках сохранён ключ{' '}
+                    <code className="text-slate-200">{maskedKey}</code> ·{' '}
                     <strong>{llmProvider}</strong> · модель{' '}
-                    <strong className="text-blue-300">{llmModel}</strong>
+                    <strong className="text-blue-300">{llmModel}</strong> · связь отдельно не подтверждена
                   </span>
                 ) : (
                   <span className="text-amber-300">
-                    ⚠️ API-ключ нейросети еще не сохранен на сервере — подключите его прямо ниже!
+                    ⚠️ Внешняя модель не настроена: отвечает встроенный резервный модуль, не нейросеть.
                   </span>
                 )}
               </div>
@@ -345,7 +369,7 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
               type="button"
               onClick={() => setSetupOpen((v) => !v)}
               className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-extrabold transition ${
-                hasApiKey
+                hasConfiguredExternalModel
                   ? 'border border-white/15 bg-white/10 text-white hover:bg-white/20'
                   : 'bg-amber-500 text-slate-950 hover:bg-amber-400'
               }`}
@@ -430,7 +454,11 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
                       }
                     }
                   }}
-                  placeholder="sk-pv-... (PlusVibeAPI) или токен Ollama"
+                  placeholder={
+                    hasApiKey
+                      ? 'Ключ сохранён на сервере; введите новый только для замены'
+                      : 'sk-pv-... (PlusVibeAPI) или токен Ollama'
+                  }
                   className="mt-0.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-[11px]"
                 />
               </div>
@@ -495,7 +523,7 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
               <span className="text-[11px] text-slate-600">
                 {providerDraft === 'PLUSVIBE' ? (
                   <>
-                    Вставьте платный ключ <code className="font-mono font-bold text-slate-900">sk-pv-...</code> из кабинета{' '}
+                    Вставьте ключ <code className="font-mono font-bold text-slate-900">sk-pv-...</code> из кабинета{' '}
                     <a
                       href="https://plusvibeapi.ru/dashboard"
                       target="_blank"
@@ -503,8 +531,7 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
                       className="font-bold text-blue-700 underline"
                     >
                       plusvibeapi.ru/dashboard
-                    </a>{' '}
-                    — работает из РФ без VPN + включает живой русский веб-поиск для прогнозов!
+                    </a>. Результат проверки относится только к тестовому запросу; последующая доступность API не гарантируется.
                   </>
                 ) : (
                   <>
@@ -544,13 +571,13 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
             <div className="rounded-2xl border border-blue-200/70 bg-white p-5">
               <div className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
                 <Sparkles className="h-3.5 w-3.5" />
-                <span>Готов к диалогу и управлению сайтом</span>
+                <span>Доступны поддерживаемые команды и диагностика</span>
               </div>
               <h3 className="mt-2.5 text-base font-extrabold text-slate-950">
-                Поручите мне любую задачу по сайту, проверке новостей или Telegram-каналу
+                Попросите проверить источники, управлять настройками или запустить проверенный сбор
               </h3>
               <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                Если вдруг при обращении к API нейросети возникнет любая ошибка (не сохранен ключ, закончился баланс токена, неверное имя модели или блокировка шлюза) — я сразу покажу <strong>точный код ошибки от сервера и пошаговое решение прямо в сообщении</strong>.
+                Успешная проверка ключа не гарантирует, что каждый последующий запрос пройдет: фактический статус модели и каждого действия показывается в ответе. Без настроенной внешней модели некоторые команды выполняет только встроенный резервный модуль.
               </p>
             </div>
           )}
@@ -611,16 +638,18 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
                         ))}
                       </ol>
 
-                      {!setupOpen && (
-                        <button
-                          type="button"
-                          onClick={() => setSetupOpen(true)}
-                          className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-blue-700"
-                        >
-                          <KeyRound className="h-3 w-3" />
-                          <span>Открыть настройку ключа прямо здесь ↑</span>
-                        </button>
-                      )}
+                      {!setupOpen &&
+                        msg.diagnostic.code !== 'ACTION_FORMAT_RECOVERED' &&
+                        msg.diagnostic.code !== 'INVALID_AGENT_ACTION' && (
+                          <button
+                            type="button"
+                            onClick={() => setSetupOpen(true)}
+                            className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-blue-700"
+                          >
+                            <KeyRound className="h-3 w-3" />
+                            <span>Открыть настройку ключа прямо здесь ↑</span>
+                          </button>
+                        )}
                     </div>
                   )}
 
@@ -661,9 +690,9 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
             <div className="flex justify-start">
               <div className="inline-flex items-center gap-2.5 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-semibold text-slate-600 shadow-xs">
                 <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
-                <span>
-                  Обращаюсь к нейросети и проверяю открытые источники…
-                </span>
+                  <span>
+                    Обрабатываю запрос; фактический статус модели и действий появится в ответе…
+                  </span>
               </div>
             </div>
           )}

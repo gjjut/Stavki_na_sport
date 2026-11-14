@@ -4,6 +4,8 @@ import {
   computeAiPerformanceStats,
   computePlatformAnalytics,
   readState,
+  toAdminAutopilotDto,
+  toAdminSettingsDto,
   toSafeSessionUser,
 } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
@@ -19,7 +21,7 @@ export async function GET() {
     const aiStats = computeAiPerformanceStats(state.predictions);
 
     return NextResponse.json({
-      settings: state.settings,
+      settings: toAdminSettingsDto(state.settings),
       predictions: state.predictions,
       promoCodes: state.promoCodes,
       users: state.users.map((u) => ({
@@ -32,7 +34,7 @@ export async function GET() {
       affiliateLinks: state.affiliateLinks,
       payouts: state.payouts,
       stats: analytics.statsByPeriod.ALL_TIME,
-      aiAutopilot: state.aiAutopilot,
+      aiAutopilot: toAdminAutopilotDto(state.aiAutopilot),
       aiDrafts: state.aiDrafts,
       aiLogs: state.aiLogs,
       aiChatMessages: state.aiChatMessages,

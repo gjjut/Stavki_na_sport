@@ -19,8 +19,8 @@ function loadSystemCyrillicFonts() {
       '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
       '/usr/share/fonts/TTF/DejaVuSans.ttf',
     ]) {
-      if (fs.existsSync(p)) {
-        const buf = fs.readFileSync(p);
+      if (fs.existsSync(/* turbopackIgnore: true */ p)) {
+        const buf = fs.readFileSync(/* turbopackIgnore: true */ p);
         cachedRegularFont = buf.buffer.slice(
           buf.byteOffset,
           buf.byteOffset + buf.byteLength,
@@ -34,8 +34,8 @@ function loadSystemCyrillicFonts() {
       '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
       '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
     ]) {
-      if (fs.existsSync(p)) {
-        const buf = fs.readFileSync(p);
+      if (fs.existsSync(/* turbopackIgnore: true */ p)) {
+        const buf = fs.readFileSync(/* turbopackIgnore: true */ p);
         cachedBoldFont = buf.buffer.slice(
           buf.byteOffset,
           buf.byteOffset + buf.byteLength,

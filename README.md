@@ -34,8 +34,12 @@
 ## Быстрое обновление уже установленного сервера Reg.ru
 
 ```bash
-cd /opt/Stavki_na_sport && git fetch origin && git checkout arena/57277631-stavki-na-sport && git pull && bash deploy/update-regru.sh
+cd /opt/Stavki_na_sport && git fetch origin && git pull --ff-only && bash deploy/update-regru.sh
 ```
+
+Скрипт автоматически определяет PM2 или Docker Compose по установленному приложению; при необходимости режим можно указать явно: `bash deploy/update-regru.sh --pm2` или `bash deploy/update-regru.sh --docker`. Для PM2 корневой `.env` и `frontend/.env.local` синхронизируются; для Docker источником конфигурации служит корневой `.env`. Обновление завершается только после успешного `/api/health`.
+
+Для установки в Docker Compose используйте `bash deploy/install-regru.sh --docker`. Установка без параметра использует PM2.
 
 ## Установка с нуля на чистый VPS Reg.ru Cloud (Ubuntu 22.04 / 24.04 / 26.04 LTS)
 
@@ -51,9 +55,10 @@ bash deploy/install-regru.sh
 ```bash
 cd /opt/Stavki_na_sport && bash deploy/setup-domain-ssl.sh ваш-домен.ru ваш@email.ru
 ```
-Скрипт сам настроит Nginx, выпустит бесплатный сертификат Let's Encrypt с автопродлением и выведет готовый адрес Webhook для личного кабинета ЮKassa. Ежедневные резервные копии БД сохраняются автоматически в `/var/backups/valuex/`.
+Скрипт сам настроит Nginx, выпустит бесплатный сертификат Let's Encrypt с автопродлением и выведет готовый адрес Webhook для личного кабинета ЮKassa. Ежедневные резервные копии PostgreSQL сохраняются автоматически в `/var/backups/valuex/` в режимах PM2 и Docker Compose.
 
 ### Стартовый вход администратора
-- Страница входа: `/login`
-- Логин: `admin@valuex.pro`
-- Пароль: `Admin2026!` *(смените после первого входа в разделе `/admin` → «ЮKassa, Telegram и Бренд»)*
+- Страница входа: `/login`.
+- Установщик создаёт случайный пароль администратора и выводит его один раз в конце установки. Сохраните его в менеджере паролей; постоянного пароля в репозитории нет.
+- Логин берётся из `ADMIN_EMAIL` (по умолчанию установщика — `admin@valuex.pro`). После входа задайте свой пароль длиной не менее 12 символов в `/admin` → «ЮKassa, Telegram и Бренд».
+- Для production обязательны уникальные `SESSION_SECRET` и `AUTOPILOT_CRON_SECRET` длиной не менее 32 символов. Установщик генерирует их автоматически; не публикуйте `.env` и не коммитьте секреты.

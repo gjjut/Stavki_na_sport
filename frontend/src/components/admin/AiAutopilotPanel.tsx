@@ -17,6 +17,7 @@ import {
   XCircle,
   Zap,
 } from 'lucide-react';
+import { LocalDateTime } from '@/components/LocalDateTime';
 import { TeamAvatar } from '@/components/predictions/TeamAvatar';
 import type {
   AiAutopilotConfig,
@@ -69,6 +70,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
   }, [config]);
 
   const saveModeImmediately = async (nextMode: AiAutopilotMode) => {
+    const previousConfig = draftConfig;
     setBusyAction('MODE');
     try {
       const updated = { ...draftConfig, mode: nextMode };
@@ -78,16 +80,19 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: { mode: nextMode } }),
       });
-      if (res.ok) {
-        onToast(
-          nextMode === 'FULL_AUTOPILOT'
-            ? 'Полный автопилот 24/7 ВКЛЮЧЕН! Сбор российской линии и авторасчет активны.'
-            : nextMode === 'MODERATION'
-              ? 'Включен режим премодерации черновиков ИИ.'
-              : 'ИИ-Автопилот поставлен на паузу.',
-        );
-        await onRefresh();
-      }
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(json.error || `Не удалось сохранить режим (HTTP ${res.status})`);
+      onToast(
+        nextMode === 'FULL_AUTOPILOT'
+          ? 'Полный автопилот 24/7 включён.'
+          : nextMode === 'MODERATION'
+            ? 'Включен режим премодерации черновиков ИИ.'
+            : 'ИИ-Автопилот поставлен на паузу.',
+      );
+      await onRefresh();
+    } catch (err) {
+      setDraftConfig(previousConfig);
+      onToast(err instanceof Error ? err.message : 'Не удалось сохранить режим автопилота');
     } finally {
       setBusyAction(null);
     }
@@ -177,6 +182,9 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         balanceRub?: number | null;
         message?: string;
         error?: string;
+        keySaved?: boolean;
+        keySavedNow?: boolean;
+        keyConfigured?: boolean;
       };
       if (Array.isArray(json.availableModels) && json.availableModels.length > 0) {
         setAvailableModels(json.availableModels);
@@ -189,11 +197,27 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
           llmModel: json.testedModel || prev.llmModel,
         }));
       }
+      if (json.keySavedNow) {
+        setDraftConfig((prev) => ({
+          ...prev,
+          llmApiKey: '',
+          llmApiKeyConfigured: true,
+        }));
+      }
+      const keyPersistenceNote = json.keySavedNow
+        ? 'Новый ключ сохранён на сервере.'
+        : json.keySaved
+          ? 'Использован ранее сохранённый ключ; он остаётся на сервере.'
+          : 'Ключ на сервере не сохранён.';
       setLlmCheckStatus({
         ok: Boolean(json.ok),
-        message: json.message || json.error || 'Проверка завершена',
+        message: `${json.message || json.error || 'Проверка завершена'} ${keyPersistenceNote}`,
       });
-      if (json.ok || (Array.isArray(json.availableModels) && json.availableModels.length > 0)) {
+      if (
+        json.keySavedNow ||
+        json.ok ||
+        (Array.isArray(json.availableModels) && json.availableModels.length > 0)
+      ) {
         await onRefresh();
       }
     } finally {
@@ -219,10 +243,26 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: draftConfig }),
       });
-      if (res.ok) {
-        onToast('Настройки ИИ-Автопилота и расписания сохранены!');
-        await onRefresh();
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        keySavedNow?: boolean;
+      };
+      if (!res.ok) throw new Error(json.error || `Не удалось сохранить настройки (HTTP ${res.status})`);
+      if (json.keySavedNow) {
+        setDraftConfig((prev) => ({
+          ...prev,
+          llmApiKey: '',
+          llmApiKeyConfigured: true,
+        }));
       }
+      onToast(
+        json.keySavedNow
+          ? 'Настройки сохранены. Новый API-ключ отдельно сохранён на сервере; доступность модели этим действием не проверялась.'
+          : 'Настройки ИИ-Автопилота и расписания сохранены!',
+      );
+      await onRefresh();
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Не удалось сохранить настройки автопилота');
     } finally {
       setBusyAction(null);
     }
@@ -236,19 +276,29 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'RUN_SCAN_NOW', forcePublish }),
       });
-      const json = await res.json();
-      if (res.ok) {
-        if (json.createdCount > 0) {
-          onToast(
-            json.publishedDirectly
-              ? `Выставлено ${json.createdCount} событий на витрину (${json.feedSource})!`
-              : `Подготовлено ${json.createdCount} прогнозов в черновики (${json.feedSource})!`,
-          );
-        } else {
-          onToast(`Новых матчей сверх лимита не требуется (${json.feedSource}).`);
-        }
-        await onRefresh();
+      const json = (await res.json().catch(() => ({}))) as {
+        createdCount?: number;
+        scannedCount?: number;
+        publishedDirectly?: boolean;
+        feedSource?: string;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(json.error || `Сканирование не выполнено (HTTP ${res.status})`);
+      const createdCount = Number(json.createdCount) || 0;
+      if (createdCount > 0) {
+        onToast(
+          json.publishedDirectly
+            ? `Опубликовано прогнозов: ${createdCount} (${json.feedSource}).`
+            : `Подготовлено черновиков: ${createdCount} (${json.feedSource}).`,
+        );
+      } else {
+        onToast(
+          `Прогнозов не создано: реальных кандидатов, прошедших проверку, нет (обработано событий: ${Number(json.scannedCount) || 0}; ${json.feedSource}).`,
+        );
       }
+      await onRefresh();
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Не удалось выполнить сканирование');
     } finally {
       setBusyAction(null);
     }
@@ -262,15 +312,21 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'RUN_SETTLE_NOW' }),
       });
-      const json = await res.json();
-      if (res.ok) {
-        onToast(
-          json.settledCount > 0
-            ? `Рассчитано матчей: ${json.settledCount}, выплачено страховок: ${json.compensatedBuyers}.`
-            : `Проверено завершенных встреч: ${json.checkedCount}. Новых итоговых счетов пока нет.`,
-        );
-        await onRefresh();
-      }
+      const json = (await res.json().catch(() => ({}))) as {
+        settledCount?: number;
+        compensatedBuyers?: number;
+        checkedCount?: number;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(json.error || `Сверка результатов не выполнена (HTTP ${res.status})`);
+      onToast(
+        (json.settledCount ?? 0) > 0
+          ? `По подтверждённым источникам рассчитано матчей: ${json.settledCount}; страховок выплачено: ${json.compensatedBuyers ?? 0}.`
+          : `Новых расчётов нет. Проверено событий: ${json.checkedCount ?? 0}; неподтверждённые и неоднозначные исходы оставлены без расчёта.`,
+      );
+      await onRefresh();
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Не удалось выполнить сверку результатов');
     } finally {
       setBusyAction(null);
     }
@@ -284,10 +340,15 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'RUN_DIAGNOSTICS' }),
       });
-      const json = await res.json();
-      if (res.ok && json.report) {
-        setDiagnostics(json.report as AiDiagnosticsReport);
-      }
+      const json = (await res.json().catch(() => ({}))) as {
+        report?: AiDiagnosticsReport;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(json.error || `Диагностика не выполнена (HTTP ${res.status})`);
+      if (!json.report) throw new Error('Сервер не вернул отчёт диагностики');
+      setDiagnostics(json.report);
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Не удалось выполнить диагностику');
     } finally {
       setBusyAction(null);
     }
@@ -301,13 +362,28 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'REPLACE_DEMO_WITH_REAL' }),
       });
-      const json = await res.json();
+      const json = (await res.json().catch(() => ({}))) as {
+        removedDemoCount?: number;
+        createdCount?: number;
+        scannedCount?: number;
+        feedSource?: string;
+        error?: string;
+      };
       if (res.ok) {
+        const removedCount = Number(json.removedDemoCount) || 0;
+        const createdCount = Number(json.createdCount) || 0;
+        const scannedCount = Number(json.scannedCount) || 0;
         onToast(
-          `Стартовые демо убраны (${json.removedDemoCount} шт.), опубликовано реальных матчей: ${json.createdCount} (${json.feedSource})!`,
+          createdCount > 0
+            ? `Удалено демо-карточек: ${removedCount}. Сканировано: ${scannedCount}; опубликовано реальных прогнозов: ${createdCount} (${json.feedSource}).`
+            : `Удалено демо-карточек: ${removedCount}. Реальных прогнозов не опубликовано: сканирование проверило ${scannedCount} событий и не нашло прошедших кандидатов (${json.feedSource}).`,
         );
         await onRefresh();
+      } else {
+        onToast(json.error || `Не удалось заменить демо-карточки (HTTP ${res.status})`);
       }
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Не удалось заменить демо-карточки');
     } finally {
       setBusyAction(null);
     }
@@ -321,10 +397,12 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'APPROVE_DRAFT', draftId }),
       });
-      if (res.ok) {
-        onToast('Прогноз ИИ опубликован на витрине и зафиксирован SHA-256!');
-        await onRefresh();
-      }
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(json.error || `Не удалось выпустить прогноз (HTTP ${res.status})`);
+      onToast('Прогноз ИИ опубликован на витрине и зафиксирован SHA-256!');
+      await onRefresh();
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Не удалось выпустить прогноз');
     } finally {
       setBusyAction(null);
     }
@@ -337,6 +415,44 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
       body: JSON.stringify({ action: 'DELETE_DRAFT', draftId }),
     });
     await onRefresh();
+  };
+
+  const handleApproveAllDrafts = async () => {
+    setBusyAction('APPROVE_ALL');
+    try {
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'APPROVE_ALL_DRAFTS' }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        requestedCount?: number;
+        approvedCount?: number;
+        failedDrafts?: Array<{ id: string; error: string }>;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(json.error || `Ошибка выпуска (HTTP ${res.status})`);
+      const requestedCount = json.requestedCount ?? 0;
+      const approvedCount = json.approvedCount ?? 0;
+      const failedDrafts = json.failedDrafts ?? [];
+      const message =
+        requestedCount === 0
+          ? 'Черновиков нет — публикация не выполнялась.'
+          : `Опубликовано ${approvedCount} из ${requestedCount} черновиков.${
+              failedDrafts.length > 0
+                ? ` Не выпущено ${failedDrafts.length}: ${failedDrafts
+                    .slice(0, 2)
+                    .map((item) => item.error)
+                    .join('; ')}`
+                : ''
+            }`;
+      onToast(message);
+      await onRefresh();
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Не удалось выпустить черновики');
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   const handleBroadcastDigest = async () => {
@@ -391,6 +507,9 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
               </strong>
               , а после матчей сверяет счет и начисляет страховки на баланс.
             </p>
+            <p className="mt-2 max-w-2xl text-[10px] leading-relaxed text-amber-200/90">
+              Метод: алгоритм предварительно выбирает матч и рынок; его edge/confidence — эвристики, не доказанные вероятности. Одна настроенная AI-модель оценивает кандидата в трёх ролях (не три независимые модели); рынок и коэффициент фиксируются из линии и моделью не переписываются. Выпуск требует подтверждённой линии Фонбет/Леон, минимум двух PASS без VETO и прохождения порогов риска/уверенности/edge. Это не гарантия выигрыша.
+            </p>
 
             {/* Тумблер 3 режимов */}
             <div className="mt-5 flex flex-wrap gap-2">
@@ -437,10 +556,10 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             </div>
           </div>
 
-          {/* Метрики дистанции самого ИИ */}
+          {/* Статистика записей AI-контура с сохранённым отчётом и ID линии */}
           <div className="grid grid-cols-2 gap-3 lg:col-span-5">
             <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-              <div className="text-[11px] text-slate-400">Yield алгоритма ИИ</div>
+              <div className="text-[11px] text-slate-400">Yield AI-контура</div>
               <div
                 className={`mt-1 font-mono text-2xl font-black ${
                   aiStats.yieldPct >= 0 ? 'text-emerald-400' : 'text-rose-400'
@@ -455,7 +574,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-              <div className="text-[11px] text-slate-400">Профит ИИ к банку</div>
+              <div className="text-[11px] text-slate-400">Профит AI-контура к банку</div>
               <div className="mt-1 font-mono text-2xl font-black text-white">
                 {aiStats.netProfitUnits >= 0 ? '+' : ''}
                 {aiStats.netProfitUnits.toFixed(2)}%
@@ -466,7 +585,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-              <div className="text-[11px] text-slate-400">Проходимость ИИ</div>
+              <div className="text-[11px] text-slate-400">Проходимость AI-контура</div>
               <div className="mt-1 font-mono text-2xl font-black text-blue-400">
                 {aiStats.winRatePct.toFixed(1)}%
               </div>
@@ -481,9 +600,12 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                 {drafts.length}
               </div>
               <div className="mt-0.5 truncate text-[10px] text-slate-400">
-                {config.lastFeedSource || `Выпущено ИИ: ${aiStats.totalAiPredictions}`}
+                {config.lastFeedSource || `Учтено AI-контуром: ${aiStats.totalAiPredictions}`}
               </div>
             </div>
+            <p className="col-span-2 text-[10px] leading-relaxed text-slate-500">
+              В статистику попадают только записи с ID линии и сохранённым отчётом ролей; это не аудит production-вызовов модели.
+            </p>
           </div>
         </div>
 
@@ -633,7 +755,11 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                     >
                       <div className="min-w-0">
                         <div className="truncate text-[10px] text-slate-400">
-                          {m.leagueName} · {m.startsAtFormatted} МСК
+                          {m.leagueName} · Начало:{' '}
+                          <LocalDateTime
+                            value={m.matchStartsAt}
+                            format="compact"
+                          />
                         </div>
                         <div className="truncate font-bold text-white">
                           {m.matchTitle}
@@ -670,18 +796,11 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
             </div>
             <button
               type="button"
-              onClick={async () => {
-                await fetch('/api/v1/admin/autopilot', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ action: 'APPROVE_ALL_DRAFTS' }),
-                });
-                onToast('Все черновики ИИ опубликованы на витрину!');
-                await onRefresh();
-              }}
-              className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700"
+              onClick={handleApproveAllDrafts}
+              disabled={busyAction !== null}
+              className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:cursor-wait disabled:opacity-60"
             >
-              Опубликовать все ({drafts.length})
+              {busyAction === 'APPROVE_ALL' ? 'Повторная сверка линии…' : `Опубликовать все (${drafts.length})`}
             </button>
           </div>
 
@@ -720,6 +839,10 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                       size="sm"
                     />
                     <span>{d.awayTeam}</span>
+                  </div>
+                  <div className="mt-1 text-[10px] text-slate-500">
+                    Начало:{' '}
+                    <LocalDateTime value={d.matchStartsAt} format="full" />
                   </div>
 
                   <div className="mt-2 rounded-xl border border-blue-100 bg-white p-2.5 text-xs">
@@ -940,7 +1063,11 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
                   </label>
                   <input
                     type="password"
-                    placeholder="sk-pv-... (PlusVibeAPI) или токен Ollama"
+                    placeholder={
+                      draftConfig.llmApiKeyConfigured
+                        ? 'Ключ сохранён на сервере; введите новый только для замены'
+                        : 'sk-pv-... (PlusVibeAPI) или токен Ollama'
+                    }
                     value={draftConfig.llmApiKey}
                     onChange={(e) => {
                       const val = e.target.value;

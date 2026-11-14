@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   createPredictionByAdmin,
+  hasVerifiedSettledResult,
   mutateState,
   readState,
   settlePredictionByAdmin,
@@ -10,8 +11,12 @@ import {
   type OpenSourceMatchIntel,
 } from './ai-research';
 import { sendTelegramChannelAnnouncement } from './integrations';
+import { hasSameVerifiedBookmakerQuote } from './bookmaker-line';
 import { runAgentCommittee, buildAgentAnalysis, type AgentCandidateInput } from './ai-agents';
 import { normalizeFonbetTeamImageUrl } from './fonbet-team-logos';
+import { evaluateMarketByScore } from './market-settlement';
+import { withoutLegacyStarterDemoPredictions } from './prediction-data-policy';
+import { shouldPublishImmediately } from './autopilot-publish-policy';
 import {
   localizeTeamName,
   matchTeamPairOrder,
@@ -26,7 +31,6 @@ import type {
   AiPredictionDraft,
   MatchLifecycleStatus,
   PredictionRecord,
-  ResultStatus,
   SportType,
 } from './types';
 
@@ -377,7 +381,8 @@ async function discoverFonbetLineUrls(): Promise<string[]> {
 }
 
 /**
- * Выбор оптимального одиночного исхода в рабочем диапазоне кэфов 1.65 – 2.38
+ * Выбирает рынок только по явной котировке из фида. Не выводит форы и исходы с ОТ
+ * из P1/P2: для таких рынков отдельной котировки может не быть.
  */
 function pickOptimalValueMarket(params: {
   sport: SportType;
@@ -401,7 +406,11 @@ function pickOptimalValueMarket(params: {
   if (params.p1 && params.p1 >= 1.65 && params.p1 <= 2.38) {
     options.push({
       market:
-        params.sport === 'HOCKEY' && !params.px ? 'Победа 1 в матче' : 'Победа 1',
+        params.sport !== 'HOCKEY'
+          ? 'Победа 1'
+          : params.px
+            ? 'Победа 1 (основное время)'
+            : 'Победа 1 в матче',
       odds: params.p1,
       bonus: 0.45,
     });
@@ -409,41 +418,14 @@ function pickOptimalValueMarket(params: {
   if (params.p2 && params.p2 >= 1.66 && params.p2 <= 2.35) {
     options.push({
       market:
-        params.sport === 'HOCKEY' && !params.px ? 'Победа 2 в матче' : 'Победа 2',
+        params.sport !== 'HOCKEY'
+          ? 'Победа 2'
+          : params.px
+            ? 'Победа 2 (основное время)'
+            : 'Победа 2 в матче',
       odds: params.p2,
       bonus: 0.35,
     });
-  }
-
-  // Для хоккея (3 исхода с ничьей): пересчет в надежную «Победу в матче» с ОТ и буллитами
-  if (params.sport === 'HOCKEY' && params.px && params.p1 && params.p2) {
-    const ml1 = Number((params.p1 * 0.78).toFixed(2));
-    const ml2 = Number((params.p2 * 0.78).toFixed(2));
-    if (ml1 >= 1.66 && ml1 <= 2.25) {
-      options.push({ market: 'Победа 1 в матче', odds: ml1, bonus: 0.55 });
-    }
-    if (ml2 >= 1.68 && ml2 <= 2.25) {
-      options.push({ market: 'Победа 2 в матче', odds: ml2, bonus: 0.45 });
-    }
-  }
-
-  // Для явных фаворитов (1.42–1.63): аккуратная минусовая фора с рабочим коэффициентом
-  if (params.sport === 'FOOTBALL' && params.p1 && params.p1 >= 1.42 && params.p1 < 1.64) {
-    const hcpOdds = Number((params.p1 * 1.27).toFixed(2));
-    if (hcpOdds >= 1.72 && hcpOdds <= 2.15) {
-      options.push({ market: 'Фора 1 (-1.0)', odds: hcpOdds, bonus: 0.48 });
-    }
-  }
-  if (
-    (params.sport === 'TENNIS' || params.sport === 'ESPORTS') &&
-    params.p1 &&
-    params.p1 >= 1.38 &&
-    params.p1 < 1.62
-  ) {
-    const setHcp = Number((params.p1 * 1.34).toFixed(2));
-    if (setHcp >= 1.75 && setHcp <= 2.2) {
-      options.push({ market: 'Фора 1 (-1.5)', odds: setHcp, bonus: 0.42 });
-    }
   }
 
   if (params.dc1x && params.dc1x >= 1.65 && params.dc1x <= 2.15) {
@@ -1057,8 +1039,8 @@ async function scanFromLocalizedLiveCenter(
           px,
           p2,
           totalLine: overUnder,
-          overOdds: overUnder ? 1.9 : null,
-          underOdds: overUnder ? 1.9 : null,
+          overOdds: null,
+          underOdds: null,
           priorityBonus: feed.bonus,
         });
         if (!best) continue;
@@ -1093,8 +1075,8 @@ async function scanFromLocalizedLiveCenter(
           drawOdds: px,
           awayOdds: p2,
           totalLine: overUnder,
-          overOdds: overUnder ? 1.9 : null,
-          underOdds: overUnder ? 1.9 : null,
+          overOdds: null,
+          underOdds: null,
           contextNotes: recText,
           suggestedMarket: best.market,
           suggestedOdds: best.odds,
@@ -1114,128 +1096,6 @@ async function scanFromLocalizedLiveCenter(
       (a, b) =>
         b.priorityBonus * 2 + b.valueEdgePct - (a.priorityBonus * 2 + a.valueEdgePct),
     );
-}
-
-/**
- * УРОВЕНЬ 4: Локальный стенд (включается ТОЛЬКО в изолированной песочнице без доступа к внешним спортивным сайтам)
- */
-function buildQuantitativeFallbackPool(
-  config: AiAutopilotConfig,
-): ScannedFixtureCandidate[] {
-  const now = Date.now();
-  const templates: Array<{
-    sport: SportType;
-    leagueName: string;
-    homeTeam: string;
-    awayTeam: string;
-    hoursAhead: number;
-    market: string;
-    odds: number;
-    edge: number;
-    conf: number;
-    notes: string;
-  }> = [
-    {
-      sport: 'FOOTBALL',
-      leagueName: 'Россия · Мир РПЛ',
-      homeTeam: 'Спартак Москва',
-      awayTeam: 'Динамо Москва',
-      hoursAhead: 5.5,
-      market: 'Индивидуальный тотал 1 больше (1.5)',
-      odds: 1.92,
-      edge: 5.5,
-      conf: 74,
-      notes: 'Спартак дома стабильно забивает по 2 и более мяча за игру, а оборона Динамо регулярно допускает моменты в московских дерби.',
-    },
-    {
-      sport: 'HOCKEY',
-      leagueName: 'КХЛ · Регулярный сезон',
-      homeTeam: 'СКА',
-      awayTeam: 'Авангард',
-      hoursAhead: 7,
-      market: 'Тотал больше (5.0)',
-      odds: 1.9,
-      edge: 4.9,
-      conf: 72,
-      notes: 'Обе команды играют в открытый атакующий хоккей, мощно реализуют большинство и наносят свыше 60 бросков в створ за встречу.',
-    },
-    {
-      sport: 'FOOTBALL',
-      leagueName: 'Англия · Премьер-лига',
-      homeTeam: 'Ливерпуль',
-      awayTeam: 'Ньюкасл Юнайтед',
-      hoursAhead: 9.5,
-      market: 'Фора 1 (-1.0)',
-      odds: 1.94,
-      edge: 5.3,
-      conf: 75,
-      notes: 'Ливерпуль мощно проводит домашние матчи с первых минут, тогда как Ньюкасл приехал после тяжелой выездной серии с потерями в защите.',
-    },
-    {
-      sport: 'TENNIS',
-      leagueName: 'ATP Masters 1000 · Хард',
-      homeTeam: 'Карлос Алькарас',
-      awayTeam: 'Александр Зверев',
-      hoursAhead: 8.5,
-      market: 'Победа 1',
-      odds: 1.81,
-      edge: 4.6,
-      conf: 73,
-      notes: 'Алькарас заметно свежее физически и уверенно забирает затяжные розыгрыши на задней линии на этом покрытии.',
-    },
-    {
-      sport: 'ESPORTS',
-      leagueName: 'CS2 · Крупный турнир',
-      homeTeam: 'Team Spirit',
-      awayTeam: 'MOUZ',
-      hoursAhead: 6,
-      market: 'Победа 1',
-      odds: 1.86,
-      edge: 5.1,
-      conf: 72,
-      notes: 'Российский состав Team Spirit выиграл 4 из 5 последних матчей против соперников из топ-10 и сильнее на ключевых картах.',
-    },
-    {
-      sport: 'MMA',
-      leagueName: 'UFC · Главный кард',
-      homeTeam: 'Ислам Махачев',
-      awayTeam: 'Арман Царукян',
-      hoursAhead: 13,
-      market: 'Победа 1',
-      odds: 1.75,
-      edge: 4.4,
-      conf: 76,
-      notes: 'Преимущество Махачева в борьбе, контроле в партере и огромный опыт пятираундовых чемпионских боев.',
-    },
-  ];
-
-  const dayStamp = new Date().toISOString().slice(0, 10);
-  return templates
-    .filter((t) => config.sportsEnabled.includes(t.sport))
-    .map((t, i) => ({
-      externalFixtureId: `quant_${dayStamp}_${i}`,
-      sport: t.sport,
-      leagueName: t.leagueName,
-      homeTeam: t.homeTeam,
-      awayTeam: t.awayTeam,
-      matchStartsAt: new Date(now + t.hoursAhead * 3600_000).toISOString(),
-      bookmakerSource: 'Локальный резервный стенд · синтетические данные (не котировка)',
-      homeOdds: t.odds,
-      drawOdds: t.sport === 'FOOTBALL' ? 3.65 : null,
-      awayOdds:
-        t.sport === 'FOOTBALL'
-          ? Number((1 / Math.max(0.16, 1.05 - 1 / t.odds - 1 / 3.65)).toFixed(2))
-          : Number((1 / Math.max(0.24, 1.05 - 1 / t.odds)).toFixed(2)),
-      totalLine: 2.5,
-      overOdds: 1.9,
-      underOdds: 1.9,
-      contextNotes: t.notes,
-      suggestedMarket: t.market,
-      suggestedOdds: t.odds,
-      valueEdgePct: t.edge,
-      confidencePct: t.conf,
-      priorityBonus: 1.5,
-    }));
 }
 
 const LLM_BROWSER_UA =
@@ -1821,10 +1681,10 @@ export async function testLlmConnectionAndModels(input: {
         balanceRub,
         modelProbeResults: probeResults,
         latencyMs: Date.now() - t0,
-        message: `Отлично! Живая модель «${candidateModel}» проверена и СОХРАНЕНА в базу (ответ: «${out.content.slice(
+        message: `Тестовый запрос получил ответ от модели «${candidateModel}»: «${out.content.slice(
           0,
           35,
-        )}»${balanceBadge}, доступно моделей: ${availableModels.length || 1} шт.).`,
+        )}»${balanceBadge}. Проверка подтверждает только этот тестовый запрос.`,
       };
     }
 
@@ -1888,8 +1748,8 @@ export async function testLlmConnectionAndModels(input: {
  * либо встроенный понятный русскоязычный генератор (0 ₽).
  */
 /**
- * ЭТАП ОТБОРА (ИИ-Комитет): из широкого шортлиста матчей и собранных фактов из открытых источников
- * нейросеть отсеивает мутные/равные игры и оставляет ТОЛЬКО матчи с максимальной реальной вероятностью захода.
+ * Этап отбора: одна настроенная LLM вызывается в нескольких специализированных ролях.
+ * Роли оценивают шортлист и факты; их оценки не являются независимыми моделями или гарантией исхода.
  */
 interface CandidateWithIntel {
   cand: ScannedFixtureCandidate;
@@ -1974,23 +1834,26 @@ async function evaluateCandidatesWithAgentCommittee(
   const evaluationsById = new Map(
     committee.evaluations.map((evaluation) => [evaluation.id, evaluation]),
   );
+  const leaderSummary = committee.leaderModelReviewed
+    ? `Дополнительная роль финального аналитика той же AI-модели выполнила отбор: ${committee.leaderSummary}`
+    : `Отдельный ответ роли финального аналитика не получен; выбор основан на порогах и консенсусе специализированных ролей: ${committee.leaderSummary}`;
   const shortlistById = new Map(shortlist.map((item) => [item.cand.externalFixtureId, item]));
   const selected = committee.selectedIds.flatMap((id) => {
     const item = shortlistById.get(id);
     const agentInput = agentInputs.find((candidate) => candidate.id === id);
     const evaluation = evaluationsById.get(id);
     if (!item || !agentInput || !evaluation?.accepted) return [];
-    return [{ ...item, agentInput, evaluation, leaderSummary: committee.leaderSummary }];
+    return [{ ...item, agentInput, evaluation, leaderSummary }];
   });
 
   const acceptedIds = new Set(committee.selectedIds);
   const rejected = committee.evaluations
     .filter((evaluation) => !acceptedIds.has(evaluation.id))
     .slice(0, 8)
-    .map((evaluation) => `${evaluation.id}: ${evaluation.rejectionReason || 'не прошёл финальный отбор лидера'}`);
+    .map((evaluation) => `${evaluation.id}: ${evaluation.rejectionReason || 'не прошёл финальный отбор'}`);
   const summary = [
-    `Агенты ответили: ${committee.modelAgentsAvailable}/3; консенсус отобранных: ${selected.length}/${shortlist.length}.`,
-    committee.leaderSummary,
+    `Ответивших специализированных ролей: ${committee.specialistRolesResponded}/3; консенсус отобранных: ${selected.length}/${shortlist.length}.`,
+    leaderSummary,
     ...rejected,
   ].join(' | ').slice(0, 1_200);
   await appendAutopilotLog(
@@ -2059,6 +1922,20 @@ function selectDiversifiedCandidates(
 
   return chosen;
 }
+
+async function readCurrentBookmakerLine(
+  config: AiAutopilotConfig,
+  bookmakerSource: string,
+): Promise<ScannedFixtureCandidate[]> {
+  if (bookmakerSource.toLowerCase().includes('фонбет')) {
+    return scanFromFonbetRu(config);
+  }
+  if (bookmakerSource.toLowerCase().includes('леон')) {
+    return scanFromLeonRu(config);
+  }
+  return [];
+}
+
 export async function runAiScanAndGenerateCycle(options?: {
   forcePublish?: boolean;
   triggerLabel?: string;
@@ -2098,8 +1975,7 @@ export async function runAiScanAndGenerateCycle(options?: {
   }
 
   if (rawCandidates.length === 0) {
-    rawCandidates = buildQuantitativeFallbackPool(config);
-    feedSource = 'Локальный резервный стенд (нет доступа к сети)';
+    feedSource = 'Реальные букмекерские линии недоступны';
   }
 
   const limitCount = Math.max(
@@ -2189,16 +2065,38 @@ export async function runAiScanAndGenerateCycle(options?: {
     }),
   );
 
-  // Шаг 3: три специализированных агента оценивают фактическую линию и данные;
+  // Шаг 3: одна настроенная LLM вызывается в трёх специализированных ролях;
   // без двух PASS, при вето или сбое LLM кандидат не проходит к выпуску.
-  const selectedWithAgents = await evaluateCandidatesWithAgentCommittee(
+  let selectedWithAgents = await evaluateCandidatesWithAgentCommittee(
     shortlistWithIntel,
     limitCount,
     config,
   );
 
-  const publishImmediately =
-    options?.forcePublish === true || config.mode === 'FULL_AUTOPILOT';
+  const publishImmediately = shouldPublishImmediately(
+    config.mode,
+    options?.forcePublish,
+  );
+
+  if (publishImmediately && selectedWithAgents.length > 0) {
+    const currentLine = await readCurrentBookmakerLine(config, feedSource);
+    const currentById = new Map(
+      currentLine.map((candidate) => [candidate.externalFixtureId, candidate]),
+    );
+    const previouslySelected = selectedWithAgents.length;
+    selectedWithAgents = selectedWithAgents.filter(({ cand }) => {
+      const current = currentById.get(cand.externalFixtureId);
+      return current ? hasSameVerifiedBookmakerQuote(cand, current) : false;
+    });
+    const withheldCount = previouslySelected - selectedWithAgents.length;
+    if (withheldCount > 0) {
+      await appendAutopilotLog(
+        'WARN',
+        'PUBLISHER',
+        `Перед публикацией повторно сверена линия ${feedSource}: снято кандидатов ${withheldCount} — событие, время, рынок или коэффициент изменились либо больше не подтверждаются.`,
+      );
+    }
+  }
 
   let hasActiveFreeOnStorefront = stateSnapshot.predictions.some(
     (p) =>
@@ -2317,18 +2215,22 @@ export async function runAiScanAndGenerateCycle(options?: {
     }
   }
 
+  const completionMessage =
+    createdCount > 0
+      ? publishImmediately
+        ? `Выставлено ${createdCount} матчей на витрину (+анонс в Telegram). Источник: ${feedSource}.`
+        : `Подготовлено ${createdCount} прогнозов в очередь проверки. Источник: ${feedSource}.`
+      : `${publishImmediately ? 'Ничего не опубликовано' : 'Черновиков не создано'}: нет кандидатов, прошедших AI-пороги${publishImmediately ? ' и повторную сверку линии' : ''}. Источник: ${feedSource}.`;
   await appendAutopilotLog(
-    'SUCCESS',
+    createdCount > 0 ? 'SUCCESS' : 'WARN',
     publishImmediately ? 'PUBLISHER' : 'LLM_ANALYST',
-    publishImmediately
-      ? `Выставлено ${createdCount} реальных матчей на витрину (+анонс в Telegram). Источник: ${feedSource}.`
-      : `Подготовлено ${createdCount} реальных матчей в очередь проверки. Источник: ${feedSource}.`,
+    completionMessage,
   );
 
   return {
     scannedCount: rawCandidates.length,
     createdCount,
-    publishedDirectly: publishImmediately,
+    publishedDirectly: publishImmediately && createdCount > 0,
     feedSource,
   };
 }
@@ -2338,14 +2240,14 @@ export async function runAiScanAndGenerateCycle(options?: {
  */
 export async function replaceDemoWithRealMatches(): Promise<{
   removedDemoCount: number;
+  scannedCount: number;
   createdCount: number;
+  publishedDirectly: boolean;
   feedSource: string;
 }> {
   const removedDemoCount = await mutateState((s) => {
     const before = s.predictions.length;
-    s.predictions = s.predictions.filter(
-      (p) => !p.id.startsWith('pred_init_') || p.resultStatus !== 'PENDING',
-    );
+    s.predictions = withoutLegacyStarterDemoPredictions(s.predictions);
     s.aiDrafts = [];
     return before - s.predictions.length;
   });
@@ -2358,7 +2260,9 @@ export async function replaceDemoWithRealMatches(): Promise<{
 
   return {
     removedDemoCount,
+    scannedCount: scanRes.scannedCount,
     createdCount: scanRes.createdCount,
+    publishedDirectly: scanRes.publishedDirectly,
     feedSource: scanRes.feedSource,
   };
 }
@@ -2371,17 +2275,12 @@ export async function broadcastDailyDigestToTelegram(): Promise<{
   error?: string;
 }> {
   const state = await readState();
-  const settled = state.predictions.filter((p) => p.resultStatus !== 'PENDING');
+  const settled = state.predictions.filter(hasVerifiedSettledResult);
   const wins = settled.filter((p) => p.resultStatus === 'WIN').length;
   const losses = settled.filter((p) => p.resultStatus === 'LOSS').length;
   const winRate =
     wins + losses > 0 ? Math.round((wins / (wins + losses)) * 100) : 0;
-
-  let netUnits = 0;
-  for (const p of settled) {
-    if (p.resultStatus === 'WIN') netUnits += p.stakeUnits * (p.fixedOdds - 1);
-    else if (p.resultStatus === 'LOSS') netUnits -= p.stakeUnits;
-  }
+  const netUnits = settled.reduce((sum, prediction) => sum + (prediction.profitUnits ?? 0), 0);
 
   const upcoming = state.predictions
     .filter(
@@ -2455,6 +2354,31 @@ export async function approveAiDraftToStorefront(
   const state = await readState();
   const draft = state.aiDrafts.find((d) => d.id === draftId);
   if (!draft) throw new Error('Черновик не найден');
+  if (!draft.externalFixtureId || !draft.agentReport?.trim()) {
+    throw new Error('Черновик не содержит ID подтверждённой линии и сохранённого отчёта AI-комитета; публикация запрещена.');
+  }
+
+  const currentLine = await readCurrentBookmakerLine(
+    state.aiAutopilot,
+    draft.bookmakerSource,
+  );
+  const currentCandidate = currentLine.find(
+    (candidate) => candidate.externalFixtureId === draft.externalFixtureId,
+  );
+  const expectedQuote = {
+    externalFixtureId: draft.externalFixtureId,
+    sport: draft.sport,
+    leagueName: draft.leagueName,
+    homeTeam: draft.homeTeam,
+    awayTeam: draft.awayTeam,
+    matchStartsAt: draft.matchStartsAt,
+    bookmakerSource: draft.bookmakerSource,
+    suggestedMarket: draft.selectionTitle,
+    suggestedOdds: draft.fixedOdds,
+  };
+  if (!currentCandidate || !hasSameVerifiedBookmakerQuote(expectedQuote, currentCandidate)) {
+    throw new Error('Черновик оставлен без публикации: событие, время, рынок или коэффициент больше не совпадают с текущей линией букмекера. Запустите новый сбор.');
+  }
 
   const created = await createPredictionByAdmin({
     sport: draft.sport,
@@ -2501,160 +2425,7 @@ export async function approveAiDraftToStorefront(
 /**
  * Точный математический расчет рынка по официальному счету матча
  */
-export function evaluateMarketByScore(
-  selectionTitle: string,
-  homeScore: number,
-  awayScore: number,
-  isOvertime = false,
-  sport?: SportType,
-): ResultStatus | null {
-  const s = selectionTitle.toLowerCase().trim();
-  const total = homeScore + awayScore;
-  const diff = homeScore - awayScore;
-  const regulationSport = sport === 'FOOTBALL' || sport === 'HOCKEY';
-  const winnerOnlySport = sport === 'TENNIS' || sport === 'MMA' || sport === 'ESPORTS';
-
-  // Ищем число линии как в скобках (-1.0), так и без скобок (Тотал больше 2.5 / Фора 1 -1.5)
-  const parenMatch = s.match(/\(([+-]?\d+(?:[.,]\d+)?)\)/);
-  const tailMatch = s.match(
-    /(?:больше|меньше|тб|тм|итб1?|итб2|итм1?|итм2|фора\s*[12])\s*([+-]?\d+(?:[.,]\d+)?)/,
-  );
-  const rawNum = parenMatch?.[1] ?? tailMatch?.[1] ?? null;
-  const lineVal = rawNum !== null ? Number(rawNum.replace(',', '.')) : null;
-
-  // Победа с учетом ОТ и буллитов («Победа 1 в матче», «Итоговая победа 1»)
-  if (
-    (s.includes('победа 1') || s.startsWith('п1')) &&
-    (s.includes('в матче') || s.includes('от') || s.includes('итогов'))
-  ) {
-    // В футболе отметка ОТ/пенальти не всегда говорит, что score — результат серии;
-    // не рассчитываем такой рынок без отдельной структуры для пенальти.
-    if (sport === 'FOOTBALL' && isOvertime) return null;
-    return homeScore > awayScore ? 'WIN' : 'LOSS';
-  }
-  if (
-    (s.includes('победа 2') || s.startsWith('п2')) &&
-    (s.includes('в матче') || s.includes('от') || s.includes('итогов'))
-  ) {
-    if (sport === 'FOOTBALL' && isOvertime) return null;
-    return awayScore > homeScore ? 'WIN' : 'LOSS';
-  }
-
-  // Для футбола/хоккея стандартный П1/П2 — исход основного времени;
-  // если была ОТ/серия буллитов, основное время завершилось вничью.
-  if (s === 'победа 1' || s === 'п1' || s.startsWith('победа 1 ')) {
-    if (regulationSport && isOvertime) return 'LOSS';
-    return homeScore > awayScore ? 'WIN' : 'LOSS';
-  }
-  if (s === 'победа 2' || s === 'п2' || s.startsWith('победа 2 ')) {
-    if (regulationSport && isOvertime) return 'LOSS';
-    return awayScore > homeScore ? 'WIN' : 'LOSS';
-  }
-
-  // Для тенниса, MMA и киберспорта без доверенной структуры счёта
-  // автоматически рассчитываем только победителя, а не тоталы/форы.
-  if (winnerOnlySport) return null;
-
-  if (s === 'ничья' || s === 'x' || s === 'х') {
-    if (regulationSport && isOvertime) return 'WIN';
-    return homeScore === awayScore ? 'WIN' : 'LOSS';
-  }
-  if (s === '1x' || s === '1х' || s.includes('первая не проиграет')) {
-    if (regulationSport && isOvertime) return 'WIN';
-    return homeScore >= awayScore ? 'WIN' : 'LOSS';
-  }
-  if (s === 'x2' || s === 'х2' || s.includes('вторая не проиграет')) {
-    if (regulationSport && isOvertime) return 'WIN';
-    return awayScore >= homeScore ? 'WIN' : 'LOSS';
-  }
-
-  // После ОТ у обычного футбольного/хоккейного счёта недостаточно данных,
-  // чтобы восстановить regulation totals, BTTS или ненулевую фору.
-  if (regulationSport && isOvertime) {
-    if (s.includes('фора') && lineVal !== null && Math.abs(lineVal) < 0.01) return 'PUSH';
-    if (
-      s.includes('обе забьют') ||
-      s.includes('тотал') ||
-      s.startsWith('тб') ||
-      s.startsWith('тм') ||
-      s.includes('итб') ||
-      s.includes('итм') ||
-      s.includes('фора')
-    ) {
-      return null;
-    }
-  }
-
-  if (s.includes('обе забьют') && (s.includes('тб') || s.includes('больше'))) {
-    const reqTotal = lineVal ?? 2.5;
-    return homeScore > 0 && awayScore > 0 && total > reqTotal ? 'WIN' : 'LOSS';
-  }
-  if (s.includes('обе забьют: да') || s === 'обе забьют') {
-    return homeScore > 0 && awayScore > 0 ? 'WIN' : 'LOSS';
-  }
-  if (s.includes('обе забьют: нет')) {
-    return homeScore === 0 || awayScore === 0 ? 'WIN' : 'LOSS';
-  }
-
-  if (lineVal !== null && Number.isFinite(lineVal)) {
-    if (s.includes('индивидуальный тотал 1 больше') || s.includes('итб1')) {
-      if (homeScore > lineVal) return 'WIN';
-      if (homeScore === lineVal) return 'PUSH';
-      return 'LOSS';
-    }
-    if (s.includes('индивидуальный тотал 2 больше') || s.includes('итб2')) {
-      if (awayScore > lineVal) return 'WIN';
-      if (awayScore === lineVal) return 'PUSH';
-      return 'LOSS';
-    }
-    if (s.includes('индивидуальный тотал 1 меньше') || s.includes('итм1')) {
-      if (homeScore < lineVal) return 'WIN';
-      if (homeScore === lineVal) return 'PUSH';
-      return 'LOSS';
-    }
-    if (s.includes('индивидуальный тотал 2 меньше') || s.includes('итм2')) {
-      if (awayScore < lineVal) return 'WIN';
-      if (awayScore === lineVal) return 'PUSH';
-      return 'LOSS';
-    }
-    if (s.includes('тотал больше') || s.startsWith('тб')) {
-      if (total > lineVal) return 'WIN';
-      if (total === lineVal) return 'PUSH';
-      return 'LOSS';
-    }
-    if (s.includes('тотал меньше') || s.startsWith('тм')) {
-      if (total < lineVal) return 'WIN';
-      if (total === lineVal) return 'PUSH';
-      return 'LOSS';
-    }
-    if (s.includes('фора 1')) {
-      const regulationScoreUnknown = regulationSport && isOvertime;
-      const legacyOvertimeZeroHandicap = sport === undefined && isOvertime;
-      const effDiff =
-        (regulationScoreUnknown || legacyOvertimeZeroHandicap) && Math.abs(lineVal) < 0.01
-          ? 0
-          : diff;
-      const adj = effDiff + lineVal;
-      if (adj > 0.25) return 'WIN';
-      if (Math.abs(adj) <= 0.01) return 'PUSH';
-      return 'LOSS';
-    }
-    if (s.includes('фора 2')) {
-      const regulationScoreUnknown = regulationSport && isOvertime;
-      const legacyOvertimeZeroHandicap = sport === undefined && isOvertime;
-      const effDiff =
-        (regulationScoreUnknown || legacyOvertimeZeroHandicap) && Math.abs(lineVal) < 0.01
-          ? 0
-          : -diff;
-      const adj = effDiff + lineVal;
-      if (adj > 0.25) return 'WIN';
-      if (Math.abs(adj) <= 0.01) return 'PUSH';
-      return 'LOSS';
-    }
-  }
-
-  return null;
-}
+export { evaluateMarketByScore } from './market-settlement';
 
 interface MatchObservation {
   externalFixtureId: string;
@@ -3591,13 +3362,7 @@ export async function runAutopilotDiagnostics(): Promise<AiDiagnosticsReport> {
     ({ cand, src }) => ({
       leagueName: cand.leagueName,
       matchTitle: `${cand.homeTeam} — ${cand.awayTeam}`,
-      startsAtFormatted: new Date(cand.matchStartsAt).toLocaleString('ru-RU', {
-        timeZone: 'Europe/Moscow',
-        day: '2-digit',
-        month: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-      }),
+      matchStartsAt: cand.matchStartsAt,
       market: cand.suggestedMarket,
       odds: cand.suggestedOdds,
       source: src,

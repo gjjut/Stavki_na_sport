@@ -37,6 +37,8 @@ export default function StatsPage() {
   const [hashItem, setHashItem] = useState<PublicPredictionDto | null>(null);
 
   const stats = data?.statsByPeriod[period];
+  const hasVerifiedSettledResults = (stats?.settledCount ?? 0) > 0;
+  const hasDecisiveResults = (stats?.wins ?? 0) + (stats?.losses ?? 0) > 0;
   const totalProfitPct = stats?.netProfitUnits ?? 0;
   const simulatedProfitRub = Math.round((bankrollRub * totalProfitPct) / 100);
   const simulatedFinalBankRub = bankrollRub + simulatedProfitRub;
@@ -63,7 +65,7 @@ export default function StatsPage() {
               Результаты и открытая статистика
             </h1>
             <p className="mt-1.5 text-xs text-slate-300 sm:text-sm">
-              Полная история всех завершенных прогнозов — включая как победы, так и минусы без правок задним числом
+              В статистику входят только результаты с финальным счётом, подтверждённым минимум двумя независимыми источниками; неоднозначные расчёты не учитываются.
             </p>
           </div>
 
@@ -100,8 +102,9 @@ export default function StatsPage() {
               Прирост к банку
             </div>
             <div className="mt-1 font-mono text-xl font-black text-emerald-600 sm:text-2xl">
-              {totalProfitPct >= 0 ? '+' : ''}
-              {totalProfitPct.toFixed(1)}%
+              {hasVerifiedSettledResults
+                ? `${totalProfitPct >= 0 ? '+' : ''}${totalProfitPct.toFixed(1)}%`
+                : '—'}
             </div>
           </div>
 
@@ -110,8 +113,9 @@ export default function StatsPage() {
               Доходность с оборота
             </div>
             <div className="mt-1 font-mono text-xl font-black text-blue-600 sm:text-2xl">
-              {(stats?.yieldPct ?? 0) >= 0 ? '+' : ''}
-              {stats?.yieldPct.toFixed(1) ?? '0.0'}%
+              {hasVerifiedSettledResults
+                ? `${(stats?.yieldPct ?? 0) >= 0 ? '+' : ''}${stats?.yieldPct.toFixed(1)}%`
+                : '—'}
             </div>
           </div>
 
@@ -120,7 +124,7 @@ export default function StatsPage() {
               Угадано матчей
             </div>
             <div className="mt-1 font-mono text-xl font-black text-slate-950 sm:text-2xl">
-              {stats?.winRatePct.toFixed(0) ?? '0'}%
+              {hasDecisiveResults ? `${stats?.winRatePct.toFixed(0)}%` : '—'}
             </div>
           </div>
 
@@ -129,7 +133,7 @@ export default function StatsPage() {
               Средний коэфф.
             </div>
             <div className="mt-1 font-mono text-xl font-black text-slate-950 sm:text-2xl">
-              {stats?.avgOdds.toFixed(2) ?? '1.90'}
+              {hasVerifiedSettledResults ? stats?.avgOdds.toFixed(2) : '—'}
             </div>
           </div>
 
@@ -147,7 +151,7 @@ export default function StatsPage() {
               Всего сыграно
             </div>
             <div className="mt-1 font-mono text-xl font-black text-slate-950 sm:text-2xl">
-              {(stats?.wins ?? 0) + (stats?.losses ?? 0) + (stats?.pushes ?? 0)}
+              {stats?.settledCount ?? 0}
             </div>
           </div>
         </div>

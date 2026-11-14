@@ -123,6 +123,8 @@ export interface PredictionRecord {
   revealAfterFinish: boolean;
 
   resultStatus: ResultStatus;
+  /** Derived from corroborated final score, market settlement, and matching profit. */
+  settlementVerified?: boolean;
   cashoutMultiplier: number | null;
   finalScore: string | null;
   profitUnits: number | null;
@@ -266,6 +268,8 @@ export interface PlatformSettings {
   telegramChannelId: string;
   telegramBotUsername?: string;
   yandexMetrikaId?: string;
+  telegramBotTokenConfigured?: boolean;
+  yookassaSecretKeyConfigured?: boolean;
 }
 
 export interface StatsSummary {
@@ -295,11 +299,12 @@ export interface SportBreakdownItem {
 
 export interface RecentWinFeedItem {
   id: string;
-  name: string;
-  city: string;
   sport: SportType;
-  wonRub: number;
   matchTitle: string;
+  finalScore: string;
+  fixedOdds: number;
+  profitUnits: number;
+  settledAt: string;
 }
 
 export interface EquityPoint {
@@ -330,6 +335,7 @@ export interface AiAutopilotConfig {
   llmBaseUrl: string;
   llmApiKey: string;
   llmModel: string;
+  llmApiKeyConfigured?: boolean;
   sportsEnabled: SportType[];
   morningHourMsk: number; // напр. 9 (09:00 МСК)
   eveningHourMsk: number; // напр. 18 (18:00 МСК)
@@ -343,7 +349,6 @@ export interface AiAutopilotConfig {
   openSourceResearchEnabled?: boolean; // сбор новостей, травм, турнирной таблицы и формы из открытых источников перед отбором
   minAgentConfidencePct?: number; // минимальный консенсус команды (по умолчанию 70)
   requireAgentConsensus?: boolean; // не публиковать без согласия специализированных агентов
-  cronSecret: string;
   totalGeneratedCount: number;
   lastFeedSource: string | null;
   lastMorningRunDate: string | null;
@@ -362,7 +367,7 @@ export interface AiConnectorDiagnosticItem {
 export interface AiDiagnosticsSampleMatch {
   leagueName: string;
   matchTitle: string;
-  startsAtFormatted: string;
+  matchStartsAt: string;
   market: string;
   odds: number;
   source: string;

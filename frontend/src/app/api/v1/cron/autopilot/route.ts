@@ -1,6 +1,6 @@
+import { timingSafeEqual } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { runScheduledAutopilotTick } from '@/server/ai-autopilot';
-import { readState } from '@/server/database';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,31 +12,28 @@ export async function POST(req: NextRequest) {
   return handleCronRequest(req);
 }
 
+function hasValidCronSecret(expected: string, supplied: string): boolean {
+  const expectedBytes = Buffer.from(expected, 'utf8');
+  const suppliedBytes = Buffer.from(supplied, 'utf8');
+  return (
+    expectedBytes.length >= 32 &&
+    expectedBytes.length === suppliedBytes.length &&
+    timingSafeEqual(expectedBytes, suppliedBytes)
+  );
+}
+
 async function handleCronRequest(req: NextRequest) {
-  const state = await readState();
-  const expectedSecret = state.aiAutopilot.cronSecret;
+  const expectedSecret = process.env.AUTOPILOT_CRON_SECRET?.trim() || '';
+  if (expectedSecret.length < 32) {
+    return NextResponse.json(
+      { error: 'Cron authentication is not configured; set AUTOPILOT_CRON_SECRET to a random value of at least 32 characters.' },
+      { status: 503 },
+    );
+  }
 
-  const querySecret = req.nextUrl.searchParams.get('secret') || '';
-  const authHeader =
-    req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || '';
-  const forwardedFor = (req.headers.get('x-forwarded-for') || '').trim();
-  const host = (req.headers.get('host') || '').trim();
-
-  const isLocalHost = host.startsWith('127.0.0.1') || host.startsWith('localhost');
-  const isLocalIp =
-    !forwardedFor ||
-    forwardedFor === '127.0.0.1' ||
-    forwardedFor === '::1' ||
-    forwardedFor === '::ffff:127.0.0.1';
-
-  const isLocalLoopback = isLocalHost && isLocalIp;
-
-  if (
-    !isLocalLoopback &&
-    expectedSecret &&
-    querySecret !== expectedSecret &&
-    authHeader !== expectedSecret
-  ) {
+  const suppliedSecret =
+    req.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim() || '';
+  if (!hasValidCronSecret(expectedSecret, suppliedSecret)) {
     return NextResponse.json({ error: 'Invalid cron secret' }, { status: 401 });
   }
 

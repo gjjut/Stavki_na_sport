@@ -19,6 +19,7 @@ import {
   Sparkles,
   XCircle,
 } from 'lucide-react';
+import { LocalDateTime } from '@/components/LocalDateTime';
 import { SiteShell } from '@/components/layout/SiteShell';
 import { PredictionCard } from '@/components/predictions/PredictionCard';
 import { PredictionCardSkeleton } from '@/components/predictions/PredictionCardSkeleton';
@@ -222,15 +223,10 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
                     <Clock className="h-3.5 w-3.5 text-blue-400" />
                     <span>
                       Начало:{' '}
-                      {new Date(prediction.matchStartsAt).toLocaleString(
-                        'ru-RU',
-                        {
-                          day: '2-digit',
-                          month: 'long',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        },
-                      )}
+                      <LocalDateTime
+                        value={prediction.matchStartsAt}
+                        format="long"
+                      />
                     </span>
                   </span>
                   <span>

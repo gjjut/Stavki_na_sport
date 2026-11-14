@@ -1,9 +1,20 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { explainMarketInPlainRussian } from '../lib/plain-russian';
 import { hashPassword, verifyPassword } from './auth';
+import {
+  toAdminAutopilotDto,
+  toAdminSettingsDto,
+} from './admin-secret-policy';
+import { hasAiCommitteeProvenance } from './ai-provenance';
+import {
+  hasCorroboratedFinalScore,
+  hasVerifiedSettledResult as hasVerifiedSettledResultWithMarket,
+} from './final-score-verification';
+import { evaluateMarketByScore } from './market-settlement';
+import { withoutLegacyStarterDemoPredictions } from './prediction-data-policy';
 import {
   createYooKassaLivePayment,
   sendTelegramChannelAnnouncement,
@@ -50,8 +61,16 @@ export interface PersistentState {
   aiChatMessages: AiChatMessage[];
 }
 
+export function hasVerifiedSettledResult(record: PredictionRecord): boolean {
+  return hasVerifiedSettledResultWithMarket(record, evaluateMarketByScore);
+}
+
 const DATA_DIR = path.join(process.cwd(), '.data');
 const LOCAL_DB_FILE = path.join(DATA_DIR, 'valuex-production.json');
+const legacyAdminPasswordRotations = new Map<
+  string,
+  { email: string; passwordHash: string }
+>();
 
 export function computeCanonicalSha256(params: {
   matchStartsAt: string;
@@ -95,8 +114,9 @@ function makeUserTelegramLinkCode(userId: string): string {
 
 function createInitialState(): PersistentState {
   const now = Date.now();
-  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@valuex.pro').trim().toLowerCase();
-  const adminPassword = process.env.ADMIN_PASSWORD || 'Admin2026!';
+  const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  const adminPassword = process.env.ADMIN_PASSWORD || '';
+  const canSeedAdmin = adminEmail.includes('@') && adminPassword.length >= 12;
 
   const settings: PlatformSettings = {
     brandName: 'VALUEX',
@@ -119,361 +139,31 @@ function createInitialState(): PersistentState {
     yandexMetrikaId: process.env.NEXT_PUBLIC_YANDEX_METRIKA_ID || '',
   };
 
-  const adminUser: UserAccount = {
-    id: 'usr_admin_root',
-    email: adminEmail,
-    passwordHash: hashPassword(adminPassword),
-    displayName: 'Главный аналитик',
-    city: 'Москва',
-    role: 'ADMIN',
-    status: 'ACTIVE',
-    balanceRub: 0,
-    referenceBankrollRub: 100_000,
-    telegramUsername: '@valuex_admin',
-    telegramChatId: null,
-    telegramLinkCode: makeUserTelegramLinkCode('usr_admin_root'),
-    purchasedPredictionIds: [],
-    referralCode: 'valuex_official',
-    referredByUserId: null,
-    referredByCode: null,
-    revsharePercent: 30,
-    affiliateBalanceRub: 0,
-    affiliateTotalEarnedRub: 0,
-    createdAt: new Date(now - 90 * 86400 * 1000).toISOString(),
-    lastLoginAt: new Date(now).toISOString(),
-  };
-
-  const makeSeed = (
-    idx: number,
-    opts: {
-      sport: SportType;
-      league: string;
-      home: string;
-      away: string;
-      offsetHours: number;
-      matchStatus: MatchStatus;
-      stake: number;
-      odds: number;
-      minOdds: number;
-      selection: string;
-      teaser: string;
-      full: string;
-      tier: AccessTier;
-      price: number | null;
-      result: ResultStatus;
-      score: string | null;
-      featured?: boolean;
-      insured?: boolean;
-      cashoutMult?: number;
-    },
-  ): PredictionRecord => {
-    const startsIso = new Date(now + opts.offsetHours * 3600 * 1000).toISOString();
-    const lockedIso = new Date(now + (opts.offsetHours - 5) * 3600 * 1000).toISOString();
-    const settledIso =
-      opts.result !== 'PENDING'
-        ? new Date(now + (opts.offsetHours + 3) * 3600 * 1000).toISOString()
-        : null;
-
-    let profit: number | null = null;
-    if (opts.result === 'WIN') profit = Number((opts.stake * (opts.odds - 1)).toFixed(2));
-    else if (opts.result === 'LOSS') profit = -opts.stake;
-    else if (opts.result === 'PUSH') profit = 0;
-    else if (opts.result === 'CASHOUT') {
-      profit = Number((opts.stake * ((opts.cashoutMult ?? 1.5) - 1)).toFixed(2));
-    }
-
-    const { sha256 } = computeCanonicalSha256({
-      matchStartsAt: startsIso,
-      selectionTitle: opts.selection,
-      fixedOdds: opts.odds,
-      stakeUnits: opts.stake,
-    });
-
-    return {
-      id: `pred_init_${idx}`,
-      slug: slugifyMatch(opts.home, opts.away, String(100 + idx)),
-      sport: opts.sport,
-      leagueName: opts.league,
-      homeTeam: opts.home,
-      awayTeam: opts.away,
-      matchStartsAt: startsIso,
-      matchStatus: opts.matchStatus,
-      stakePercent: opts.stake,
-      stakeUnits: opts.stake,
-      bookmakerSource: 'Фонбет · Винлайн · Пари',
-      analysisTeaser: opts.teaser,
-      isFeatured: Boolean(opts.featured),
-      insuredOnLoss: opts.insured ?? opts.tier === 'PAID_SINGLE',
-      selectionTitle: opts.selection,
-      fixedOdds: opts.odds,
-      minAcceptableOdds: opts.minOdds,
-      analysisFull: opts.full,
-      accessTier: opts.tier,
-      singlePriceRub: opts.price,
-      revealAfterFinish: true,
-      resultStatus: opts.result,
-      cashoutMultiplier: opts.cashoutMult ?? null,
-      finalScore: opts.score,
-      profitUnits: profit,
-      profitPercent: profit,
-      verificationHash: sha256,
-      oddsLockedAt: lockedIso,
-      settledAt: settledIso,
-      createdAt: lockedIso,
-    };
-  };
-
-  const predictions: PredictionRecord[] = [
-    makeSeed(1, {
-      sport: 'FOOTBALL',
-      league: 'Лига Чемпионов · Плей-офф',
-      home: 'Реал Мадрид',
-      away: 'Бавария',
-      offsetHours: 2.8,
-      matchStatus: 'UPCOMING',
-      stake: 2.5,
-      odds: 2.04,
-      minOdds: 1.9,
-      selection: 'Фора 1 (-1.0)',
-      teaser:
-        'У гостей из-за травмы не сыграет ключевой защитник левого края, а мадридцы дома стабильно забивают по 2–3 мяча в вечерних играх плей-офф.',
-      full: '1. У «Баварии» пропускает встречу основной опорный полузащитник, из-за чего оборона гостей регулярно проваливается при быстрых атаках.\n2. Дома на «Сантьяго Бернабеу» мадридцы мощно проводят концовки обоих таймов. При победе в 2+ мяча ставка приносит чистый плюс, а при победе ровно в 1 мяч (например, 1:0 или 2:1) букмекер полностью вернет вам сумму ставки.\n3. Выгодно брать в Фонбет, Винлайн или Пари при коэффициенте от 1.90 и выше.',
-      tier: 'PAID_SINGLE',
-      price: 990,
-      result: 'PENDING',
-      score: null,
-      featured: true,
-      insured: true,
-    }),
-    makeSeed(2, {
-      sport: 'HOCKEY',
-      league: 'КХЛ · Регулярный чемпионат',
-      home: 'Локомотив',
-      away: 'СКА',
-      offsetHours: 1.6,
-      matchStatus: 'UPCOMING',
-      stake: 2.0,
-      odds: 1.98,
-      minOdds: 1.86,
-      selection: 'Индивидуальный тотал 1 больше (2.5)',
-      teaser:
-        'Для гостей это уже третья тяжелая выездная игра подряд за 5 дней, и сегодня место в воротах займет запасной вратарь.',
-      full: '1. Ярославский «Локомотив» отлично реализует большинство на домашнем льду — почти каждая четвертая попытка заканчивается шайбой.\n2. На фоне усталости после перелетов гости заметно сбавляют скорость во втором и третьем периодах и начинают чаще удаляться. Для выигрыша ставки нужно минимум 3 шайбы от «Локомотива».',
-      tier: 'PAID_SINGLE',
-      price: 790,
-      result: 'PENDING',
-      score: null,
-      insured: true,
-    }),
-    makeSeed(3, {
-      sport: 'FOOTBALL',
-      league: 'Россия · Мир РПЛ',
-      home: 'Краснодар',
-      away: 'Зенит',
-      offsetHours: 4.2,
-      matchStatus: 'UPCOMING',
-      stake: 2.0,
-      odds: 1.88,
-      minOdds: 1.78,
-      selection: 'Обе забьют: Да',
-      teaser:
-        'Бесплатный открытый прогноз дня: принципиальная битва лидеров РПЛ при полных трибунах в Краснодаре, где команды традиционно играют на встречных курсах.',
-      full: '1. Открытый пример нашего разбора: в 5 последних очных встречах подряд в Краснодаре обе команды неизменно забивали друг другу.\n2. Турнирная таблица вынуждает оба клуба играть только на победу — отсиживаться в обороне никто не будет, а линии атаки обеих команд в полном боевом составе.\n3. Ставка выиграет при любом счете, где забьют обе стороны (1:1, 2:1, 1:2 и т.д.).',
-      tier: 'FREE',
-      price: null,
-      result: 'PENDING',
-      score: null,
-      insured: false,
-    }),
-    makeSeed(4, {
-      sport: 'ESPORTS',
-      league: 'CS2 · Плей-офф турнира',
-      home: 'Team Spirit',
-      away: 'MOUZ',
-      offsetHours: 5.5,
-      matchStatus: 'UPCOMING',
-      stake: 2.0,
-      odds: 1.92,
-      minOdds: 1.82,
-      selection: 'Победа 1',
-      teaser:
-        'Российская команда Team Spirit подходит к матчу на серии из 5 уверенных побед и имеет явное преимущество на любимых картах.',
-      full: '1. Сопернику придется убрать свою сильнейшую карту еще до старта, поэтому игра пойдет на удобных для Spirit локациях.\n2. Лидеры нашей команды находятся в отличной индивидуальной форме и забирают более 80% ключевых раундов.',
-      tier: 'PAID_SINGLE',
-      price: 790,
-      result: 'PENDING',
-      score: null,
-      insured: true,
-    }),
-    makeSeed(5, {
-      sport: 'TENNIS',
-      league: 'ATP Masters · Хард',
-      home: 'Карлос Алькарас',
-      away: 'Алекс де Минаур',
-      offsetHours: 6.8,
-      matchStatus: 'UPCOMING',
-      stake: 2.0,
-      odds: 1.91,
-      minOdds: 1.82,
-      selection: 'Тотал геймов меньше (22.5)',
-      teaser:
-        'Медленное покрытие корта идеально подходит под мощные удары Алькараса и лишает соперника главного козыря — быстрых контратак.',
-      full: '1. В личных встречах на таком покрытии Алькарас уверенно держит свою подачу и регулярно делает брейки в середине каждого сета.\n2. Ожидаем спокойную победу фаворита в двух партиях (например, 6:4, 6:3) без затяжного третьего сета.',
-      tier: 'PAID_SINGLE',
-      price: 690,
-      result: 'PENDING',
-      score: null,
-      insured: true,
-    }),
-    makeSeed(6, {
-      sport: 'FOOTBALL',
-      league: 'Англия · Премьер-лига',
-      home: 'Арсенал',
-      away: 'Ньюкасл',
-      offsetHours: -0.4,
-      matchStatus: 'LIVE',
-      stake: 2.0,
-      odds: 1.94,
-      minOdds: 1.84,
-      selection: 'Индивидуальный тотал 1 больше (2.0)',
-      teaser:
-        'Матч уже начался: прогноз был опубликован заранее за 5 часов до стартового свистка по высокому коэффициенту.',
-      full: 'Мощное давление хозяев с первых минут и опасные угловые у ворот ослабленной защиты гостей.',
-      tier: 'PAID_SINGLE',
-      price: 790,
-      result: 'PENDING',
-      score: "1:0 (34')",
-      insured: true,
-    }),
-
-    // Рассчитанный архив
-    makeSeed(7, {
-      sport: 'TENNIS',
-      league: 'ATP Finals · Хард',
-      home: 'Янник Синнер',
-      away: 'Даниил Медведев',
-      offsetHours: -24,
-      matchStatus: 'FINISHED',
-      stake: 2.5,
-      odds: 2.04,
-      minOdds: 1.92,
-      selection: 'Фора 1 по геймам (-3.5)',
-      teaser: 'Закрытое покрытие дало решающий перевес на первой подаче (83% выигранных мячей).',
-      full: 'Забрали 2.04 по ранней линии (к началу матча коэффициент опустился до 1.85). Победа в двух сетах.',
-      tier: 'PAID_SINGLE',
-      price: 790,
-      result: 'WIN',
-      score: '6:3, 6:4',
-    }),
-    makeSeed(8, {
-      sport: 'HOCKEY',
-      league: 'КХЛ · Регулярный чемпионат',
-      home: 'Авангард',
-      away: 'Металлург Мг',
-      offsetHours: -54,
-      matchStatus: 'FINISHED',
-      stake: 2.0,
-      odds: 1.96,
-      minOdds: 1.85,
-      selection: 'Тотал матча больше (5.0)',
-      teaser: 'Высокий темп бросков в створ в первых двух периодах обеспечил пробитие тотала.',
-      full: 'Обе спецбригады большинства отличились дважды уже к 45-й минуте встречи.',
-      tier: 'PAID_SINGLE',
-      price: 790,
-      result: 'WIN',
-      score: '4:2',
-    }),
-    makeSeed(9, {
-      sport: 'FOOTBALL',
-      league: 'Серия А · Италия',
-      home: 'Аталанта',
-      away: 'Наполи',
-      offsetHours: -110,
-      matchStatus: 'FINISHED',
-      stake: 2.0,
-      odds: 2.02,
-      minOdds: 1.9,
-      selection: 'Обе забьют и ТБ (2.5)',
-      teaser: 'Гости закрылись после раннего гола — открытый учет минуса в архиве без правок.',
-      full: 'При 2.48 суммарных xG команды ограничились двумя мячами. Честная фиксация минуса в статистике.',
-      tier: 'PAID_SINGLE',
-      price: 790,
-      result: 'LOSS',
-      score: '1:1',
-    }),
-    makeSeed(10, {
-      sport: 'MMA',
-      league: 'UFC · Номерной турнир',
-      home: 'Ислам Махачев',
-      away: 'Арман Царукян',
-      offsetHours: -420,
-      matchStatus: 'FINISHED',
-      stake: 3.0,
-      odds: 1.95,
-      minOdds: 1.85,
-      selection: 'Тотал раундов больше (2.5)',
-      teaser: 'Взаимная нейтрализация партера перевела поединок в чемпионские отрезки.',
-      full: 'Как и закладывалось в модели темпа боя, первые два раунда прошли в тактической работе с минимальным риском.',
-      tier: 'PAID_SINGLE',
-      price: 990,
-      result: 'WIN',
-      score: '5 раундов',
-    }),
-    makeSeed(11, {
-      sport: 'BASKETBALL',
-      league: 'НБА · Регулярный сезон',
-      home: 'Денвер Наггетс',
-      away: 'Бостон Селтикс',
-      offsetHours: -980,
-      matchStatus: 'FINISHED',
-      stake: 2.5,
-      odds: 1.97,
-      minOdds: 1.87,
-      selection: 'Победа 1 с учетом ОТ',
-      teaser: 'Фактор среднегорья Денвера против гостевого турне соперника.',
-      full: 'Контроль щита во второй половине (51 против 38 подборов) решил исход концовки.',
-      tier: 'PAID_SINGLE',
-      price: 790,
-      result: 'WIN',
-      score: '115:109',
-    }),
-    makeSeed(12, {
-      sport: 'FOOTBALL',
-      league: 'Ла Лига · Испания',
-      home: 'Реал Сосьедад',
-      away: 'Атлетико Мадрид',
-      offsetHours: -1750,
-      matchStatus: 'FINISHED',
-      stake: 2.0,
-      odds: 1.98,
-      minOdds: 1.88,
-      selection: 'Фора 2 (0)',
-      teaser: 'Ничейный исход при нулевой форе рассчитан расходным возвратом без потерь.',
-      full: 'Страховка нулевой форой полностью сохранила флэт при счете 1:1.',
-      tier: 'PAID_SINGLE',
-      price: 790,
-      result: 'PUSH',
-      score: '1:1',
-    }),
-    makeSeed(13, {
-      sport: 'ESPORTS',
-      league: 'CS2 · IEM Cologne',
-      home: 'NAVI',
-      away: 'G2 Esports',
-      offsetHours: -2500,
-      matchStatus: 'FINISHED',
-      stake: 3.0,
-      odds: 2.02,
-      minOdds: 1.9,
-      selection: 'Победа в серии: NAVI',
-      teaser: 'Подготовленные анти-раунды на решающем Mirage закрыли серию в пользу фаворита модели.',
-      full: 'Победа 2:1 по картам с доминирующей стороной защиты на третьей карте (13:7).',
-      tier: 'PAID_SINGLE',
-      price: 890,
-      result: 'WIN',
-      score: '2:1',
-    }),
-  ];
+  const adminUser: UserAccount | null = canSeedAdmin
+    ? {
+        id: 'usr_admin_root',
+        email: adminEmail,
+        passwordHash: hashPassword(adminPassword),
+        displayName: 'Главный аналитик',
+        city: 'Москва',
+        role: 'ADMIN',
+        status: 'ACTIVE',
+        balanceRub: 0,
+        referenceBankrollRub: 100_000,
+        telegramUsername: '@valuex_admin',
+        telegramChatId: null,
+        telegramLinkCode: makeUserTelegramLinkCode('usr_admin_root'),
+        purchasedPredictionIds: [],
+        referralCode: 'valuex_official',
+        referredByUserId: null,
+        referredByCode: null,
+        revsharePercent: 30,
+        affiliateBalanceRub: 0,
+        affiliateTotalEarnedRub: 0,
+        createdAt: new Date(now - 90 * 86400 * 1000).toISOString(),
+        lastLoginAt: new Date(now).toISOString(),
+      }
+    : null;
 
   const promoCodes: PromoCodeRecord[] = [
     {
@@ -528,7 +218,6 @@ function createInitialState(): PersistentState {
     openSourceResearchEnabled: true,
     minAgentConfidencePct: 60,
     requireAgentConsensus: true,
-    cronSecret: process.env.AUTOPILOT_CRON_SECRET || 'valuex-autopilot-2026',
     totalGeneratedCount: 0,
     lastFeedSource: null,
     lastMorningRunDate: null,
@@ -539,29 +228,26 @@ function createInitialState(): PersistentState {
 
   return {
     settings,
-    users: [adminUser],
-    predictions: predictions.map((p, idx) => ({
-      ...p,
-      authorSource: idx % 2 === 0 ? 'AI_AUTOPILOT' : 'HUMAN',
-      aiConfidencePct: idx % 2 === 0 ? 72 : null,
-      aiEdgePct: idx % 2 === 0 ? 4.8 : null,
-    })),
+    users: adminUser ? [adminUser] : [],
+    predictions: [],
     transactions: [],
     promoCodes,
-    affiliateLinks: [
-      {
-        id: 'aff_init_1',
-        userId: adminUser.id,
-        userEmail: adminUser.email,
-        code: 'valuex_official',
-        label: 'Основной канал проекта',
-        clicks: 0,
-        registrations: 0,
-        buyers: 0,
-        revenueRub: 0,
-        createdAt: new Date(now).toISOString(),
-      },
-    ],
+    affiliateLinks: adminUser
+      ? [
+          {
+            id: 'aff_init_1',
+            userId: adminUser.id,
+            userEmail: adminUser.email,
+            code: 'valuex_official',
+            label: 'Основной канал проекта',
+            clicks: 0,
+            registrations: 0,
+            buyers: 0,
+            revenueRub: 0,
+            createdAt: new Date(now).toISOString(),
+          },
+        ]
+      : [],
     payouts: [],
     processedWebhooks: [],
     aiAutopilot,
@@ -584,9 +270,13 @@ function normalizeLoadedState(
   raw: Partial<PersistentState> & Record<string, unknown>,
 ): PersistentState {
   const fallback = createInitialState();
-  const rawSettings = (raw.settings || {}) as Partial<PlatformSettings> & {
-    telegramVipChannelId?: string;
+  const rawSettings = {
+    ...((raw.settings || {}) as Partial<PlatformSettings> & {
+      telegramVipChannelId?: string;
+    }),
   };
+  delete rawSettings.telegramBotTokenConfigured;
+  delete rawSettings.yookassaSecretKeyConfigured;
 
   const settings: PlatformSettings = {
     ...fallback.settings,
@@ -599,7 +289,9 @@ function normalizeLoadedState(
       fallback.settings.telegramChannelId,
   };
 
-  const predictions = (raw.predictions || fallback.predictions).map((p, idx) => {
+  const predictions = withoutLegacyStarterDemoPredictions(
+    Array.isArray(raw.predictions) ? raw.predictions : fallback.predictions,
+  ).map((p, idx) => {
     const legacyTier = p.accessTier as string;
     const normalizedTier: AccessTier = legacyTier === 'FREE' ? 'FREE' : 'PAID_SINGLE';
     const finalScoreVerifiedSources = Array.isArray(p.finalScoreVerifiedSources)
@@ -612,21 +304,26 @@ function normalizeLoadedState(
           ),
         )
       : [];
-    const invalidateUncorroboratedFinal =
-      p.resultStatus === 'PENDING' &&
-      p.finalScoreVerified === true &&
-      finalScoreVerifiedSources.length < 2;
-    return {
+    const finalScoreVerified = hasCorroboratedFinalScore({
+      ...p,
+      finalScoreVerifiedSources,
+    });
+    const hasUnverifiedFinalLifecycle =
+      p.matchLifecycleStatus === 'FINISHED' || p.matchStatus === 'FINISHED';
+    const clearUnverifiedScore =
+      (hasUnverifiedFinalLifecycle && !finalScoreVerified) ||
+      (p.finalScoreVerified === true && !finalScoreVerified);
+    const normalizedPrediction: PredictionRecord = {
       ...p,
       authorSource: p.authorSource ?? 'HUMAN',
       externalFixtureId: p.externalFixtureId ?? null,
       aiConfidencePct: p.aiConfidencePct ?? null,
       aiEdgePct: p.aiEdgePct ?? null,
-      finalScoreVerified: invalidateUncorroboratedFinal ? false : p.finalScoreVerified ?? false,
-      finalScoreVerifiedSources,
-      liveHomeScore: invalidateUncorroboratedFinal ? null : p.liveHomeScore ?? null,
-      liveAwayScore: invalidateUncorroboratedFinal ? null : p.liveAwayScore ?? null,
-      finalScoreIsOvertime: invalidateUncorroboratedFinal ? false : p.finalScoreIsOvertime ?? false,
+      finalScoreVerified,
+      finalScoreVerifiedSources: finalScoreVerified ? finalScoreVerifiedSources : [],
+      liveHomeScore: clearUnverifiedScore ? null : p.liveHomeScore ?? null,
+      liveAwayScore: clearUnverifiedScore ? null : p.liveAwayScore ?? null,
+      finalScoreIsOvertime: clearUnverifiedScore ? false : p.finalScoreIsOvertime ?? false,
       isFeatured: p.isFeatured ?? idx === 0,
       insuredOnLoss: p.insuredOnLoss ?? normalizedTier === 'PAID_SINGLE',
       accessTier: normalizedTier,
@@ -634,6 +331,10 @@ function normalizeLoadedState(
         normalizedTier === 'PAID_SINGLE'
           ? p.singlePriceRub ?? settings.defaultSinglePriceRub
           : null,
+    };
+    return {
+      ...normalizedPrediction,
+      settlementVerified: hasVerifiedSettledResult(normalizedPrediction),
     };
   });
 
@@ -655,35 +356,67 @@ function normalizeLoadedState(
       discountRub: t.discountRub ?? 0,
     }));
 
-  const users = (raw.users || fallback.users).map((u) => ({
-    id: u.id,
-    email: u.email,
-    passwordHash: u.passwordHash,
-    displayName: u.displayName,
-    city: u.city || '',
-    role: u.role,
-    status: u.status,
-    balanceRub: u.balanceRub || 0,
-    referenceBankrollRub: u.referenceBankrollRub || 50_000,
-    telegramUsername: u.telegramUsername ?? null,
-    telegramChatId: u.telegramChatId ?? null,
-    telegramLinkCode: u.telegramLinkCode || makeUserTelegramLinkCode(u.id),
-    passwordResetCode: u.passwordResetCode ?? null,
-    passwordResetExpiresAt: u.passwordResetExpiresAt ?? null,
-    purchasedPredictionIds: Array.isArray(u.purchasedPredictionIds)
-      ? u.purchasedPredictionIds
-      : [],
-    referralCode: u.referralCode,
-    referredByUserId: u.referredByUserId ?? null,
-    referredByCode: u.referredByCode ?? null,
-    revsharePercent: u.revsharePercent ?? 30,
-    affiliateBalanceRub: u.affiliateBalanceRub || 0,
-    affiliateTotalEarnedRub: u.affiliateTotalEarnedRub || 0,
-    createdAt: u.createdAt,
-    lastLoginAt: u.lastLoginAt,
-  }));
+  const storedUsers = Array.isArray(raw.users) && raw.users.length > 0
+    ? raw.users
+    : fallback.users;
+  const configuredAdminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  const configuredAdminPassword = process.env.ADMIN_PASSWORD || '';
+  const users = storedUsers.map((u) => {
+    let email = u.email;
+    let passwordHash = u.passwordHash;
+    if (
+      u.role === 'ADMIN' &&
+      u.email.toLowerCase() === 'admin@valuex.pro' &&
+      configuredAdminPassword.length >= 12
+    ) {
+      const cachedRotation = legacyAdminPasswordRotations.get(passwordHash);
+      if (cachedRotation) {
+        email = cachedRotation.email || email;
+        passwordHash = cachedRotation.passwordHash;
+      } else if (verifyPassword('Admin2026!', passwordHash)) {
+        const rotation = {
+          email: configuredAdminEmail || email,
+          passwordHash: hashPassword(configuredAdminPassword),
+        };
+        legacyAdminPasswordRotations.set(u.passwordHash, rotation);
+        email = rotation.email;
+        passwordHash = rotation.passwordHash;
+      }
+    }
+    return {
+      id: u.id,
+      email,
+      passwordHash,
+      displayName: u.displayName,
+      city: u.city || '',
+      role: u.role,
+      status: u.status,
+      balanceRub: u.balanceRub || 0,
+      referenceBankrollRub: u.referenceBankrollRub || 50_000,
+      telegramUsername: u.telegramUsername ?? null,
+      telegramChatId: u.telegramChatId ?? null,
+      telegramLinkCode: u.telegramLinkCode || makeUserTelegramLinkCode(u.id),
+      passwordResetCode: u.passwordResetCode ?? null,
+      passwordResetExpiresAt: u.passwordResetExpiresAt ?? null,
+      purchasedPredictionIds: Array.isArray(u.purchasedPredictionIds)
+        ? u.purchasedPredictionIds
+        : [],
+      referralCode: u.referralCode,
+      referredByUserId: u.referredByUserId ?? null,
+      referredByCode: u.referredByCode ?? null,
+      revsharePercent: u.revsharePercent ?? 30,
+      affiliateBalanceRub: u.affiliateBalanceRub || 0,
+      affiliateTotalEarnedRub: u.affiliateTotalEarnedRub || 0,
+      createdAt: u.createdAt,
+      lastLoginAt: u.lastLoginAt,
+    };
+  });
 
-  const rawAi = (raw.aiAutopilot || {}) as Partial<AiAutopilotConfig>;
+  const rawAi = {
+    ...((raw.aiAutopilot || {}) as Partial<AiAutopilotConfig>),
+  };
+  delete rawAi.llmApiKeyConfigured;
+  delete (rawAi as Partial<AiAutopilotConfig> & { cronSecret?: string }).cronSecret;
   const rawSavedKey = (rawAi.llmApiKey || '').trim();
   const envPlusVibeKey = (process.env.PLUSVIBE_API_KEY || '').trim();
   const envOllamaKey = (process.env.OLLAMA_API_KEY || '').trim();
@@ -848,9 +581,19 @@ async function getPostgresPool(): Promise<Pool | null> {
   }
 }
 
-export async function getDatabaseBackendStatus(): Promise<'postgres' | 'local_file'> {
+export async function getDatabaseBackendStatus(): Promise<{
+  backend: 'postgres' | 'local_file';
+  databaseUrlConfigured: boolean;
+  usingLocalFallback: boolean;
+}> {
+  const databaseUrlConfigured = Boolean(process.env.DATABASE_URL?.trim());
   const pool = await getPostgresPool();
-  return pool ? 'postgres' : 'local_file';
+  const backend = pool ? 'postgres' : 'local_file';
+  return {
+    backend,
+    databaseUrlConfigured,
+    usingLocalFallback: databaseUrlConfigured && !pool,
+  };
 }
 
 function readLocalFileState(): PersistentState {
@@ -966,6 +709,8 @@ export async function mutateState<T>(
   }
 }
 
+export { toAdminAutopilotDto, toAdminSettingsDto } from './admin-secret-policy';
+
 export function toSafeSessionUser(user: UserAccount): SafeSessionUser {
   return {
     id: user.id,
@@ -1018,12 +763,21 @@ export function toPublicPredictionDto(
   record: PredictionRecord,
   viewer: UserAccount | null,
 ): PublicPredictionDto {
-  const effectiveStatus = resolveEffectiveMatchStatus(record);
+  const hasVerifiedFinal = hasCorroboratedFinalScore(record);
+  const isVerifiedSettled = hasVerifiedSettledResult(record);
+  const publicResultStatus =
+    record.resultStatus === 'PENDING' || isVerifiedSettled
+      ? record.resultStatus
+      : 'PENDING';
+  const effectiveStatus = resolveEffectiveMatchStatus({
+    ...record,
+    resultStatus: publicResultStatus,
+  });
   const isFree = record.accessTier === 'FREE';
   const isSettledPublic =
     record.revealAfterFinish &&
     effectiveStatus === 'FINISHED' &&
-    record.resultStatus !== 'PENDING';
+    publicResultStatus !== 'PENDING';
   const isBought = Boolean(viewer?.purchasedPredictionIds.includes(record.id));
   const isAdmin = viewer?.role === 'ADMIN';
 
@@ -1052,7 +806,7 @@ export function toPublicPredictionDto(
     matchVerifiedAt: record.matchVerifiedAt ?? null,
     matchVerificationSource: record.matchVerificationSource ?? null,
     matchVerificationConflict: record.matchVerificationConflict ?? false,
-    finalScoreVerified: record.finalScoreVerified ?? false,
+    finalScoreVerified: hasVerifiedFinal,
     stakePercent: record.stakePercent,
     stakeUnits: record.stakeUnits,
     bookmakerSource: record.bookmakerSource,
@@ -1072,18 +826,27 @@ export function toPublicPredictionDto(
     fixedOdds: unlocked ? record.fixedOdds : null,
     minAcceptableOdds: unlocked ? record.minAcceptableOdds : null,
     analysisFull: unlocked ? record.analysisFull : null,
-    resultStatus: record.resultStatus,
-    finalScore: record.finalScore,
-    profitUnits: record.profitUnits,
-    profitPercent: record.profitPercent,
+    resultStatus: publicResultStatus,
+    finalScore: isVerifiedSettled ? record.finalScore : null,
+    profitUnits: isVerifiedSettled ? record.profitUnits : null,
+    profitPercent: isVerifiedSettled ? record.profitPercent : null,
     verificationHash: record.verificationHash,
     oddsLockedAt: record.oddsLockedAt,
-    settledAt: record.settledAt,
+    settledAt: isVerifiedSettled ? record.settledAt : null,
     researchSources: record.researchSources ?? [],
     agentReport: unlocked ? record.agentReport ?? null : null,
-    liveHomeScore: record.liveHomeScore ?? null,
-    liveAwayScore: record.liveAwayScore ?? null,
-    liveUpdatedAt: record.liveUpdatedAt ?? null,
+    liveHomeScore:
+      record.matchLifecycleStatus === 'LIVE' || hasVerifiedFinal
+        ? record.liveHomeScore ?? null
+        : null,
+    liveAwayScore:
+      record.matchLifecycleStatus === 'LIVE' || hasVerifiedFinal
+        ? record.liveAwayScore ?? null
+        : null,
+    liveUpdatedAt:
+      record.matchLifecycleStatus === 'LIVE' || hasVerifiedFinal
+        ? record.liveUpdatedAt ?? null
+        : null,
   };
 }
 
@@ -1103,7 +866,7 @@ export function computePlatformAnalytics(predictions: PredictionRecord[]): {
   recentWinsFeed: RecentWinFeedItem[];
 } {
   const settledChrono = predictions
-    .filter((p) => p.resultStatus !== 'PENDING' && p.profitUnits !== null)
+    .filter((p) => hasVerifiedSettledResult(p) && p.profitUnits !== null)
     .sort(
       (a, b) =>
         new Date(a.settledAt || a.matchStartsAt).getTime() -
@@ -1245,29 +1008,19 @@ export function computePlatformAnalytics(predictions: PredictionRecord[]): {
     })
     .filter((item) => item.bets > 0);
 
-  const sampleBuyers = [
-    { name: 'Иван', city: 'Москва', bank: 150_000 },
-    { name: 'Алексей', city: 'Красноярск', bank: 100_000 },
-    { name: 'Дмитрий', city: 'Санкт-Петербург', bank: 200_000 },
-    { name: 'Руслан', city: 'Казань', bank: 120_000 },
-  ];
-
   const recentWinsFeed = [...settledChrono]
     .reverse()
-    .filter((r) => r.resultStatus === 'WIN' && (r.profitUnits ?? 0) > 0)
+    .filter((prediction) => prediction.resultStatus === 'WIN' && (prediction.profitUnits ?? 0) > 0)
     .slice(0, 4)
-    .map((win, idx) => {
-      const buyer = sampleBuyers[idx % sampleBuyers.length];
-      const wonRub = Math.round((buyer.bank * (win.profitPercent ?? 2)) / 100);
-      return {
-        id: `win_${win.id}`,
-        name: buyer.name,
-        city: buyer.city,
-        sport: win.sport,
-        wonRub,
-        matchTitle: `${win.homeTeam} — ${win.awayTeam}`,
-      };
-    });
+    .map((win) => ({
+      id: `win_${win.id}`,
+      sport: win.sport,
+      matchTitle: `${win.homeTeam} — ${win.awayTeam}`,
+      finalScore: win.finalScore || '',
+      fixedOdds: win.fixedOdds,
+      profitUnits: win.profitUnits ?? 0,
+      settledAt: win.settledAt || '',
+    }));
 
   return {
     statsByPeriod: {
@@ -2011,8 +1764,41 @@ export async function settlePredictionByAdmin(params: {
     const pred = state.predictions.find((p) => p.id === params.predictionId);
     if (!pred) throw new Error('Событие не найдено');
 
+    let verifiedFinalScore: string | null = null;
+    if (params.resultStatus !== 'PENDING') {
+      if (!hasCorroboratedFinalScore(pred)) {
+        throw new Error(
+          'Ручной расчёт заблокирован: финальный счёт должен быть подтверждён минимум двумя независимыми источниками.',
+        );
+      }
+      const homeScore = pred.liveHomeScore;
+      const awayScore = pred.liveAwayScore;
+      if (typeof homeScore !== 'number' || typeof awayScore !== 'number') {
+        throw new Error('Нет подтверждённого структурированного счёта для расчёта рынка.');
+      }
+      const evaluatedResult = evaluateMarketByScore(
+        pred.selectionTitle,
+        homeScore,
+        awayScore,
+        Boolean(pred.finalScoreIsOvertime),
+        pred.sport,
+      );
+      if (!evaluatedResult || evaluatedResult !== params.resultStatus) {
+        throw new Error(
+          'Указанный результат не совпадает с автоматически рассчитанным исходом по подтверждённому счёту; расчёт отменён.',
+        );
+      }
+      verifiedFinalScore = `${homeScore}:${awayScore}${
+        pred.finalScoreIsOvertime ? ' (ОТ)' : ''
+      }`;
+      if (params.finalScore?.trim() && params.finalScore.trim() !== verifiedFinalScore) {
+        throw new Error('Введённый счёт не совпадает с финальным счётом, подтверждённым источниками.');
+      }
+    }
+
     pred.resultStatus = params.resultStatus;
-    if (params.finalScore !== undefined) {
+    if (verifiedFinalScore) pred.finalScore = verifiedFinalScore;
+    else if (params.finalScore !== undefined && params.resultStatus === 'PENDING') {
       pred.finalScore = params.finalScore?.trim() || null;
     }
 
@@ -2172,8 +1958,9 @@ export async function settlePredictionByAdmin(params: {
 export function computeAiPerformanceStats(
   predictions: PredictionRecord[],
 ): AiPerformanceStats {
-  const aiItems = predictions.filter((p) => p.authorSource === 'AI_AUTOPILOT');
-  const settled = aiItems.filter((p) => p.resultStatus !== 'PENDING');
+  // An AI_AUTOPILOT label alone is not evidence of model analysis.
+  const aiItems = predictions.filter(hasAiCommitteeProvenance);
+  const settled = aiItems.filter(hasVerifiedSettledResult);
   let wins = 0;
   let losses = 0;
   let pushes = 0;

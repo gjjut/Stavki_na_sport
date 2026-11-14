@@ -17,31 +17,32 @@ import {
 import {
   computeAiPerformanceStats,
   computePlatformAnalytics,
-  createPredictionByAdmin,
+  hasVerifiedSettledResult,
   mutateState,
   readState,
-  settlePredictionByAdmin,
 } from './database';
 import { sendTelegramChannelAnnouncement } from './integrations';
+import {
+  extractRawAdminAgentActions,
+  formatAdminMatchScanSummary,
+  isAdminMutationIntent,
+  isDraftOnlyMatchCollectionIntent,
+  isMatchCollectionIntent,
+  parseStructuredAgentJson,
+  resolveAdminAgentActions,
+  SUPPORTED_ADMIN_AGENT_TOOLS,
+} from './ai-admin-chat-protocol';
 import type {
-  AccessTier,
+  AgentActionRequest,
+  AgentLlmStructuredOutput,
+} from './ai-admin-chat-protocol';
+import type {
   AiAutopilotMode,
   AiChatErrorDiagnostic,
   AiChatExecutedAction,
   AiChatMessage,
-  ResultStatus,
   SportType,
 } from './types';
-
-interface AgentActionRequest {
-  tool: string;
-  args?: Record<string, unknown>;
-}
-
-interface AgentLlmStructuredOutput {
-  actions?: AgentActionRequest[];
-  reply?: string;
-}
 
 /**
  * Снимок всей живой информации по сайту для контекста нейросети
@@ -73,7 +74,7 @@ async function buildPlatformContextSnapshot() {
     }));
 
   const recentSettled = state.predictions
-    .filter((p) => p.resultStatus !== 'PENDING')
+    .filter(hasVerifiedSettledResult)
     .slice(0, 6)
     .map((p) => ({
       id: p.id,
@@ -170,6 +171,16 @@ async function executeAdminAgentTool(
   const tool = (req.tool || '').trim();
   const args = req.args || {};
 
+  if (!SUPPORTED_ADMIN_AGENT_TOOLS.has(tool)) {
+    return {
+      record: {
+        tool: tool || 'invalid_agent_action',
+        ok: false,
+        summary: `Команда «${tool || 'без имени'}» не поддерживается; действие не выполнялось.`,
+      },
+    };
+  }
+
   try {
     if (tool === 'search_open_sources') {
       const query = String(args.query || '').trim();
@@ -219,20 +230,28 @@ async function executeAdminAgentTool(
     }
 
     if (tool === 'scan_and_publish_matches') {
-      const count = Math.min(8, Math.max(1, Number(args.count || 3)));
+      const requestedCount = Number(args.count ?? 3);
+      const count = Number.isFinite(requestedCount)
+        ? Math.min(8, Math.max(1, Math.round(requestedCount)))
+        : 3;
       const forcePublish = args.publishImmediately !== false;
       const res = await runAiScanAndGenerateCycle({
         forcePublish,
         maxCountOverride: count,
         triggerLabel: 'Запуск из ИИ-Чата управляющего',
       });
+      const summary = formatAdminMatchScanSummary({
+        feedSource: res.feedSource,
+        scannedCount: res.scannedCount,
+        createdCount: res.createdCount,
+        publishImmediately: forcePublish,
+      });
       return {
         record: {
           tool,
+          // A completed scan with zero qualifying picks is a successful scan, not a tool failure.
           ok: true,
-          summary: forcePublish
-            ? `Собрана линия и проверены открытые источники (${res.feedSource}): опубликовано на витрину ${res.createdCount} матчей`
-            : `Собрана линия и проверены открытые источники: добавлено в черновики ${res.createdCount} матчей`,
+          summary,
         },
         toolData: res,
       };
@@ -243,8 +262,8 @@ async function executeAdminAgentTool(
       return {
         record: {
           tool,
-          ok: true,
-          summary: `Удалено демо-матчей: ${res.removedDemoCount} шт., опубликовано реальных игр: ${res.createdCount} шт. (${res.feedSource})`,
+          ok: res.createdCount > 0,
+          summary: `Удалено начальных демо-карточек: ${res.removedDemoCount}. Сканировано событий: ${res.scannedCount}; ${res.createdCount > 0 ? `опубликовано реальных прогнозов: ${res.createdCount}` : 'реальных прогнозов не опубликовано — сканирование не нашло кандидатов, прошедших проверку'} (${res.feedSource}).`,
         },
         toolData: res,
       };
@@ -252,17 +271,38 @@ async function executeAdminAgentTool(
 
     if (tool === 'approve_all_drafts') {
       const st = await readState();
-      let count = 0;
-      for (const d of st.aiDrafts) {
-        await approveAiDraftToStorefront(d.id);
-        count += 1;
+      const drafts = st.aiDrafts;
+      let approvedCount = 0;
+      const failedDrafts: Array<{ id: string; error: string }> = [];
+      for (const draft of drafts) {
+        try {
+          await approveAiDraftToStorefront(draft.id);
+          approvedCount += 1;
+        } catch (err) {
+          failedDrafts.push({
+            id: draft.id,
+            error: err instanceof Error ? err.message : 'Не удалось проверить и выпустить черновик',
+          });
+        }
       }
+      const summary =
+        drafts.length === 0
+          ? 'Черновиков нет — публикация не выполнялась.'
+          : `Опубликовано ${approvedCount} из ${drafts.length} черновиков.${
+              failedDrafts.length > 0
+                ? ` Не выпущено ${failedDrafts.length}: ${failedDrafts
+                    .slice(0, 3)
+                    .map((item) => `${item.id}: ${item.error}`)
+                    .join('; ')}`
+                : ''
+            }`;
       return {
         record: {
           tool,
-          ok: true,
-          summary: `Одобрено и выпущено на витрину черновиков: ${count} шт.`,
+          ok: drafts.length > 0 && failedDrafts.length === 0,
+          summary,
         },
+        toolData: { requestedCount: drafts.length, approvedCount, failedDrafts },
       };
     }
 
@@ -275,57 +315,6 @@ async function executeAdminAgentTool(
           summary: `Выполнена автосверка результатов завершенных игр (рассчитано матчей: ${res.settledCount}, возвратов страховки: ${res.compensatedBuyers})`,
         },
         toolData: res,
-      };
-    }
-
-    if (tool === 'create_prediction') {
-      const sport = (String(args.sport || 'FOOTBALL').toUpperCase() as SportType) || 'FOOTBALL';
-      const homeTeam = String(args.homeTeam || '').trim();
-      const awayTeam = String(args.awayTeam || '').trim();
-      if (!homeTeam || !awayTeam) {
-        throw new Error('Укажите обе команды (homeTeam и awayTeam)');
-      }
-      const hoursFromNow = Number(args.hoursFromNow || 5);
-      const startsAt = args.matchStartsAt
-        ? new Date(String(args.matchStartsAt)).toISOString()
-        : new Date(Date.now() + hoursFromNow * 3600_000).toISOString();
-      const tier: AccessTier =
-        String(args.accessTier || 'PAID_SINGLE').toUpperCase() === 'FREE'
-          ? 'FREE'
-          : 'PAID_SINGLE';
-
-      const created = await createPredictionByAdmin({
-        sport,
-        leagueName: String(args.leagueName || 'Топ-турнир'),
-        homeTeam,
-        awayTeam,
-        matchStartsAt: startsAt,
-        selectionTitle: String(args.selectionTitle || 'Победа 1'),
-        fixedOdds: Number(args.fixedOdds || 1.85),
-        stakeUnits: Number(args.stakeUnits || 1.5),
-        accessTier: tier,
-        singlePriceRub:
-          tier === 'PAID_SINGLE' ? Number(args.singlePriceRub || 790) : null,
-        insuredOnLoss: tier === 'PAID_SINGLE' ? args.insuredOnLoss !== false : false,
-        authorSource: 'AI_AUTOPILOT',
-        analysisTeaser:
-          String(args.analysisTeaser || '').trim() ||
-          `Подробный разбор предстоящего матча «${homeTeam} — ${awayTeam}» с учетом текущей формы команд и движения котировок.`,
-        analysisFull:
-          String(args.analysisFull || '').trim() ||
-          `Встреча «${homeTeam} — ${awayTeam}»: выбран обоснованный исход по реальной линии букмекеров с оптимальным соотношением надежности и коэффициента.`,
-        pushToTelegram: args.pushToTelegram !== false,
-      });
-
-      return {
-        record: {
-          tool,
-          ok: true,
-          summary: `Опубликован прогноз «${created.homeTeam} — ${created.awayTeam}» (${created.selectionTitle} @ ${created.fixedOdds.toFixed(2)}, ${
-            created.accessTier === 'FREE' ? '0 ₽ бесплатно' : `${created.singlePriceRub} ₽`
-          })`,
-        },
-        toolData: { id: created.id, slug: created.slug },
       };
     }
 
@@ -366,38 +355,6 @@ async function executeAdminAgentTool(
       });
 
       return { record: { tool, ok: true, summary: msg } };
-    }
-
-    if (tool === 'settle_prediction_manual') {
-      const q = String(args.predictionIdOrTeamQuery || '')
-        .trim()
-        .toLowerCase();
-      const state = await readState();
-      const found = state.predictions.find(
-        (p) =>
-          p.id.toLowerCase() === q ||
-          `${p.homeTeam} ${p.awayTeam}`.toLowerCase().includes(q),
-      );
-      if (!found) throw new Error(`Матч «${q}» не найден`);
-      const status = String(args.resultStatus || 'WIN').toUpperCase() as ResultStatus;
-      const score = String(args.finalScore || '').trim() || null;
-
-      const settled = await settlePredictionByAdmin({
-        predictionId: found.id,
-        resultStatus: status,
-        finalScore: score,
-        pushResultToTelegram: true,
-      });
-
-      return {
-        record: {
-          tool,
-          ok: true,
-          summary: `Матч «${found.homeTeam} — ${found.awayTeam}» рассчитан как ${status}${
-            score ? ` (${score})` : ''
-          }. Возвратов страховки покупателям: ${settled.compensatedUsers}`,
-        },
-      };
     }
 
     if (tool === 'configure_autopilot') {
@@ -622,7 +579,7 @@ async function executeAdminAgentTool(
       record: {
         tool,
         ok: false,
-        summary: `Неизвестная команда «${tool}»`,
+        summary: `Команда «${tool || 'без имени'}» не поддерживается; действие не выполнялось.`,
       },
     };
   } catch (err) {
@@ -636,16 +593,46 @@ async function executeAdminAgentTool(
   }
 }
 
-function parseStructuredAgentJson(raw: string): AgentLlmStructuredOutput | null {
-  const cleaned = raw.trim();
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end <= start) return null;
-  try {
-    return JSON.parse(cleaned.slice(start, end + 1)) as AgentLlmStructuredOutput;
-  } catch {
-    return null;
-  }
+function createActionFormatDiagnostic(
+  recovered: boolean,
+  receivedActions: number,
+): AiChatErrorDiagnostic {
+  return {
+    code: recovered ? 'ACTION_FORMAT_RECOVERED' : 'INVALID_AGENT_ACTION',
+    title: recovered
+      ? 'Нестандартный ответ модели обработан резервным маршрутом'
+      : 'Действие модели не распознано или не соответствует запросу',
+    technicalDetails: recovered
+      ? `Получено элементов actions: ${receivedActions}. Использован локальный диспетчер команды; фактический результат указан ниже.`
+      : `Получено элементов actions: ${receivedActions}; неизвестные команды или действия, не соответствующие запросу, не выполнялись.`,
+    solutions: recovered
+      ? [
+          'Сбор выполняется через проверенный сценарий ИИ-автопилота; ориентируйтесь на фактический результат действия ниже.',
+          'Формат ответа модели дополнительно нормализован; если предупреждение повторяется, проверьте обновление приложения и формат команды.',
+        ]
+      : [
+          'Повторите запрос обычными словами; пока команда не появилась в списке действий с успешным статусом, считайте её невыполненной.',
+          'Ответ модели должен содержать actions с точным полем tool и объектом args.',
+        ],
+  };
+}
+
+function getStructuredReply(parsed: AgentLlmStructuredOutput): string {
+  return typeof parsed.reply === 'string' ? parsed.reply.trim() : '';
+}
+
+function formatFailedActionReply(actions: AiChatExecutedAction[]): string {
+  const failures = actions.filter((action) => !action.ok);
+  const successes = actions.filter((action) => action.ok);
+  const lines = [
+    successes.length > 0
+      ? 'Выполнена только часть запрошенных действий:'
+      : 'Команда не выполнена:',
+    ...successes.map((action) => `✓ ${action.summary}`),
+    ...failures.map((action) => `✗ ${action.summary}`),
+    'Проверьте фактический статус выше; текстовое обещание модели само по себе не означает выполнение.',
+  ];
+  return lines.join('\n');
 }
 
 interface LlmCallOutcome {
@@ -999,24 +986,33 @@ async function runDeterministicFallbackAssistant(
     };
   }
 
-  if (
-    (lower.includes('выложи') ||
-      lower.includes('выпусти') ||
-      lower.includes('опубликуй') ||
-      lower.includes('собери') ||
-      lower.includes('добавь')) &&
-    (lower.includes('матч') || lower.includes('прогноз'))
-  ) {
+  if (isMatchCollectionIntent(userText)) {
     const numMatch = lower.match(/\b([1-8])\b/);
     const count = numMatch ? Number(numMatch[1]) : 3;
     const res = await executeAdminAgentTool({
       tool: 'scan_and_publish_matches',
-      args: { count, publishImmediately: true },
+      args: {
+        count,
+        publishImmediately: !isDraftOnlyMatchCollectionIntent(userText),
+      },
     });
     executedActions.push(res.record);
     return {
       executedActions,
-      reply: `Готово! ${res.record.summary}. Матчи прошли фильтрацию открытых источников, выставлены на витрину и защищены SHA-256.`,
+      reply: res.record.summary,
+    };
+  }
+
+  if (
+    isAdminMutationIntent(userText) &&
+    (lower.includes('создай') ||
+      lower.includes('создайте') ||
+      lower.includes('создать')) &&
+    (lower.includes('прогноз') || lower.includes('матч'))
+  ) {
+    return {
+      executedActions,
+      reply: 'Прямое создание прогноза с произвольным матчем и коэффициентом отключено, чтобы не обходить проверенную линию и AI-фильтры. Ничего не создано; запросите сбор прогнозов из подтверждённой линии.',
     };
   }
 
@@ -1123,26 +1119,28 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
   const liveSnapshot = await buildPlatformContextSnapshot();
 
   const systemPrompt = [
-    'Ты — персональный ИИ-Управляющий и Главный спортивный аналитик платформы спортивных прогнозов VALUEX.',
-    'Ты общаешься напрямую с владельцем (главным администратором) сайта на русском языке. У тебя есть ПОЛНЫЙ доступ ко всей живой базе данных сайта и инструментам управления.',
-    'Твои возможности (actions):',
-    '1) search_open_sources: {"query":"..."} — найти свежие новости, травмы, составы и превью в открытых источниках (Google News RU, СМИ РФ, веб-поиск).',
-    '2) research_specific_match: {"sport":"FOOTBALL|HOCKEY|TENNIS|ESPORTS|BASKETBALL|MMA","leagueName":"...","homeTeam":"...","awayTeam":"...","homeOdds":1.85,"drawOdds":3.5,"awayOdds":4.1} — собрать глубокое досье на конкретный матч.',
-    '3) scan_and_publish_matches: {"count":3,"publishImmediately":true} — собрать реальную линию БК РФ, проверить новости из открытых источников, отобрать самые проходимые игры и выпустить на витрину (или в черновики при publishImmediately:false).',
-    '4) replace_demo_matches: {} — убрать стартовые демо-матчи и заполнить витрину реальными играми.',
-    '5) approve_all_drafts: {} — выпустить все черновики из очереди на витрину.',
-    '6) run_settlement: {} — сверить счета завершенных игр и начислить страховку покупателям.',
-    '7) create_prediction: {"sport":"FOOTBALL","leagueName":"...","homeTeam":"...","awayTeam":"...","hoursFromNow":5,"selectionTitle":"...","fixedOdds":1.85,"stakeUnits":1.5,"accessTier":"PAID_SINGLE|FREE","singlePriceRub":790,"insuredOnLoss":true,"analysisTeaser":"...(без спойлера исхода!)","analysisFull":"...","pushToTelegram":true} — создать любой прогноз.',
-    '8) update_or_delete_prediction: {"predictionIdOrTeamQuery":"...","action":"SET_PRICE|MAKE_FREE|MAKE_FEATURED|DELETE","priceRub":690} — изменить цену, сделать бесплатным, главным или удалить матч.',
-    '9) settle_prediction_manual: {"predictionIdOrTeamQuery":"...","resultStatus":"WIN|LOSS|PUSH","finalScore":"2:1"} — рассчитать матч вручную.',
-    '10) configure_autopilot: {"mode":"FULL_AUTOPILOT|MODERATION|OFF","morningHourMsk":9,"eveningHourMsk":18,"maxPicksPerRun":3,"defaultAiPriceRub":790,"freeEveryNthPick":4,"insureAiPicks":true,"openSourceResearchEnabled":true} — изменить настройки автопилота.',
-    '11) update_storefront_pricing: {"brandName":"...","defaultSinglePriceRub":790,"bundle2DiscountPct":15,"bundle3DiscountPct":25} — изменить цены и скидки за наборы.',
-    '12) manage_promo_code: {"action":"CREATE|DELETE","code":"VIP25","discountPercent":25,"maxUses":200} — создать или удалить промокод.',
-    '13) manage_user_account: {"email":"...","action":"CREDIT_BALANCE|GRANT_PREDICTION","amountRub":1000,"teamQuery":"..."} — начислить баланс или подарить прогноз клиенту.',
-    '14) telegram_channel_post: {"action":"DAILY_DIGEST|CUSTOM_POST","customHtmlText":"...","buttonText":"..."} — отправить сводку или любой HTML-пост в Telegram-канал.',
+    'Ты — ИИ-помощник администратора платформы VALUEX. Общайся по-русски и используй только перечисленные ниже серверные инструменты; не утверждай, что имеешь неограниченный доступ к базе.',
+    'Инструменты:',
+    '1) search_open_sources: {"query":"..."} — запросить открытые источники; доступность и полнота поиска зависят от настроенной интеграции.',
+    '2) research_specific_match: {"sport":"FOOTBALL|HOCKEY|TENNIS|ESPORTS|BASKETBALL|MMA","leagueName":"...","homeTeam":"...","awayTeam":"...","homeOdds":1.85,"drawOdds":3.5,"awayOdds":4.1} — собрать досье на конкретный матч из доступных источников.',
+    '3) scan_and_publish_matches: {"count":3,"publishImmediately":true} — сканировать линию Фонбет/Леон; новости проверяются, если эта настройка включена. Выпускаются только кандидаты, прошедшие кодовые фильтры и AI-комитет; это не обещание выигрыша. При publishImmediately:false прошедшие кандидаты попадут в черновики.',
+    '4) replace_demo_matches: {} — удалить стартовые демо-карточки и запустить проверенный сценарий сбора реальных матчей.',
+    '5) approve_all_drafts: {} — выпустить накопленные черновики на витрину.',
+    '6) run_settlement: {} — запустить автоматическую сверку результатов завершенных игр.',
+    '7) update_or_delete_prediction: {"predictionIdOrTeamQuery":"...","action":"SET_PRICE|MAKE_FREE|MAKE_FEATURED|DELETE","priceRub":690} — изменить цену, сделать бесплатным, главным или удалить матч.',
+    '8) configure_autopilot: {"mode":"FULL_AUTOPILOT|MODERATION|OFF","morningHourMsk":9,"eveningHourMsk":18,"maxPicksPerRun":3,"defaultAiPriceRub":790,"freeEveryNthPick":4,"insureAiPicks":true,"openSourceResearchEnabled":true} — изменить настройки автопилота.',
+    '9) update_storefront_pricing: {"brandName":"...","defaultSinglePriceRub":790,"bundle2DiscountPct":15,"bundle3DiscountPct":25} — изменить цены и скидки за наборы.',
+    '10) manage_promo_code: {"action":"CREATE|DELETE","code":"VIP25","discountPercent":25,"maxUses":200} — создать или удалить промокод.',
+    '11) manage_user_account: {"email":"...","action":"CREDIT_BALANCE|GRANT_PREDICTION","amountRub":1000,"teamQuery":"..."} — начислить баланс или подарить прогноз клиенту.',
+    '12) telegram_channel_post: {"action":"DAILY_DIGEST|CUSTOM_POST","customHtmlText":"...","buttonText":"..."} — отправить сводку или HTML-пост в Telegram-канал.',
     '',
     'ПРАВИЛА ОТВЕТА:',
-    '- Отвечай СТРОГО валидным JSON-объектом вида: {"actions":[...],"reply":"Подробный, дружелюбный и деловой ответ на русском языке"}.',
+    '- Прямое создание прогноза через create_prediction намеренно отключено: произвольные команды с придуманными матчами или коэффициентами обходили проверенную линию и AI-проверки. Для новых прогнозов используй только scan_and_publish_matches.',
+    '- Не выставляй результат матча вручную и не угадывай счёт: только run_settlement, который рассчитает однозначный рынок после совпадения финального счёта минимум у двух независимых источников.',
+    '- Отвечай СТРОГО валидным JSON-объектом вида: {"actions":[{"tool":"scan_and_publish_matches","args":{"count":3,"publishImmediately":true}}],"reply":"Краткий ответ владельцу на русском языке"}.',
+    '- Каждый action обязан иметь поле "tool" с точным именем из списка выше и объект "args"; не используй вместо них name, action, function или arguments.',
+    '- При прямом запрете публикации или просьбе о черновиках установи args.publishImmediately=false; сервер также принудительно отключает выпуск для таких запросов.',
+    '- Никогда не говори, что команда запущена, выполнена или опубликована, пока сервер не вернул результат инструмента. В reply до выполнения опиши только намерение, а итог сформирует сервер по фактическому результату.',
     '- Если владелец просто задает вопрос по выручке, статистике или настройкам и менять ничего не нужно — верни "actions":[].',
     '- Если владелец просит разобрать матч или узнать новости — ОБЯЗАТЕЛЬНО вызови search_open_sources или research_specific_match, НИКОГДА не выдумывай новости или травмы от себя!',
     `- ТЕКУЩИЕ ЖИВЫЕ ДАННЫЕ САЙТА: ${JSON.stringify(liveSnapshot)}`,
@@ -1155,7 +1153,19 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
     { role: 'system', content: systemPrompt },
     ...recentHistory.map((m) => ({
       role: m.role,
-      content: m.role === 'assistant' ? JSON.stringify({ actions: [], reply: m.content }) : m.content,
+      content:
+        m.role === 'assistant'
+          ? JSON.stringify({
+              actions: [],
+              reply: m.content,
+              executedActions: m.executedActions?.map((action) => ({
+                tool: action.tool,
+                ok: action.ok,
+                summary: action.summary,
+              })),
+              diagnostic: m.diagnostic?.title,
+            })
+          : m.content,
     })),
     { role: 'user', content: cleanPrompt },
   ];
@@ -1177,69 +1187,132 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
   } else {
     const firstRaw = firstOutcome.content;
     const parsed = parseStructuredAgentJson(firstRaw);
+    const collectionIntent = isMatchCollectionIntent(cleanPrompt);
+
     if (!parsed) {
-      finalReply = firstRaw;
-    } else {
-      const requestedActions = Array.isArray(parsed.actions)
-        ? parsed.actions.slice(0, 5)
-        : [];
-      const researchResultsForSecondPass: Array<{
-        tool: string;
-        data: unknown;
-      }> = [];
-
-      for (const act of requestedActions) {
-        const exec = await executeAdminAgentTool(act);
-        executedActions.push(exec.record);
-        if (
-          exec.toolData &&
-          (act.tool === 'search_open_sources' ||
-            act.tool === 'research_specific_match' ||
-            act.tool === 'scan_and_publish_matches')
-        ) {
-          researchResultsForSecondPass.push({
-            tool: act.tool,
-            data: exec.toolData,
-          });
-        }
+      if (collectionIntent) {
+        const fallback = await runDeterministicFallbackAssistant(cleanPrompt);
+        finalReply = fallback.reply;
+        executedActions.push(...fallback.executedActions);
+        activeDiagnostic = createActionFormatDiagnostic(true, 0);
+      } else if (isAdminMutationIntent(cleanPrompt)) {
+        finalReply =
+          'Команда не выполнена: модель не передала серверу распознаваемое действие. Никакие изменения, отправки или публикации не выполнялись.';
+        activeDiagnostic = createActionFormatDiagnostic(false, 0);
+      } else {
+        finalReply = firstRaw;
       }
+    } else {
+      const actionResolution = resolveAdminAgentActions(parsed, cleanPrompt);
+      const {
+        actionsToExecute,
+        invalidActionCount,
+        rawActionCount,
+        shouldRunCollectionFallback,
+      } = actionResolution;
 
-      // Если модель запрашивала живой поиск в открытых источниках — делаем второй проход с реальными найденными фактами!
-      if (researchResultsForSecondPass.length > 0) {
-        const secondOutcome = await callConfiguredLlmWithDiagnostics([
-          ...llmMessages,
-          { role: 'assistant', content: firstRaw },
-          {
-            role: 'user',
-            content: `РЕАЛЬНЫЕ РЕЗУЛЬТАТЫ ВЫПОЛНЕННЫХ ИНСТРУМЕНТОВ И ОТКРЫТЫХ ИСТОЧНИКОВ: ${JSON.stringify(
-              researchResultsForSecondPass,
-            )}. Теперь дай итоговый точный и честный ответ владельцу строго на основе этих реальных данных в формате JSON {"actions":[],"reply":"..."} (не выдумывая ничего сверх найденных фактов).`,
-          },
-        ]);
-        const secondPassRaw = secondOutcome.content;
-        if (secondOutcome.modelLabel) activeModelLabel = secondOutcome.modelLabel;
-        if (!secondOutcome.ok && secondOutcome.diagnostic) {
-          activeDiagnostic = secondOutcome.diagnostic;
+      if (shouldRunCollectionFallback) {
+        const fallback = await runDeterministicFallbackAssistant(cleanPrompt);
+        finalReply = fallback.reply;
+        executedActions.push(...fallback.executedActions);
+        activeDiagnostic = createActionFormatDiagnostic(
+          true,
+          rawActionCount,
+        );
+      } else if (
+        rawActionCount === 0 &&
+        isAdminMutationIntent(cleanPrompt)
+      ) {
+        finalReply =
+          'Команда не выполнена: модель не передала серверу ни одного действия. Никакие изменения, отправки или публикации не выполнялись.';
+        activeDiagnostic = createActionFormatDiagnostic(false, 0);
+      } else {
+        if (invalidActionCount > 0) {
+          executedActions.push({
+            tool: 'invalid_agent_action',
+            ok: false,
+            summary: `Отклонено или не распознано действий модели: ${invalidActionCount}; они не выполнялись.`,
+          });
+          activeDiagnostic = createActionFormatDiagnostic(false, rawActionCount);
         }
 
-        const parsedSecond = secondPassRaw
-          ? parseStructuredAgentJson(secondPassRaw)
-          : null;
-        if (parsedSecond?.actions?.length) {
-          for (const act2 of parsedSecond.actions.slice(0, 3)) {
-            const exec2 = await executeAdminAgentTool(act2);
-            executedActions.push(exec2.record);
+        const researchResultsForSecondPass: Array<{
+          tool: string;
+          data: unknown;
+        }> = [];
+
+        for (const action of actionsToExecute) {
+          const exec = await executeAdminAgentTool(action);
+          executedActions.push(exec.record);
+          if (
+            exec.record.ok &&
+            exec.toolData &&
+            (action.tool === 'search_open_sources' ||
+              action.tool === 'research_specific_match')
+          ) {
+            researchResultsForSecondPass.push({
+              tool: action.tool,
+              data: exec.toolData,
+            });
           }
         }
-        finalReply =
-          parsedSecond?.reply?.trim() ||
-          secondPassRaw?.trim() ||
-          parsed.reply?.trim() ||
-          'Операция выполнена.';
-      } else {
-        finalReply = parsed.reply?.trim() || 'Команда успешно выполнена.';
+
+        if (researchResultsForSecondPass.length > 0 &&
+            !executedActions.some((action) => !action.ok)) {
+          const secondOutcome = await callConfiguredLlmWithDiagnostics([
+            ...llmMessages,
+            { role: 'assistant', content: firstRaw },
+            {
+              role: 'user',
+              content: `РЕАЛЬНЫЕ РЕЗУЛЬТАТЫ ВЫПОЛНЕННЫХ ИНСТРУМЕНТОВ И ОТКРЫТЫХ ИСТОЧНИКОВ: ${JSON.stringify(
+                researchResultsForSecondPass,
+              )}. Теперь дай итоговый точный и честный ответ владельцу строго на основе этих реальных данных в формате JSON {"actions":[],"reply":"..."}; укажи, что именно найдено, не заявляй о действиях, которых не выполнял.`,
+            },
+          ]);
+          const secondPassRaw = secondOutcome.content;
+          if (secondOutcome.modelLabel) activeModelLabel = secondOutcome.modelLabel;
+          if (!secondOutcome.ok && secondOutcome.diagnostic) {
+            activeDiagnostic = secondOutcome.diagnostic;
+          }
+
+          const parsedSecond = secondPassRaw
+            ? parseStructuredAgentJson(secondPassRaw)
+            : null;
+          if (parsedSecond) {
+            const secondRawActions = extractRawAdminAgentActions(parsedSecond);
+            if (secondRawActions.length > 0) {
+              executedActions.push({
+                tool: 'invalid_agent_action',
+                ok: false,
+                summary: `Второй ответ модели запросил ${secondRawActions.length} дополнительных действий; в режиме итогового отчета они запрещены и не выполнялись.`,
+              });
+              activeDiagnostic = createActionFormatDiagnostic(
+                false,
+                secondRawActions.length,
+              );
+            }
+            finalReply = getStructuredReply(parsedSecond);
+          }
+        }
+
+        if (!finalReply) {
+          finalReply =
+            getStructuredReply(parsed) ||
+            (executedActions.length > 0
+              ? executedActions.map((action) => action.summary).join('\n')
+              : 'Модель не вернула команду для выполнения. На сайте ничего не изменено.');
+        }
       }
     }
+  }
+
+  const scanActions = executedActions.filter(
+    (action) => action.tool === 'scan_and_publish_matches',
+  );
+  if (executedActions.some((action) => !action.ok)) {
+    finalReply = formatFailedActionReply(executedActions);
+  } else if (scanActions.length > 0) {
+    finalReply = scanActions.map((action) => action.summary).join('\n');
   }
 
   const assistantMsg: AiChatMessage = {

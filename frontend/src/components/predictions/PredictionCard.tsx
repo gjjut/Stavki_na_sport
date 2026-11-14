@@ -17,6 +17,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { PublicPredictionDto, SportType } from '@/server/types';
+import { LocalDateTime } from '@/components/LocalDateTime';
 import { TeamAvatar } from '@/components/predictions/TeamAvatar';
 
 const SPORT_LABELS: Record<
@@ -254,12 +255,10 @@ export const PredictionCard: React.FC<PredictionCardProps> = ({
 
           <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs text-slate-500">
             <span className="font-medium">
-              {new Date(prediction.matchStartsAt).toLocaleString('ru-RU', {
-                day: '2-digit',
-                month: 'short',
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
+              <LocalDateTime
+                value={prediction.matchStartsAt}
+                format="compact"
+              />
             </span>
 
             {/* Шкала уверенности и доли банка */}

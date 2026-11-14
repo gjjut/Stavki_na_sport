@@ -13,6 +13,7 @@ import {
   type CheckoutModalTarget,
 } from '@/components/billing/YooKassaCheckoutModal';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
+import { isOnBrowserLocalDay } from '@/lib/date-time';
 import { SEO_LEAGUE_PAGES } from '@/lib/seo-leagues';
 import type { PublicPredictionDto, SportType } from '@/server/types';
 
@@ -100,11 +101,7 @@ export default function PredictionsCatalogPage() {
     mode === 'SETTLED'
       ? settledPredictions
       : mode === 'TODAY'
-        ? activePredictions.filter((p) => {
-            const diffHrs =
-              (new Date(p.matchStartsAt).getTime() - Date.now()) / 3_600_000;
-            return diffHrs > -2 && diffHrs <= 18;
-          })
+        ? activePredictions.filter((p) => isOnBrowserLocalDay(p.matchStartsAt))
         : mode === 'FREE'
           ? activePredictions.filter((p) => p.accessTier === 'FREE')
           : mode === 'INSURED'
@@ -182,12 +179,9 @@ export default function PredictionsCatalogPage() {
                 [
                   'TODAY',
                   'Сегодня',
-                  activePredictions.filter((p) => {
-                    const h =
-                      (new Date(p.matchStartsAt).getTime() - Date.now()) /
-                      3_600_000;
-                    return h > -2 && h <= 18;
-                  }).length,
+                  activePredictions.filter((p) =>
+                    isOnBrowserLocalDay(p.matchStartsAt),
+                  ).length,
                 ],
                 [
                   'INSURED',

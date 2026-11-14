@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
           email: cleanEmail,
           password: generatedPassword,
           displayName: cleanEmail.split('@')[0] || 'Покупатель',
-          refCode: getRefCodeFromCookies(),
+          refCode: await getRefCodeFromCookies(),
         });
         newSessionCookieToken = signSessionToken(user.id, 30);
         autoCreatedAccount = {

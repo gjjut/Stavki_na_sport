@@ -1,16 +1,14 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { cookies } from 'next/headers';
+import {
+  getSessionSecret,
+  isSessionSigningAvailable,
+} from './session-secret-policy';
+
+export { isSessionSigningAvailable } from './session-secret-policy';
 
 export const SESSION_COOKIE_NAME = 'valuex_session';
 export const REF_COOKIE_NAME = 'valuex_ref';
-
-function getSessionSecret(): string {
-  return (
-    process.env.JWT_ACCESS_SECRET ||
-    process.env.SESSION_SECRET ||
-    'valuex-prod-default-hmac-secret-change-in-env-2026'
-  );
-}
 
 export function hashPassword(password: string): string {
   const salt = randomBytes(16).toString('hex');
@@ -49,6 +47,7 @@ export function verifySessionToken(token: string | undefined | null): string | n
   const [base64Payload, sig] = token.split('.');
   if (!base64Payload || !sig) return null;
 
+  if (!isSessionSigningAvailable()) return null;
   const expectedSig = createHmac('sha256', getSessionSecret())
     .update(base64Payload)
     .digest('base64url');
@@ -70,9 +69,9 @@ export function verifySessionToken(token: string | undefined | null): string | n
   }
 }
 
-export function getSessionUserIdFromCookies(): string | null {
+export async function getSessionUserIdFromCookies(): Promise<string | null> {
   try {
-    const cookieStore = cookies();
+    const cookieStore = await cookies();
     const raw = cookieStore.get(SESSION_COOKIE_NAME)?.value;
     return verifySessionToken(raw);
   } catch {
@@ -80,9 +79,9 @@ export function getSessionUserIdFromCookies(): string | null {
   }
 }
 
-export function getRefCodeFromCookies(): string | null {
+export async function getRefCodeFromCookies(): Promise<string | null> {
   try {
-    return cookies().get(REF_COOKIE_NAME)?.value?.trim() || null;
+    return (await cookies()).get(REF_COOKIE_NAME)?.value?.trim() || null;
   } catch {
     return null;
   }

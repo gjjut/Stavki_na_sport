@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
       refCode?: string;
     };
 
-    const refCode = body.refCode?.trim() || getRefCodeFromCookies();
+    const refCode = body.refCode?.trim() || (await getRefCodeFromCookies());
     const user = await registerUserAccount({
       email: body.email,
       password: body.password,
