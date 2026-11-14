@@ -436,7 +436,7 @@ export function PredictionsTab({
         </div>
       )}
 
-      <SectionCard title={`События (${filtered.length})`} subtitle="Управление прогнозами на витрине">
+      <SectionCard title={`События (${filtered.length})`} subtitle="Управление прогнозами на витрине. Страховку нельзя изменить при оплаченных или ожидающих заказах.">
         {filtered.length === 0 ? (
           <EmptyState
             icon={<Search className="h-5 w-5" />}

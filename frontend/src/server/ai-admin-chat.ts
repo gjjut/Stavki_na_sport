@@ -23,7 +23,7 @@ import {
   readState,
 } from './database';
 import { sendTelegramChannelAnnouncement } from './integrations';
-import { deleteUnownedPrediction, grantPredictionAccess } from './admin-prediction-policy';
+import { assertInsuranceChangeAllowed, deleteUnownedPrediction, grantPredictionAccess } from './admin-prediction-policy';
 import {
   extractRawAdminAgentActions,
   formatAdminMatchScanSummary,
@@ -343,6 +343,7 @@ async function executeAdminAgentTool(
           return `Удален матч «${target.homeTeam} — ${target.awayTeam}»`;
         }
         if (subAction === 'MAKE_FREE') {
+          assertInsuranceChangeAllowed(state, target, false);
           target.accessTier = 'FREE';
           target.singlePriceRub = null;
           target.insuredOnLoss = false;

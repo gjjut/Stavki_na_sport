@@ -99,6 +99,49 @@ test('an already recorded pending checkout prevents event deletion', async () =>
   const res = await predictionRoute.DELETE(new NextRequest(`http://localhost/api/v1/admin/predictions?id=${fixture.prediction.id}`, { method: 'DELETE' }));
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /нельзя удалить/);
+  for (const editMeta of [{ insuredOnLoss: false }, { singlePriceRub: 0 }]) {
+    const change = await predictionRoute.PATCH(new NextRequest('http://localhost/api/v1/admin/predictions', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ predictionId: fixture.prediction.id, editMeta }),
+    }));
+    assert.equal(change.status, 400);
+    assert.match((await change.json()).error, /Нельзя изменить страховку/);
+  }
+  const unchanged = (await readState()).predictions.find((p) => p.id === fixture.prediction.id);
+  assert.equal(unchanged.insuredOnLoss, true);
+  assert.equal(unchanged.accessTier, 'PAID_SINGLE');
+});
+
+test('checkout cannot publish a payment link when insurance or price changes in flight', async () => {
+  for (const [name, editMeta] of [
+    ['race-insurance', { insuredOnLoss: false }],
+    ['race-price', { singlePriceRub: 600 }],
+  ]) {
+    const fixture = await makePurchaseFixture(name);
+    let startRequest;
+    let releaseRequest;
+    const started = new Promise((resolve) => { startRequest = resolve; });
+    const released = new Promise((resolve) => { releaseRequest = resolve; });
+    global.fetch = async () => {
+      startRequest();
+      await released;
+      return paymentResponse(`fake-provider-${name}`);
+    };
+    const checkout = checkoutFor(fixture);
+    await started;
+    try {
+      const change = await predictionRoute.PATCH(new NextRequest('http://localhost/api/v1/admin/predictions', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ predictionId: fixture.prediction.id, editMeta }),
+      }));
+      assert.equal(change.status, 200);
+    } finally {
+      releaseRequest();
+    }
+    await assert.rejects(checkout, /Цена или страховка.*изменилась/);
+    const state = await readState();
+    assert.equal(state.transactions.some((order) => order.predictionIds.includes(fixture.prediction.id)), false);
+  }
 });
 
 test('API rejects stale featured and gift targets without changing other data', async () => {

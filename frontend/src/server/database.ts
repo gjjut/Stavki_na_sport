@@ -15,7 +15,7 @@ import {
 } from './final-score-verification';
 import { evaluateMarketByScore } from './market-settlement';
 import { withoutLegacyStarterDemoPredictions } from './prediction-data-policy';
-import { assertPredictionsExistForOrder, validatePredictionForPublication } from './admin-prediction-policy';
+import { assertPredictionsExistForOrder, assertPredictionSaleTermsUnchanged, validatePredictionForPublication } from './admin-prediction-policy';
 import { assertYooKassaPaymentMatchesOrder, type VerifiedYooKassaPayment } from './payment-policy';
 import {
   createYooKassaLivePayment,
@@ -1342,6 +1342,7 @@ export async function initiateOrderCheckout(params: {
   const createdOrder = await mutateState((state) => {
     // Deletion can happen after the earlier readState() snapshot while checkout is in flight.
     assertPredictionsExistForOrder(state, targetIds);
+    assertPredictionSaleTermsUnchanged(state.predictions, stateSnap.predictions, targetIds);
     const order: OrderTransaction = {
       id: orderId,
       idempotenceKey,

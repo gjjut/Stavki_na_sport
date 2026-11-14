@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTypeScriptModule } from './load-typescript-module.mjs';
 
-const { deleteUnownedPrediction, assertPredictionsExistForOrder, validatePredictionForPublication, grantPredictionAccess } = await loadTypeScriptModule(
+const { deleteUnownedPrediction, assertPredictionsExistForOrder, assertInsuranceChangeAllowed, assertPredictionSaleTermsUnchanged, validatePredictionForPublication, grantPredictionAccess } = await loadTypeScriptModule(
   new URL('../src/server/admin-prediction-policy.ts', import.meta.url),
 );
 
@@ -55,6 +55,26 @@ test('checkout rechecks all cart items against the current state', () => {
   assert.doesNotThrow(() => assertPredictionsExistForOrder(current, []));
   deleteUnownedPrediction(current, 'pred-1');
   assert.throws(() => assertPredictionsExistForOrder(current, ['pred-1', 'pred-2']), /недоступно/);
+});
+
+test('insurance cannot be changed retroactively for paid or pending orders', () => {
+  const prediction = { id: 'pred-1', insuredOnLoss: true };
+  for (const status of ['PENDING', 'SUCCEEDED']) {
+    const guarded = state([order(status, null, ['pred-2', 'pred-1'])]);
+    assert.throws(() => assertInsuranceChangeAllowed(guarded, prediction, false), /Нельзя изменить страховку/);
+    assert.doesNotThrow(() => assertInsuranceChangeAllowed(guarded, prediction, true));
+  }
+  for (const status of ['CANCELED', 'REFUNDED']) {
+    assert.doesNotThrow(() => assertInsuranceChangeAllowed(state([order(status)]), prediction, false));
+  }
+});
+
+test('in-flight checkout fails if access tier, price, or insurance changed', () => {
+  const before = [{ id: 'pred-1', accessTier: 'PAID_SINGLE', singlePriceRub: 500, insuredOnLoss: true }];
+  assert.doesNotThrow(() => assertPredictionSaleTermsUnchanged(before, before, ['pred-1']));
+  for (const change of [{ accessTier: 'FREE' }, { singlePriceRub: 600 }, { insuredOnLoss: false }]) {
+    assert.throws(() => assertPredictionSaleTermsUnchanged([{ ...before[0], ...change }], before, ['pred-1']), /изменилась/);
+  }
 });
 
 test('publication validates required fields, finite numbers, time, sport, and price', () => {

@@ -5,7 +5,7 @@ import {
   settlePredictionByAdmin,
 } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
-import { deleteUnownedPrediction } from '@/server/admin-prediction-policy';
+import { assertInsuranceChangeAllowed, deleteUnownedPrediction } from '@/server/admin-prediction-policy';
 import type { MatchStatus, ResultStatus } from '@/server/types';
 
 export async function POST(req: NextRequest) {
@@ -60,6 +60,16 @@ export async function PATCH(req: NextRequest) {
       const updated = await mutateState((state) => {
         const pred = state.predictions.find((p) => p.id === body.predictionId);
         if (!pred) throw new Error('Событие не найдено');
+        const requestedPrice = body.editMeta!.singlePriceRub;
+        const nextTier = typeof requestedPrice === 'number'
+          ? requestedPrice <= 0 ? 'FREE' : 'PAID_SINGLE'
+          : pred.accessTier;
+        const nextInsured = typeof requestedPrice === 'number' && requestedPrice <= 0
+          ? false
+          : typeof body.editMeta!.insuredOnLoss === 'boolean'
+            ? nextTier === 'PAID_SINGLE' && body.editMeta!.insuredOnLoss
+            : Boolean(pred.insuredOnLoss);
+        assertInsuranceChangeAllowed(state, pred, nextInsured);
         if (typeof body.editMeta!.singlePriceRub === 'number') {
           if (body.editMeta!.singlePriceRub <= 0) {
             pred.accessTier = 'FREE';

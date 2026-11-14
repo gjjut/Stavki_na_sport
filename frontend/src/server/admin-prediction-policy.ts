@@ -3,6 +3,11 @@ import type { OrderTransaction, PredictionRecord, UserAccount } from './types';
 type PredictionOwner = Pick<UserAccount, 'purchasedPredictionIds'>;
 type LinkedOrder = Pick<OrderTransaction, 'status' | 'predictionId' | 'predictionIds'>;
 
+function orderProtectsPrediction(order: LinkedOrder, predictionId: string): boolean {
+  return (order.status === 'PENDING' || order.status === 'SUCCEEDED') &&
+    (order.predictionId === predictionId || order.predictionIds.includes(predictionId));
+}
+
 /** Preserve provenance when a client is explicitly gifted access. Legacy histories stay unknown. */
 export function grantPredictionAccess(
   user: Pick<UserAccount, 'purchasedPredictionIds' | 'grantedPredictionIds'>,
@@ -23,14 +28,23 @@ export function deleteUnownedPrediction(state: {
   const index = state.predictions.findIndex((prediction) => prediction.id === predictionId);
   if (index < 0) throw new Error('Событие не найдено. Обновите данные.');
   const hasAccess = state.users.some((user) => user.purchasedPredictionIds.includes(predictionId));
-  const hasActiveOrder = state.transactions.some((order) =>
-    (order.status === 'PENDING' || order.status === 'SUCCEEDED') &&
-    (order.predictionId === predictionId || order.predictionIds.includes(predictionId)),
-  );
+  const hasActiveOrder = state.transactions.some((order) => orderProtectsPrediction(order, predictionId));
   if (hasAccess || hasActiveOrder) {
     throw new Error('Событие нельзя удалить: у клиентов есть доступ или связанный оплаченный/ожидающий заказ.');
   }
   return state.predictions.splice(index, 1)[0];
+}
+
+/** Current orders do not store per-purchase insurance terms, so changes would be retroactive. */
+export function assertInsuranceChangeAllowed(
+  state: { transactions: LinkedOrder[] },
+  prediction: Pick<PredictionRecord, 'id' | 'insuredOnLoss'>,
+  nextInsured: boolean,
+): void {
+  if (Boolean(prediction.insuredOnLoss) !== nextInsured &&
+      state.transactions.some((order) => orderProtectsPrediction(order, prediction.id))) {
+    throw new Error('Нельзя изменить страховку: есть оплаченный или ожидающий заказ, а условия страховки у заказов отдельно не сохранены.');
+  }
 }
 
 /** Recheck the cart when inserting an order, not only in the earlier read snapshot. */
@@ -41,6 +55,22 @@ export function assertPredictionsExistForOrder(
   const existingIds = new Set(state.predictions.map((prediction) => prediction.id));
   if (predictionIds.some((id) => !existingIds.has(id))) {
     throw new Error('Одно из выбранных событий уже недоступно. Обновите корзину.');
+  }
+}
+
+/** Do not create a payable order using prices or coverage that changed during checkout. */
+export function assertPredictionSaleTermsUnchanged(
+  current: Array<Pick<PredictionRecord, 'id' | 'accessTier' | 'singlePriceRub' | 'insuredOnLoss'>>,
+  snapshot: Array<Pick<PredictionRecord, 'id' | 'accessTier' | 'singlePriceRub' | 'insuredOnLoss'>>,
+  predictionIds: readonly string[],
+): void {
+  for (const id of predictionIds) {
+    const before = snapshot.find((prediction) => prediction.id === id);
+    const after = current.find((prediction) => prediction.id === id);
+    if (!before || !after || before.accessTier !== after.accessTier ||
+        before.singlePriceRub !== after.singlePriceRub || before.insuredOnLoss !== after.insuredOnLoss) {
+      throw new Error('Цена или страховка выбранного события изменилась. Обновите корзину перед оплатой.');
+    }
   }
 }
 
