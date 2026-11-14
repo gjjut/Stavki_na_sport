@@ -103,3 +103,22 @@ test('client details only show orders belonging to that user and distinguish ope
   assert.match(dialog.textContent, /Команда А — Команда Б/);
   assert.match(dialog.textContent, /купленные и подаренные доступы/);
 });
+
+test('palette targets open the exact client or order, not IDs with the same prefix', async (t) => {
+  const first = user('user-1', { displayName: 'Алина' });
+  const second = user('user-10', { displayName: 'Борис' });
+  const usersView = await mount(UsersTab, {
+    ...callbacks, users: [first, second], transactions: [], predictions: [],
+    initialSearch: 'user-1', initialUserId: 'user-1',
+  });
+  t.after(usersView.cleanup);
+  assert.equal(usersView.container.querySelectorAll('tbody tr').length, 1);
+  assert.match(usersView.container.querySelector('[role="dialog"]').textContent, /Алина/);
+  const financeView = await mount(FinanceTab, {
+    ...callbacks, payouts: [], transactions: [order('order-1'), order('order-10')],
+    initialSearch: 'order-1', initialOrderId: 'order-1',
+  });
+  t.after(financeView.cleanup);
+  assert.equal(financeView.container.querySelectorAll('tbody tr').length, 1);
+  assert.match(financeView.container.querySelector('tbody tr').textContent, /Заказ order-1/);
+});

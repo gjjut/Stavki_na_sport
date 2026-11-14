@@ -21,19 +21,23 @@ export function UsersTab({
   users,
   predictions,
   transactions,
+  initialSearch = '',
+  initialUserId,
   onRefresh,
   onToast,
 }: {
   users: AdminUser[];
   predictions: PredictionRecord[];
   transactions: OrderTransaction[];
+  initialSearch?: string;
+  initialUserId?: string;
   onRefresh: () => Promise<void>;
   onToast: (msg: string, kind?: ToastKind) => void;
 }) {
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialSearch);
   const [filter, setFilter] = useState<'ALL' | 'BUYERS' | 'PARTNERS' | 'BLOCKED'>('ALL');
   const [sort, setSort] = useState<SortState<UserSort>>({ key: 'name', direction: 'asc' });
-  const [detailsUserId, setDetailsUserId] = useState<string | null>(null);
+  const [detailsUserId, setDetailsUserId] = useState<string | null>(initialUserId ?? null);
   const [action, setAction] = useState<UserAction | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -62,6 +66,7 @@ export function UsersTab({
       if (filter === 'PARTNERS' && u.affiliateTotalEarnedRub <= 0) return false;
       if (filter === 'BLOCKED' && u.status !== 'BLOCKED') return false;
       if (!q) return true;
+      if (initialUserId && q === initialUserId.toLowerCase()) return u.id === initialUserId;
       return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q) || u.id.toLowerCase().includes(q);
     });
     const value = (user: AdminUser): string | number => {
@@ -73,7 +78,7 @@ export function UsersTab({
       }
     };
     return rows.sort((a, b) => compareValues(value(a), value(b), sort.direction) || a.id.localeCompare(b.id));
-  }, [users, search, filter, sort]);
+  }, [users, search, filter, sort, initialUserId]);
 
   const runAction = async () => {
     if (!action) return;

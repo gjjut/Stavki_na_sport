@@ -14,15 +14,19 @@ type OrderSort = 'title' | 'buyer' | 'date' | 'amount' | 'status';
 export function FinanceTab({
   transactions,
   payouts,
+  initialSearch = '',
+  initialOrderId,
   onRefresh,
   onToast,
 }: {
   transactions: OrderTransaction[];
   payouts: PayoutRequestRecord[];
+  initialSearch?: string;
+  initialOrderId?: string;
   onRefresh: () => Promise<void>;
   onToast: (msg: string, kind?: ToastKind) => void;
 }) {
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialSearch);
   const [statusFilter, setStatusFilter] = useState<'ALL' | OrderTransaction['status']>('ALL');
   const [sort, setSort] = useState<SortState<OrderSort>>({ key: 'date', direction: 'desc' });
   const [refundTarget, setRefundTarget] = useState<OrderTransaction | null>(null);
@@ -75,6 +79,7 @@ export function FinanceTab({
     const rows = transactions.filter((o) => {
       if (statusFilter !== 'ALL' && o.status !== statusFilter) return false;
       if (!q) return true;
+      if (initialOrderId && q === initialOrderId.toLowerCase()) return o.id === initialOrderId;
       return (
         o.title.toLowerCase().includes(q) ||
         o.userEmail.toLowerCase().includes(q) ||
@@ -91,7 +96,7 @@ export function FinanceTab({
       }
     };
     return rows.sort((a, b) => compareValues(value(a), value(b), sort.direction) || a.id.localeCompare(b.id));
-  }, [transactions, search, statusFilter, sort]);
+  }, [transactions, search, statusFilter, sort, initialOrderId]);
 
   const processPayout = async () => {
     if (!payoutTarget || payoutBusy) return;

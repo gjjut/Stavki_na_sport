@@ -30,6 +30,9 @@ import {
   X,
 } from 'lucide-react';
 import { AdminAiChatPanel } from '@/components/admin/AdminAiChatPanel';
+import { AdminCommandPalette } from '@/components/admin/AdminCommandPalette';
+import { SystemHealth } from '@/components/admin/SystemHealth';
+import type { AdminCommandTarget, AdminTabId as TabId } from '@/lib/admin-command-search';
 import { AiAutopilotPanel } from '@/components/admin/AiAutopilotPanel';
 import { FinanceTab } from '@/components/admin/FinanceTab';
 import { UsersTab } from '@/components/admin/UsersTab';
@@ -89,16 +92,6 @@ interface AdminOverviewPayload {
   aiStats: AiPerformanceStats;
 }
 
-type TabId =
-  | 'OVERVIEW'
-  | 'AUTOPILOT'
-  | 'AI_CHAT'
-  | 'PREDICTIONS'
-  | 'PRICING_PROMOS'
-  | 'FINANCE'
-  | 'USERS'
-  | 'SETTINGS';
-
 const LEAGUE_PRESETS: Array<{ label: string; sport: SportType; league: string }> = [
   { label: 'ЛЧ УЕФА', sport: 'FOOTBALL', league: 'Лига Чемпионов УЕФА' },
   { label: 'АПЛ', sport: 'FOOTBALL', league: 'Англия · Премьер-лига' },
@@ -138,9 +131,24 @@ export default function AdminDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabId>('OVERVIEW');
+  const [navigation, setNavigation] = useState<{ target: AdminCommandTarget; sequence: number } | null>(null);
+  const navigationSequence = useRef(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastSeq = useRef(0);
+
+  const goToTab = (nextTab: TabId) => {
+    setNavigation(null);
+    setTab(nextTab);
+    setSidebarOpen(false);
+  };
+  const navigateFromSearch = (target: AdminCommandTarget) => {
+    setNavigation(target.search || target.userId || target.predictionId || target.orderId
+      ? { target, sequence: ++navigationSequence.current }
+      : null);
+    setTab(target.tab);
+    setSidebarOpen(false);
+  };
 
   const showToast = useCallback((message: string, kind: ToastKind = 'success') => {
     const id = ++toastSeq.current;
@@ -282,8 +290,7 @@ export default function AdminDashboardPage() {
               key={item.id}
               type="button"
               onClick={() => {
-                setTab(item.id);
-                setSidebarOpen(false);
+                goToTab(item.id);
               }}
               className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-xs font-bold transition ${
                 active
@@ -372,6 +379,13 @@ export default function AdminDashboardPage() {
                   : 'Загрузка данных…'}
               </p>
             </div>
+            <AdminCommandPalette
+              enabled={Boolean(data)}
+              users={data?.users ?? []}
+              predictions={data?.predictions ?? []}
+              transactions={data?.transactions ?? []}
+              onNavigate={navigateFromSearch}
+            />
             {data?.aiAutopilot.mode === 'FULL_AUTOPILOT' && (
               <Badge tone="emerald">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
@@ -397,7 +411,7 @@ export default function AdminDashboardPage() {
                   paidCount={paidTransactions.length}
                   buyersCount={buyersCount}
                   pendingPredictionsCount={pendingPredictionsCount}
-                  onGoTab={setTab}
+                  onGoTab={goToTab}
                   onRefresh={loadOverview}
                   onToast={showToast}
                 />
@@ -432,6 +446,9 @@ export default function AdminDashboardPage() {
 
               {tab === 'PREDICTIONS' && data && (
                 <PredictionsTab
+                  key={navigation?.target.tab === 'PREDICTIONS' ? navigation.sequence : 'default'}
+                  initialSearch={navigation?.target.tab === 'PREDICTIONS' ? navigation.target.search : undefined}
+                  initialPredictionId={navigation?.target.tab === 'PREDICTIONS' ? navigation.target.predictionId : undefined}
                   predictions={data.predictions}
                   defaultPrice={data.settings.defaultSinglePriceRub}
                   onRefresh={loadOverview}
@@ -450,6 +467,9 @@ export default function AdminDashboardPage() {
 
               {tab === 'FINANCE' && data && (
                 <FinanceTab
+                  key={navigation?.target.tab === 'FINANCE' ? navigation.sequence : 'default'}
+                  initialSearch={navigation?.target.tab === 'FINANCE' ? navigation.target.search : undefined}
+                  initialOrderId={navigation?.target.tab === 'FINANCE' ? navigation.target.orderId : undefined}
                   transactions={data.transactions}
                   payouts={data.payouts}
                   onRefresh={loadOverview}
@@ -459,6 +479,9 @@ export default function AdminDashboardPage() {
 
               {tab === 'USERS' && data && (
                 <UsersTab
+                  key={navigation?.target.tab === 'USERS' ? navigation.sequence : 'default'}
+                  initialSearch={navigation?.target.tab === 'USERS' ? navigation.target.search : undefined}
+                  initialUserId={navigation?.target.tab === 'USERS' ? navigation.target.userId : undefined}
                   users={data.users}
                   predictions={data.predictions}
                   transactions={data.transactions}
@@ -483,7 +506,7 @@ export default function AdminDashboardPage() {
       {tab !== 'AI_CHAT' && (
         <button
           type="button"
-          onClick={() => setTab('AI_CHAT')}
+          onClick={() => goToTab('AI_CHAT')}
           className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-3 text-xs font-extrabold text-white shadow-xl shadow-blue-600/35 transition hover:bg-blue-500"
         >
           <MessageSquareText className="h-4 w-4" />
@@ -666,6 +689,8 @@ function OverviewTab({
           )}
         </SectionCard>
       </div>
+
+      <SystemHealth />
 
       <div className="grid gap-5 lg:grid-cols-2">
         <SectionCard
@@ -865,17 +890,21 @@ function OverviewTab({
 
 function PredictionsTab({
   predictions,
+  initialSearch = '',
+  initialPredictionId,
   defaultPrice,
   onRefresh,
   onToast,
 }: {
   predictions: PredictionRecord[];
+  initialSearch?: string;
+  initialPredictionId?: string;
   defaultPrice: number;
   onRefresh: () => Promise<void>;
   onToast: (msg: string, kind?: ToastKind) => void;
 }) {
   const [showCreate, setShowCreate] = useState(false);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialSearch);
   const [filter, setFilter] = useState<'ALL' | 'PENDING' | 'SETTLED'>('ALL');
   const [sportFilter, setSportFilter] = useState<SportType | 'ALL'>('ALL');
   const [page, setPage] = useState(1);
@@ -896,14 +925,17 @@ function PredictionsTab({
       if (filter === 'SETTLED' && p.resultStatus === 'PENDING') return false;
       if (sportFilter !== 'ALL' && p.sport !== sportFilter) return false;
       if (!q) return true;
+      if (initialPredictionId && q === initialPredictionId.toLowerCase()) return p.id === initialPredictionId;
       return (
+        p.id.toLowerCase().includes(q) ||
+        p.slug.toLowerCase().includes(q) ||
         p.homeTeam.toLowerCase().includes(q) ||
         p.awayTeam.toLowerCase().includes(q) ||
         p.leagueName.toLowerCase().includes(q) ||
         p.selectionTitle.toLowerCase().includes(q)
       );
     });
-  }, [predictions, search, filter, sportFilter]);
+  }, [predictions, search, filter, sportFilter, initialPredictionId]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
