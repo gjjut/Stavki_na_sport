@@ -134,11 +134,13 @@ export function FinanceTab({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'REFUND_ORDER', orderId: refundTarget.id }),
       });
-      const json = (await res.json().catch(() => ({}))) as { error?: string; creditedRub?: number };
+      const json = (await res.json().catch(() => ({}))) as { error?: string; creditedRub?: number; retainedPredictionIds?: string[] };
       if (!res.ok) throw new Error(json.error || `Не удалось выполнить возврат (HTTP ${res.status})`);
-      onToast(typeof json.creditedRub === 'number'
+      const retained = Array.isArray(json.retainedPredictionIds) ? json.retainedPredictionIds.length : 0;
+      const message = typeof json.creditedRub === 'number'
         ? `На баланс клиента зачислено ${formatRub(json.creditedRub)}.`
-        : 'Операция выполнена. Проверьте баланс клиента.');
+        : 'Операция выполнена. Проверьте баланс клиента.';
+      onToast(retained ? `${message} Доступ к событиям сохранён: ${retained}. Проверьте покупки и подарки.` : message, retained ? 'info' : 'success');
       setRefundTarget(null);
       await onRefresh();
     } catch (err) {
@@ -335,7 +337,7 @@ export function FinanceTab({
         open={refundTarget !== null}
         title="Вернуть средства?"
         description={refundTarget && refundQuote?.ok
-          ? `На внутренний баланс будет зачислено ${formatRub(refundQuote.creditRub)}${refundQuote.insuranceRub ? ` с учётом уже выплаченной страховки ${formatRub(refundQuote.insuranceRub)}` : ''}; доступ к прогнозам будет отозван. На карту или в ЮKassa этот возврат не отправляется.${refundTarget.paymentMethod === 'yookassa' ? ' Проверьте, что возврат через ЮKassa не выполнялся и не будет выполнен отдельно: возможен двойной возврат.' : ''}`
+          ? `На внутренний баланс будет зачислено ${formatRub(refundQuote.creditRub)}${refundQuote.insuranceRub ? ` с учётом уже выплаченной страховки ${formatRub(refundQuote.insuranceRub)}` : ''}. Доступ сохранится при другой покупке, подарке или неполной истории старого аккаунта; иначе будет закрыт. На карту или в ЮKassa этот возврат не отправляется.${refundTarget.paymentMethod === 'yookassa' ? ' Проверьте, что возврат через ЮKassa не выполнялся и не будет выполнен отдельно: возможен двойной возврат.' : ''}`
           : ''}
         confirmLabel="Вернуть на баланс"
         busy={refunding}

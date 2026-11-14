@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { hashPassword } from '@/server/auth';
 import { mutateState, toSafeSessionUser } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
+import { grantPredictionAccess } from '@/server/admin-prediction-policy';
 
 export async function PATCH(req: NextRequest) {
   try {
@@ -40,9 +41,7 @@ export async function PATCH(req: NextRequest) {
         if (!state.predictions.some((prediction) => prediction.id === body.predictionId)) {
           throw new Error('Событие не найдено. Обновите данные перед выдачей доступа.');
         }
-        if (!u.purchasedPredictionIds.includes(body.predictionId)) {
-          u.purchasedPredictionIds.push(body.predictionId);
-        }
+        grantPredictionAccess(u, body.predictionId);
       } else if (body.action === 'RESET_PASSWORD') {
         const cleanPass = (body.newPassword || '').trim();
         if (cleanPass.length < 6) {

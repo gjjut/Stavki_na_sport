@@ -23,7 +23,7 @@ import {
   readState,
 } from './database';
 import { sendTelegramChannelAnnouncement } from './integrations';
-import { deleteUnownedPrediction } from './admin-prediction-policy';
+import { deleteUnownedPrediction, grantPredictionAccess } from './admin-prediction-policy';
 import {
   extractRawAdminAgentActions,
   formatAdminMatchScanSummary,
@@ -530,9 +530,7 @@ async function executeAdminAgentTool(
               (!q || `${pred.homeTeam} ${pred.awayTeam}`.toLowerCase().includes(q)),
           );
           if (!p) throw new Error('Подходящий активный матч не найден');
-          if (!u.purchasedPredictionIds.includes(p.id)) {
-            u.purchasedPredictionIds.push(p.id);
-          }
+          grantPredictionAccess(u, p.id);
           return `Клиенту ${u.email} открыт бесплатный доступ к матчу «${p.homeTeam} — ${p.awayTeam}»`;
         }
         const delta = Math.round(Number(args.amountRub || 0));

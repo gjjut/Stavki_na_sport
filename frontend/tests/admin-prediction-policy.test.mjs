@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTypeScriptModule } from './load-typescript-module.mjs';
 
-const { deleteUnownedPrediction, assertPredictionsExistForOrder, validatePredictionForPublication } = await loadTypeScriptModule(
+const { deleteUnownedPrediction, assertPredictionsExistForOrder, validatePredictionForPublication, grantPredictionAccess } = await loadTypeScriptModule(
   new URL('../src/server/admin-prediction-policy.ts', import.meta.url),
 );
 
@@ -35,6 +35,18 @@ test('deletion only removes an existing event without client access or active or
     const noAccess = state([order(status)]);
     assert.equal(deleteUnownedPrediction(noAccess, 'pred-1').id, 'pred-1');
   }
+});
+
+test('gifts are tracked on new accounts but do not fabricate a complete legacy history', () => {
+  const fresh = { purchasedPredictionIds: ['pred-1'], grantedPredictionIds: [] };
+  grantPredictionAccess(fresh, 'pred-1');
+  grantPredictionAccess(fresh, 'pred-1');
+  grantPredictionAccess(fresh, 'pred-2');
+  assert.deepEqual(fresh.purchasedPredictionIds, ['pred-1', 'pred-2']);
+  assert.deepEqual(fresh.grantedPredictionIds, ['pred-1', 'pred-2']);
+  const legacy = { purchasedPredictionIds: [] };
+  grantPredictionAccess(legacy, 'pred-1');
+  assert.deepEqual(legacy, { purchasedPredictionIds: ['pred-1'] });
 });
 
 test('checkout rechecks all cart items against the current state', () => {

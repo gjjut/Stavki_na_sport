@@ -3,6 +3,17 @@ import type { OrderTransaction, PredictionRecord, UserAccount } from './types';
 type PredictionOwner = Pick<UserAccount, 'purchasedPredictionIds'>;
 type LinkedOrder = Pick<OrderTransaction, 'status' | 'predictionId' | 'predictionIds'>;
 
+/** Preserve provenance when a client is explicitly gifted access. Legacy histories stay unknown. */
+export function grantPredictionAccess(
+  user: Pick<UserAccount, 'purchasedPredictionIds' | 'grantedPredictionIds'>,
+  predictionId: string,
+): void {
+  if (!user.purchasedPredictionIds.includes(predictionId)) user.purchasedPredictionIds.push(predictionId);
+  if (Array.isArray(user.grantedPredictionIds) && !user.grantedPredictionIds.includes(predictionId)) {
+    user.grantedPredictionIds.push(predictionId);
+  }
+}
+
 /** Check and remove in the same serialized/transactional state mutation. */
 export function deleteUnownedPrediction(state: {
   predictions: PredictionRecord[];

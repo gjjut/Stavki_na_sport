@@ -156,6 +156,7 @@ function createInitialState(): PersistentState {
         telegramChatId: null,
         telegramLinkCode: makeUserTelegramLinkCode('usr_admin_root'),
         purchasedPredictionIds: [],
+        grantedPredictionIds: [],
         referralCode: 'valuex_official',
         referredByUserId: null,
         referredByCode: null,
@@ -403,6 +404,10 @@ function normalizeLoadedState(
       purchasedPredictionIds: Array.isArray(u.purchasedPredictionIds)
         ? u.purchasedPredictionIds
         : [],
+      // Absence means this legacy account may have unrecorded gifts; do not invent a history.
+      grantedPredictionIds: Array.isArray(u.grantedPredictionIds) && u.grantedPredictionIds.every((id) => typeof id === 'string')
+        ? [...new Set(u.grantedPredictionIds)]
+        : undefined,
       referralCode: u.referralCode,
       referredByUserId: u.referredByUserId ?? null,
       referredByCode: u.referredByCode ?? null,
@@ -1166,6 +1171,7 @@ export async function registerUserAccount(params: {
       telegramChatId: null,
       telegramLinkCode: makeUserTelegramLinkCode(newId),
       purchasedPredictionIds: [],
+      grantedPredictionIds: [],
       referralCode,
       referredByUserId,
       referredByCode,

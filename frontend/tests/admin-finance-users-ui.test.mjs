@@ -61,6 +61,22 @@ test('refund shows store-credit terms and previously paid insurance before confi
   assert.equal(refreshes, 1);
 });
 
+test('refund explains and reports access retained for gifts or other purchases', async (t) => {
+  const toasts = [];
+  global.fetch = async () => response({ creditedRub: 1000, retainedPredictionIds: ['pred-1'] });
+  const view = await mount(FinanceTab, {
+    ...callbacks, payouts: [], transactions: [order('gifted')], onToast: (...args) => toasts.push(args),
+  });
+  t.after(view.cleanup);
+  await click(buttonWithText(view.container, 'Возврат на баланс'));
+  const dialog = view.container.querySelector('[role="dialog"]');
+  assert.match(dialog.textContent, /при другой покупке, подарке или неполной истории/);
+  assert.match(dialog.textContent, /возможен двойной возврат/);
+  await click(buttonWithText(dialog, 'Вернуть на баланс'));
+  assert.match(toasts[0][0], /Доступ к событиям сохранён: 1/);
+  assert.equal(toasts[0][1], 'info');
+});
+
 test('top-ups and ambiguous old insurance are not offered for automatic refunds', async (t) => {
   const view = await mount(FinanceTab, {
     ...callbacks, payouts: [],

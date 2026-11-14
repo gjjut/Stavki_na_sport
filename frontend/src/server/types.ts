@@ -37,6 +37,8 @@ export interface UserAccount {
   passwordResetCode?: string | null;
   passwordResetExpiresAt?: string | null;
   purchasedPredictionIds: string[];
+  /** Present only when the history of gifted access is complete from account creation. */
+  grantedPredictionIds?: string[];
 
   // Партнерская программа (реферальные отчисления с разовых и пакетных покупок)
   referralCode: string;

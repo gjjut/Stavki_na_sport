@@ -22,6 +22,7 @@ const guards = require('../src/server/guards.ts');
 guards.requireAdminAccount = async () => ({ id: 'test-admin' });
 const predictionRoute = require('../src/app/api/v1/admin/predictions/route.ts');
 const userRoute = require('../src/app/api/v1/admin/users/route.ts');
+const financeRoute = require('../src/app/api/v1/admin/finance/route.ts');
 const { NextRequest } = require('next/server');
 
 after(() => {
@@ -120,4 +121,32 @@ test('API rejects stale featured and gift targets without changing other data', 
   const state = await readState();
   assert.equal(state.predictions.find((p) => p.id === fixture.prediction.id).isFeatured, true);
   assert.deepEqual(state.users.find((u) => u.id === fixture.buyer.id).purchasedPredictionIds, []);
+});
+
+test('a gift recorded after a purchase survives an admin balance refund', async () => {
+  const fixture = await makePurchaseFixture('gifted-purchase');
+  await mutateState((state) => {
+    state.settings.paymentMode = 'TEST_INSTANT';
+    state.users.find((user) => user.id === fixture.buyer.id).balanceRub = 1000;
+  });
+  const checkout = await initiateOrderCheckout({
+    userId: fixture.buyer.id, kind: 'SINGLE_PREDICTION', predictionId: fixture.prediction.id,
+    paymentMethod: 'internal_balance', originUrl: 'https://example.test',
+  });
+  const gift = await userRoute.PATCH(new NextRequest('http://localhost/api/v1/admin/users', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'GRANT_PREDICTION', userId: fixture.buyer.id, predictionId: fixture.prediction.id }),
+  }));
+  assert.equal(gift.status, 200);
+  const refund = await financeRoute.PATCH(new NextRequest('http://localhost/api/v1/admin/finance', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'REFUND_ORDER', orderId: checkout.order.id }),
+  }));
+  assert.equal(refund.status, 200);
+  assert.deepEqual((await refund.json()).retainedPredictionIds, [fixture.prediction.id]);
+  const state = await readState();
+  const buyer = state.users.find((user) => user.id === fixture.buyer.id);
+  assert.deepEqual(buyer.grantedPredictionIds, [fixture.prediction.id]);
+  assert.deepEqual(buyer.purchasedPredictionIds, [fixture.prediction.id]);
+  assert.equal(buyer.balanceRub, 1000);
 });

@@ -35,14 +35,14 @@ export function quoteBalanceRefund(order: OrderTransaction): BalanceRefundQuote 
   };
 }
 
-type RefundUser = Pick<UserAccount, 'id' | 'balanceRub' | 'purchasedPredictionIds'>;
+type RefundUser = Pick<UserAccount, 'id' | 'balanceRub' | 'purchasedPredictionIds' | 'grantedPredictionIds'>;
 
 /** Mutate only inside the database's serialized/transactional state update. */
 export function applyAdminBalanceRefund(
   state: { transactions: OrderTransaction[]; users: RefundUser[] },
   orderId: string,
   now: string,
-): { creditedRub: number } {
+): { creditedRub: number; retainedPredictionIds: string[] } {
   const order = state.transactions.find((item) => item.id === orderId);
   if (!order) throw new Error('Заказ не найден.');
   const quote = quoteBalanceRefund(order);
@@ -53,16 +53,26 @@ export function applyAdminBalanceRefund(
     throw new Error('Некорректный баланс покупателя; требуется ручная проверка.');
   }
 
-  const predictionIds = order.predictionIds.length
+  const predictionIds = [...new Set(order.predictionIds.length
     ? order.predictionIds
-    : order.predictionId ? [order.predictionId] : [];
+    : order.predictionId ? [order.predictionId] : [])];
+  const retainedPredictionIds = predictionIds.filter((id) => {
+    if (!buyer.purchasedPredictionIds.includes(id)) return false;
+    // Old accounts did not distinguish gifts from purchases, so do not destroy uncertain access.
+    if (!Array.isArray(buyer.grantedPredictionIds) || buyer.grantedPredictionIds.includes(id)) return true;
+    return state.transactions.some((other) =>
+      other.id !== order.id && other.userId === buyer.id && other.status === 'SUCCEEDED' &&
+      (other.predictionId === id || other.predictionIds.includes(id)),
+    );
+  });
+  const retain = new Set(retainedPredictionIds);
   buyer.balanceRub += quote.creditRub;
-  buyer.purchasedPredictionIds = buyer.purchasedPredictionIds.filter((id) => !predictionIds.includes(id));
+  buyer.purchasedPredictionIds = buyer.purchasedPredictionIds.filter((id) => !predictionIds.includes(id) || retain.has(id));
   order.status = 'REFUNDED';
   order.refundDestination = 'BALANCE';
   order.refundBalanceAmountRub = quote.creditRub;
   order.refundedAt = now;
-  return { creditedRub: quote.creditRub };
+  return { creditedRub: quote.creditRub, retainedPredictionIds };
 }
 
 type PayoutUser = Pick<UserAccount, 'id' | 'affiliateBalanceRub'>;
