@@ -37,6 +37,9 @@ export async function PATCH(req: NextRequest) {
       ) {
         u.revsharePercent = Math.min(80, Math.max(0, Math.round(body.revsharePercent)));
       } else if (body.action === 'GRANT_PREDICTION' && body.predictionId) {
+        if (!state.predictions.some((prediction) => prediction.id === body.predictionId)) {
+          throw new Error('Событие не найдено. Обновите данные перед выдачей доступа.');
+        }
         if (!u.purchasedPredictionIds.includes(body.predictionId)) {
           u.purchasedPredictionIds.push(body.predictionId);
         }

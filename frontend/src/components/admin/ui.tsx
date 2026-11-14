@@ -188,7 +188,7 @@ export function ConfirmDialog({
   return (
     <Modal
       open={open}
-      onClose={onCancel}
+      onClose={() => { if (!busy) onCancel(); }}
       title={title}
       description={description}
       footer={

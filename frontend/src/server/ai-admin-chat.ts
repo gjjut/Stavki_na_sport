@@ -22,6 +22,7 @@ import {
   readState,
 } from './database';
 import { sendTelegramChannelAnnouncement } from './integrations';
+import { deleteUnownedPrediction } from './admin-prediction-policy';
 import {
   extractRawAdminAgentActions,
   formatAdminMatchScanSummary,
@@ -334,7 +335,7 @@ async function executeAdminAgentTool(
         const target = state.predictions[idx];
 
         if (subAction === 'DELETE') {
-          state.predictions.splice(idx, 1);
+          deleteUnownedPrediction(state, target.id);
           return `Удален матч «${target.homeTeam} — ${target.awayTeam}»`;
         }
         if (subAction === 'MAKE_FREE') {

@@ -15,6 +15,7 @@ import {
 } from './final-score-verification';
 import { evaluateMarketByScore } from './market-settlement';
 import { withoutLegacyStarterDemoPredictions } from './prediction-data-policy';
+import { assertPredictionsExistForOrder, validatePredictionForPublication } from './admin-prediction-policy';
 import {
   createYooKassaLivePayment,
   sendTelegramChannelAnnouncement,
@@ -1332,6 +1333,8 @@ export async function initiateOrderCheckout(params: {
   }
 
   const createdOrder = await mutateState((state) => {
+    // Deletion can happen after the earlier readState() snapshot while checkout is in flight.
+    assertPredictionsExistForOrder(state, targetIds);
     const order: OrderTransaction = {
       id: orderId,
       idempotenceKey,
@@ -1626,12 +1629,9 @@ export async function createPredictionByAdmin(input: {
   analysisFull: string;
   pushToTelegram?: boolean;
 }): Promise<PredictionRecord> {
+  validatePredictionForPublication(input);
   const odds = Number(input.fixedOdds);
   const stake = Number(input.stakeUnits);
-  if (odds < 1.05 || odds > 50) throw new Error('Укажите реальный коэффициент (1.05 – 50)');
-  if (stake < 0.25 || stake > 10) {
-    throw new Error('Размер флэта должен быть от 0.25 до 10% банка');
-  }
 
   const startsIso = new Date(input.matchStartsAt).toISOString();
   const nowIso = new Date().toISOString();

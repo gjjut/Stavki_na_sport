@@ -5,6 +5,7 @@ import {
   settlePredictionByAdmin,
 } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
+import { deleteUnownedPrediction } from '@/server/admin-prediction-policy';
 import type { MatchStatus, ResultStatus } from '@/server/types';
 
 export async function POST(req: NextRequest) {
@@ -45,10 +46,12 @@ export async function PATCH(req: NextRequest) {
 
     if (body.setFeatured) {
       const updated = await mutateState((state) => {
+        const selected = state.predictions.find((p) => p.id === body.predictionId);
+        if (!selected) throw new Error('Событие не найдено');
         for (const p of state.predictions) {
           p.isFeatured = p.id === body.predictionId;
         }
-        return state.predictions.find((p) => p.id === body.predictionId);
+        return selected;
       });
       return NextResponse.json({ prediction: updated });
     }
@@ -160,7 +163,7 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'Не указан ID события' }, { status: 400 });
     }
     await mutateState((state) => {
-      state.predictions = state.predictions.filter((p) => p.id !== id);
+      deleteUnownedPrediction(state, id);
     });
     return NextResponse.json({ ok: true });
   } catch (err) {
