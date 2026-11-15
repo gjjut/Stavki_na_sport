@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { mutateState, StorageUnavailableError } from '@/server/database';
+import { mutateState, StorageUnavailableError, verifyAndSyncYooKassaOrder } from '@/server/database';
 import { applyAdminBalanceRefund, applyPayoutDecision } from '@/lib/admin-finance-policy';
 import { requireAdminAccount } from '@/server/guards';
 
@@ -23,6 +23,7 @@ export async function PATCH(req: NextRequest) {
         }
       | { action: 'DELETE_PROMO'; promoId: string }
       | { action: 'REFUND_ORDER'; orderId: string }
+      | { action: 'SYNC_PAYMENT'; orderId: string; externalPaymentId?: string }
       | {
           action: 'PROCESS_PAYOUT';
           payoutId: string;
@@ -30,6 +31,12 @@ export async function PATCH(req: NextRequest) {
         };
 
     if (body.action === 'SAVE_PRICING_RULES') {
+      if (!Number.isSafeInteger(body.defaultSinglePriceRub) || body.defaultSinglePriceRub < 50 || body.defaultSinglePriceRub > 10_000_000 ||
+          !Number.isSafeInteger(body.bundle2DiscountPct) || body.bundle2DiscountPct < 0 || body.bundle2DiscountPct > 50 ||
+          !Number.isSafeInteger(body.bundle3DiscountPct) || body.bundle3DiscountPct < 0 || body.bundle3DiscountPct > 60 ||
+          (body.applyToPending !== undefined && typeof body.applyToPending !== 'boolean')) {
+        throw new Error('Укажите целую цену от 50 до 10 000 000 ₽ и скидки в допустимых пределах.');
+      }
       await mutateState((state) => {
         state.settings.defaultSinglePriceRub = Math.max(
           50,
@@ -55,13 +62,13 @@ export async function PATCH(req: NextRequest) {
     }
 
     if (body.action === 'CREATE_PROMO') {
-      const cleanCode = body.code
-        .trim()
-        .toUpperCase()
-        .replace(/[^A-Z0-9_-]/g, '')
-        .slice(0, 24);
-      if (cleanCode.length < 3) {
-        throw new Error('Код промокода должен содержать от 3 символов (латиница/цифры)');
+      const cleanCode = typeof body.code === 'string' ? body.code.trim().toUpperCase() : '';
+      if (!/^[A-Z0-9_-]{3,24}$/.test(cleanCode)) {
+        throw new Error('Код промокода: 3–24 символа латиницы, цифры, дефис или подчёркивание.');
+      }
+      if (!Number.isSafeInteger(body.discountPercent) || body.discountPercent < 5 || body.discountPercent > 60 ||
+          !Number.isSafeInteger(body.maxUses) || body.maxUses < 1 || body.maxUses > 1_000_000) {
+        throw new Error('Скидка должна быть от 5 до 60%, лимит — целым числом от 1 до 1 000 000.');
       }
       await mutateState((state) => {
         if (state.promoCodes.some((c) => c.code === cleanCode)) {
@@ -70,8 +77,8 @@ export async function PATCH(req: NextRequest) {
         state.promoCodes.unshift({
           id: `promo_${randomUUID().slice(0, 8)}`,
           code: cleanCode,
-          discountPercent: Math.min(80, Math.max(5, Math.round(body.discountPercent))),
-          maxUses: Math.max(1, Math.round(body.maxUses || 100)),
+          discountPercent: body.discountPercent,
+          maxUses: body.maxUses,
           usedCount: 0,
           active: true,
           createdAt: new Date().toISOString(),
@@ -82,9 +89,27 @@ export async function PATCH(req: NextRequest) {
 
     if (body.action === 'DELETE_PROMO') {
       await mutateState((state) => {
+        const promo = state.promoCodes.find((item) => item.id === body.promoId);
+        if (!promo) throw new Error('Промокод не найден. Обновите данные.');
+        if (state.transactions.some((order) => order.status === 'PENDING' && order.promoCode?.toUpperCase() === promo.code.toUpperCase())) {
+          throw new Error('Промокод зарезервирован ожидающими заказами. Дождитесь подтверждения или отмены платежей и при необходимости сверьте их с ЮKassa.');
+        }
         state.promoCodes = state.promoCodes.filter((c) => c.id !== body.promoId);
       });
       return NextResponse.json({ ok: true });
+    }
+
+    if (body.action === 'SYNC_PAYMENT') {
+      if (typeof body.orderId !== 'string' || !body.orderId.trim() || body.orderId.length > 128 ||
+          (body.externalPaymentId !== undefined && (typeof body.externalPaymentId !== 'string' ||
+            !body.externalPaymentId.trim() || body.externalPaymentId.length > 128))) {
+        throw new Error('Укажите корректные идентификаторы заказа и платежа.');
+      }
+      const order = await verifyAndSyncYooKassaOrder(body.orderId.trim(), body.externalPaymentId?.trim());
+      if (!order.externalPaymentId && order.status === 'PENDING') {
+        throw new Error('Сначала найдите идентификатор платежа в ЮKassa по номеру заказа и укажите его для проверки. Не отменяйте заказ без сверки.');
+      }
+      return NextResponse.json({ ok: true, order: { id: order.id, status: order.status } });
     }
 
     if (body.action === 'REFUND_ORDER') {

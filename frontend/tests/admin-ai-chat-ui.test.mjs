@@ -90,6 +90,25 @@ test('history is retained on DELETE failure and cleared only after success and c
   assert.doesNotMatch(view.container.querySelector('[role="log"]').textContent, /Проверь статистику/);
 });
 
+test('every assistant message shows its actual response source, including mixed and legacy history', async (t) => {
+  const messages = [
+    { ...assistantMessage, id: 'model', replySource: 'MODEL', modelLabel: 'Provider · real-model' },
+    { ...assistantMessage, id: 'model-actions', replySource: 'MODEL', modelLabel: 'Provider · real-model', executedActions: [{ tool: 'test', ok: true, summary: 'Сервер проверил' }] },
+    { ...assistantMessage, id: 'local', replySource: 'SERVER', modelLabel: 'Provider · real-model' },
+    { ...assistantMessage, id: 'mixed', replySource: 'MIXED', modelLabel: 'Provider · real-model' },
+    { ...assistantMessage, id: 'legacy', replySource: undefined, modelLabel: 'Old label' },
+  ];
+  const view = await mount(AdminAiChatMessages, { messages, sending: false, error: null, setupOpen: false, onOpenSetup: () => {} });
+  t.after(view.cleanup);
+  const text = view.container.querySelector('[role="log"]').textContent;
+  assert.match(text, /Ответ: нейросеть/);
+  assert.match(text, /Текст: нейросеть · действия: сервер/);
+  assert.match(text, /Ответ: алгоритм сайта, не нейросеть/);
+  assert.match(text, /Ответ: нейросеть и дополнение сервера/);
+  assert.match(text, /Источник ответа не установлен \(старая запись\)/);
+  assert.match(text, /Старая отметка модели не подтверждена: Old label/);
+});
+
 test('new messages do not pull the reader away from older history', async (t) => {
   const props = { messages: [userMessage], sending: false, error: null, setupOpen: false, onOpenSetup: () => {} };
   const view = await mount(AdminAiChatMessages, props);
@@ -122,4 +141,61 @@ test('switching providers discards the previous provider model list and balance'
   assert.equal(view.container.querySelector('select#admin-chat-model'), null);
   assert.equal(view.container.querySelector('input#admin-chat-model').value, 'deepseek-v4.1-flash');
   assert.doesNotMatch(view.container.textContent, /Баланс: 35\.00/);
+});
+
+test('an unconfirmed Telegram send is shown as unknown, not as a failed publication', async (t) => {
+  const message = {
+    ...assistantMessage,
+    content: 'Итог не подтверждён: проверьте канал перед повтором.',
+    executedActions: [{ tool: 'telegram_channel_post', ok: false, outcome: 'unknown', summary: 'Итог публикации неизвестен.' }],
+  };
+  const view = await mount(AdminAiChatMessages, { messages: [message], sending: false, error: null, setupOpen: false, onOpenSetup: () => {} });
+  t.after(view.cleanup);
+  const log = view.container.querySelector('[role="log"]');
+  assert.match(log.textContent, /Итог не подтверждён/);
+  assert.match(log.textContent, /Итог публикации неизвестен/);
+  assert.ok(log.querySelector('.bg-amber-50'));
+  assert.doesNotMatch(log.textContent, /Команда не выполнена/);
+});
+
+test('an unconfirmed history write leaves the known post result visible through a parent refresh', async (t) => {
+  let refreshes = 0;
+  const reply = {
+    ...assistantMessage,
+    content: 'В Telegram опубликована сводка. Сохранение истории чата не подтверждено; перед повтором проверьте канал.',
+    executedActions: [{ tool: 'telegram_channel_post', ok: true, summary: 'Сводка опубликована' }],
+  };
+  global.fetch = async () => response({ messages: [userMessage, reply], userMessage, assistantMessage: reply, historyStatus: 'unconfirmed' });
+  const props = { ...baseProps, onRefresh: async () => { refreshes++; } };
+  const view = await mount(AdminAiChatPanel, props);
+  t.after(view.cleanup);
+  await fillTextarea(view.container.querySelector('textarea'), userMessage.content);
+  await click(buttonWithText(view.container, 'Отправить'));
+  assert.equal(refreshes, 0);
+  assert.match(view.container.querySelector('[role="log"]').textContent, /опубликована сводка/);
+  assert.match(view.container.querySelector('[role="log"]').textContent, /Сохранение истории чата не подтверждено/);
+  await view.rerender({ ...props, initialMessages: [] });
+  assert.match(view.container.querySelector('[role="log"]').textContent, /Сохранение истории чата не подтверждено/);
+  assert.equal(view.container.querySelector('[role="alert"]'), null);
+});
+
+test('typing a key does not silently switch providers, and a new origin clears the draft secret', async (t) => {
+  const view = await mount(AdminAiChatPanel, baseProps);
+  t.after(view.cleanup);
+  await click(buttonWithText(view.container, 'Подключить / Проверить ключ API'));
+  await click(buttonWithText(view.container, 'Ollama Cloud (deepseek-v4.1-flash)'));
+  const keyInput = view.container.querySelector('#admin-chat-api-key');
+  const urlInput = view.container.querySelector('#admin-chat-base-url');
+  const fillInput = async (input, value) => act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  await fillInput(keyInput, 'sk-pv-test-draft');
+  assert.equal(buttonWithText(view.container, 'Ollama Cloud (deepseek-v4.1-flash)').getAttribute('aria-pressed'), 'true');
+  assert.equal(urlInput.value, 'https://ollama.com/v1');
+  await click(buttonWithText(view.container, 'PlusVibeAPI.ru (Платный РФ · ₽)'));
+  assert.equal(keyInput.value, '');
+  await fillInput(keyInput, 'sk-pv-test-draft');
+  await fillInput(urlInput, 'https://other.example/v1');
+  assert.equal(keyInput.value, '');
 });

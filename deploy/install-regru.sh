@@ -113,8 +113,8 @@ fi
 set_env_value DATABASE_URL "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATABASE_HOST}:5432/${POSTGRES_DB}" .env
 
 NEXT_PUBLIC_SITE_URL="$(get_env_value NEXT_PUBLIC_SITE_URL .env)"
-if [[ -z "${NEXT_PUBLIC_SITE_URL}" ]]; then
-  set_env_value NEXT_PUBLIC_SITE_URL "http://${SERVER_IP}" .env
+if [[ ! "${NEXT_PUBLIC_SITE_URL}" =~ ^https:// ]]; then
+  echo "ПРЕДУПРЕЖДЕНИЕ: канонический HTTPS-домен не настроен. Не вводите пароли и не начинайте продажи по HTTP." >&2
 fi
 sed -i 's/^TELEGRAM_BOT_TOKEN=.*replace_with.*/TELEGRAM_BOT_TOKEN=/' .env || true
 sed -i 's/^YOOKASSA_SECRET_KEY=.*replace_with.*/YOOKASSA_SECRET_KEY=/' .env || true
@@ -230,7 +230,8 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
+        # Preserve the original host and port for exact origin checks.
+        proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -279,8 +280,12 @@ fi
 echo ""
 
 echo "=================================================================="
-echo " ГОТОВО! Платформа успешно запущена на сервере Reg.ru Cloud!"
-echo " Откройте в браузере: http://${SERVER_IP}"
+echo " ГОТОВО! Платформа запущена на сервере Reg.ru Cloud."
+if [[ "${NEXT_PUBLIC_SITE_URL}" =~ ^https:// ]]; then
+  echo " Адрес сайта: ${NEXT_PUBLIC_SITE_URL}"
+else
+  echo " HTTPS-домен ещё не настроен. Не вводите пароли и персональные данные по HTTP."
+fi
 echo ""
 echo " Чтобы привязать ваш домен и включить бесплатный HTTPS (для ЮKassa):"
 echo "   bash deploy/setup-domain-ssl.sh ваш-домен.ru ваш@email.ru"

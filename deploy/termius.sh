@@ -10,15 +10,56 @@
 # =============================================================================
 
 set -euo pipefail
+umask 077
 
 PROJECT_DIR="/opt/Stavki_na_sport"
 if [[ ! -d "${PROJECT_DIR}" ]]; then
   PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
-BRANCH="arena/57277631-stavki-na-sport"
-SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo '194.67.125.155')"
+SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+ROOT_ENV="${PROJECT_DIR}/.env"
 ENV_FILE="${PROJECT_DIR}/frontend/.env.local"
+
+using_docker() {
+  command -v docker >/dev/null 2>&1 && docker inspect valuex_web >/dev/null 2>&1
+}
+
+# Updating a checkout with local edits, an unknown upstream, or divergent
+# history must stop rather than switch branches or erase work.
+check_update_checkout() {
+  cd "${PROJECT_DIR}"
+  if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+    echo "ОШИБКА: есть локальные или неотслеживаемые изменения. Сохраните их и выполните обновление вручную." >&2
+    return 1
+  fi
+  if ! git symbolic-ref --quiet --short HEAD >/dev/null || ! git rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1; then
+    echo "ОШИБКА: текущей ветке не настроен upstream. Никаких веток автоматически не переключаем." >&2
+    return 1
+  fi
+}
+
+update_current_branch() {
+  check_update_checkout
+  local branch upstream
+  branch="$(git symbolic-ref --short HEAD)"
+  upstream="$(git rev-parse --abbrev-ref '@{upstream}')"
+  echo "🔄 Проверяю текущую ветку ${branch} и ${upstream}..."
+  git fetch --quiet
+  if ! git merge-base --is-ancestor HEAD '@{upstream}'; then
+    echo "ОШИБКА: ветки разошлись или локальная ветка опережает upstream; данные не изменены." >&2
+    return 1
+  fi
+  if [[ "$(git rev-parse HEAD)" != "$(git rev-parse '@{upstream}')" ]]; then
+    echo "Сначала создаётся резервная копия. Проверьте возможность её восстановления."
+    bash "${PROJECT_DIR}/deploy/backup-db.sh"
+    git pull --ff-only
+    bash "${PROJECT_DIR}/deploy/update-regru.sh"
+  else
+    echo "✅ Текущая ветка уже актуальна."
+    fast_start
+  fi
+}
 
 ensure_base_services() {
   systemctl start postgresql >/dev/null 2>&1 || true
@@ -27,11 +68,19 @@ ensure_base_services() {
 }
 
 fast_start() {
+  if using_docker; then
+    echo "🚀 Запуск Docker Compose..."
+    cd "${PROJECT_DIR}"
+    docker compose up -d
+    print_status
+    return
+  fi
   echo "🚀 Запуск служб PostgreSQL + Nginx + PM2..."
   ensure_base_services
   cd "${PROJECT_DIR}/frontend"
   if [[ ! -d ".next" ]]; then
-    echo "📦 Сборка не найдена — запускаю первичную сборку..."
+    echo "📦 Сборка не найдена. Перед обновлением конфигурации создаю резервную копию."
+    bash "${PROJECT_DIR}/deploy/backup-db.sh"
     bash "${PROJECT_DIR}/deploy/update-regru.sh"
     return
   fi
@@ -47,67 +96,58 @@ fast_start() {
 }
 
 smart_start() {
-  echo "⚡ Умная проверка сервера VALUEX (${SERVER_IP})..."
-  ensure_base_services
-  cd "${PROJECT_DIR}"
-
-  git fetch origin "${BRANCH}" >/dev/null 2>&1 || git fetch --all >/dev/null 2>&1 || true
-  CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
-  if [[ "${CURRENT_BRANCH}" != "${BRANCH}" ]]; then
-    git checkout "${BRANCH}" >/dev/null 2>&1 || git checkout -b "${BRANCH}" "origin/${BRANCH}" >/dev/null 2>&1 || true
-  fi
-
-  LOCAL_HASH="$(git rev-parse HEAD 2>/dev/null || echo 'none')"
-  REMOTE_HASH="$(git rev-parse "origin/${BRANCH}" 2>/dev/null || echo "${LOCAL_HASH}")"
-
-  if [[ "${LOCAL_HASH}" != "${REMOTE_HASH}" ]] || [[ ! -d "${PROJECT_DIR}/frontend/.next" ]]; then
-    echo "🔄 Найдено обновление на GitHub (${LOCAL_HASH:0:7} -> ${REMOTE_HASH:0:7}) — обновляю..."
-    git pull --ff-only origin "${BRANCH}" || git reset --hard "origin/${BRANCH}"
-    bash "${PROJECT_DIR}/deploy/update-regru.sh"
-  else
-    echo "✅ Код уже актуален (${LOCAL_HASH:0:7}) — быстрый старт без пересборки!"
-    fast_start
-  fi
+  echo "⚡ Проверка сервера VALUEX (${SERVER_IP:-адрес не определён})..."
+  update_current_branch
 }
 
 full_update() {
-  echo "🔄 Полное обновление с ветки ${BRANCH}..."
-  ensure_base_services
-  cd "${PROJECT_DIR}"
-  git fetch origin "${BRANCH}"
-  git checkout "${BRANCH}" 2>/dev/null || git checkout -b "${BRANCH}" "origin/${BRANCH}"
-  git pull --ff-only origin "${BRANCH}" || git reset --hard "origin/${BRANCH}"
-  bash "${PROJECT_DIR}/deploy/update-regru.sh"
+  update_current_branch
 }
 
 set_plusvibe_key() {
+  local key env_file temp
   echo ""
-  read -r -p "Вставьте ключ PlusVibeAPI (sk-pv-...): " PV_KEY
-  PV_KEY="$(echo "${PV_KEY}" | tr -d '[:space:]')"
-  if [[ -z "${PV_KEY}" ]]; then
-    echo "❌ Ключ пустой — отменено."
-    return
+  read -r -s -p "Вставьте ключ PlusVibeAPI (ввод скрыт): " key
+  echo ""
+  key="$(printf '%s' "${key}" | tr -d '[:space:]')"
+  if [[ ! "${key}" =~ ^sk-pv-[A-Za-z0-9_-]+$ ]]; then
+    echo "❌ Формат ключа не распознан — изменения отменены." >&2
+    return 1
   fi
-  mkdir -p "$(dirname "${ENV_FILE}")"
-  touch "${ENV_FILE}"
-  grep -v '^PLUSVIBE_' "${ENV_FILE}" > "${ENV_FILE}.tmp" || true
-  mv "${ENV_FILE}.tmp" "${ENV_FILE}"
-  cat >> "${ENV_FILE}" <<EOF
-PLUSVIBE_API_KEY=${PV_KEY}
-PLUSVIBE_BASE_URL=https://plusvibeapi.ru/v1
-PLUSVIBE_MODEL=deepseek-v4.1-flash-1017
-EOF
-  cd "${PROJECT_DIR}/frontend"
-  pm2 restart valuex-web --update-env || pm2 start npm --name "valuex-web" -- run start
-  pm2 save >/dev/null 2>&1 || true
-  echo "✅ Ключ PlusVibeAPI сохранен и применен!"
+  env_file="${ENV_FILE}"
+  if using_docker; then env_file="${ROOT_ENV}"; fi
+  mkdir -p "$(dirname "${env_file}")"
+  touch "${env_file}"
+  temp="$(mktemp "${env_file}.XXXXXX")"
+  awk '!/^PLUSVIBE_API_KEY=/' "${env_file}" > "${temp}"
+  printf 'PLUSVIBE_API_KEY=%s\n' "${key}" >> "${temp}"
+  chmod 600 "${temp}"
+  mv "${temp}" "${env_file}"
+  unset key
+  if using_docker; then
+    cd "${PROJECT_DIR}"
+    docker compose up -d web
+  else
+    cd "${PROJECT_DIR}/frontend"
+    pm2 restart valuex-web --update-env || pm2 start npm --name "valuex-web" -- run start
+    pm2 save >/dev/null 2>&1 || true
+  fi
+  echo "✅ Ключ сохранён. Настройки провайдера, сохранённые в админке, могут иметь приоритет."
 }
 
 print_status() {
+  local site_url=''
+  if [[ -f "${ENV_FILE}" ]]; then site_url="$(sed -n 's/^NEXT_PUBLIC_SITE_URL=//p' "${ENV_FILE}" | tail -n 1)"; fi
+  if using_docker && [[ -f "${ROOT_ENV}" ]]; then site_url="$(sed -n 's/^NEXT_PUBLIC_SITE_URL=//p' "${ROOT_ENV}" | tail -n 1)"; fi
   echo "------------------------------------------"
-  echo "🌐 Сервер:   http://${SERVER_IP}"
-  echo "🔐 Админка:  http://${SERVER_IP}/admin"
-  echo "📱 TG-апп:   http://${SERVER_IP}/tg-app"
+  if [[ "${site_url}" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?/?$ ]]; then
+    site_url="${site_url%/}"
+    echo "🌐 Сервер:   ${site_url}"
+    echo "🔐 Админка:  ${site_url}/admin"
+    echo "📱 TG-апп:   ${site_url}/tg-app"
+  else
+    echo "⚠️  HTTPS-домен не настроен. Не вводите пароли и персональные данные по HTTP."
+  fi
   PG_STATE="$(systemctl is-active postgresql 2>/dev/null || echo 'unknown')"
   NG_STATE="$(systemctl is-active nginx 2>/dev/null || echo 'unknown')"
   RAM_INFO="$(free -m 2>/dev/null | awk '/Mem:/ {printf "%s/%s MB", $3, $2}' || echo 'n/a')"
@@ -147,7 +187,14 @@ while true; do
     3) set_plusvibe_key ;;
     4)
       echo "🤖 Запускаю цикл ИИ-автопилота..."
-      curl -fsS http://127.0.0.1:3000/api/v1/cron/autopilot && echo "" || echo "Ошибка вызова"
+      CRON_SECRET=''
+      if [[ -f "${ROOT_ENV}" ]]; then CRON_SECRET="$(sed -n 's/^AUTOPILOT_CRON_SECRET=//p' "${ROOT_ENV}" | tail -n 1)"; fi
+      if [[ ${#CRON_SECRET} -lt 32 ]]; then
+        echo "Секрет расписания не настроен в корневом .env."
+      else
+        curl -fsS -H "Authorization: Bearer ${CRON_SECRET}" http://127.0.0.1:3000/api/v1/cron/autopilot && echo "" || echo "Ошибка вызова"
+      fi
+      unset CRON_SECRET
       ;;
     5) pm2 logs valuex-web --lines 35 --nostream ;;
     6)

@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getRefCodeFromCookies,
-  SESSION_COOKIE_NAME,
+  isSessionSigningAvailable,
   signSessionToken,
 } from '@/server/auth';
-import { registerUserAccount, toSafeSessionUser } from '@/server/database';
+import { registerUserAccount, StorageUnavailableError, toSafeSessionUser } from '@/server/database';
 import { checkRateLimit, extractClientIp } from '@/server/rate-limit';
+import { setSessionCookies } from '@/server/session-cookies';
+import { LEGAL_DOCUMENT_VERSION } from '@/lib/legal-version';
 
 export async function POST(req: NextRequest) {
   try {
@@ -33,30 +35,36 @@ export async function POST(req: NextRequest) {
       displayName: string;
       city?: string;
       refCode?: string;
+      personalDataConsent?: boolean;
+      rulesAccepted?: boolean;
+      legalVersion?: string;
     };
+    if (body.personalDataConsent !== true || body.rulesAccepted !== true || body.legalVersion !== LEGAL_DOCUMENT_VERSION) {
+      return NextResponse.json({ error: 'Подтвердите правила сайта и отдельное согласие на обработку данных. Если страница открыта давно, обновите её.' }, { status: 400 });
+    }
 
-    const refCode = body.refCode?.trim() || (await getRefCodeFromCookies());
+    // Fail before creating an account if a session could not be issued.
+    if (!isSessionSigningAvailable()) {
+      return NextResponse.json({ error: 'Регистрация временно недоступна. Обратитесь в поддержку.' }, { status: 503 });
+    }
+    const refCode = (typeof body.refCode === 'string' ? body.refCode.trim().slice(0, 32) : '') || (await getRefCodeFromCookies());
     const user = await registerUserAccount({
       email: body.email,
       password: body.password,
       displayName: body.displayName,
       city: body.city,
       refCode,
+      legalAcceptance: { personalData: true, rules: true },
     });
 
-    const token = signSessionToken(user.id);
+    const token = signSessionToken(user);
     const res = NextResponse.json({ user: toSafeSessionUser(user) });
-    res.cookies.set(SESSION_COOKIE_NAME, token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 30 * 86400,
-    });
+    setSessionCookies(res, req, token);
     return res;
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка регистрации' },
-      { status: 400 },
+      { status: err instanceof StorageUnavailableError ? 503 : 400 },
     );
   }
 }

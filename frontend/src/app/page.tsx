@@ -34,6 +34,8 @@ import {
 import { BundleCartBar } from '@/components/billing/BundleCartBar';
 import { EquityCurveChart } from '@/components/stats/EquityCurveChart';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
+import { PublicLoadError } from '@/components/layout/PublicLoadError';
+import { MAX_BUNDLE_ITEMS, toggleBundleSelection } from '@/lib/checkout-policy';
 import type { PublicPredictionDto, SportType } from '@/server/types';
 
 const SPORT_TABS: Array<{ id: SportType | 'ALL'; label: string }> = [
@@ -55,49 +57,49 @@ const HOW_IT_WORKS_STEPS = [
   {
     step: '02',
     title: 'Платите разово без подписок',
-    text: 'Никаких платных подписок и привязки карты. Оплата СБП или картой МИР только за выбранную игру или набор со скидкой до 25%.',
+    text: 'Разовая оплата выбранного материала или набора по указанной цене; регулярных списаний нет.' ,
   },
   {
     step: '03',
-    title: 'Ставите у своего букмекера',
-    text: 'Мы показываем простыми словами, какую кнопку нажать в Фонбет, Винлайн, Пари или Бетбум и какую сумму безопасно выделить.',
+    title: 'Изучаете разбор',
+    text: 'Открывайте прогноз и подробности анализа. Результат события и выигрыш не гарантированы.' ,
   },
   {
     step: '04',
-    title: 'Страховка 100% на баланс',
-    text: 'Если застрахованный прогноз не зайдет — полная стоимость покупки автоматически вернется на ваш баланс для следующего матча.',
+    title: 'Начисление по условиям',
+    text: 'По отмеченным платным прогнозам при проигрыше или возврате предусмотрено начисление на баланс сайта. Оно не покрывает проигранную ставку.' ,
   },
 ];
 
 const FAQ_ITEMS = [
   {
     q: 'Вы букмекерская контора или аналитический сайт?',
-    a: 'Мы аналитический сервис, а не букмекер. У нас вы покупаете готовый разбор и точную рекомендацию на матч, а саму ставку делаете самостоятельно в своем привычном легальном приложении (Фонбет, Винлайн, Пари, Бетбум и др.).',
+    a: 'Мы информационно-аналитический сервис, не принимаем ставки и не организуем азартные игры. Любая ставка связана с риском потери денег.',
   },
   {
     q: 'Что именно я увижу сразу после оплаты прогноза?',
-    a: 'На странице матча мгновенно откроются: 1) точное название ставки как в российских БК, 2) понятная подсказка, при каком счете ставка выиграет, 3) рабочий коэффициент и калькулятор суммы ставки в рублях, 4) подробное объяснение аналитика.',
+    a: 'После подтверждения оплаты откроются исход, указанный коэффициент и аналитический разбор. Коэффициенты и условия сторонних площадок могут измениться.',
   },
   {
     q: 'Спишутся ли у меня деньги повторно через неделю или месяц?',
     a: 'Нет, никогда. На сайте принципиально нет подписок, абонементов и автосписаний. Вы платите один раз только за тот матч или набор, который выбрали сами.',
   },
   {
-    q: 'Как работает страховка 100% при минусе?',
-    a: 'На карточках с зеленым значком страховки действует правило: если матч завершился и наша ставка проиграла (или рассчитана возвратом), система сама начислит 100% уплаченной суммы на ваш баланс на сайте. Этими деньгами вы открываете следующий прогноз без доплат.',
+    q: 'Как работает начисление по страховке?',
+    a: 'Для отмеченных платных прогнозов при расчёте как проигрыш или возврат начисляется стоимость прогноза на баланс сайта. Для набора — округлённая доля уплаченной суммы. Это не возврат на карту и не компенсация проигранной ставки; законные права на возврат денег сохраняются.',
   },
   {
     q: 'Я новичок и путаюсь в словах «фора» и «тотал» — я разберусь?',
-    a: 'Да! Внутри каждого открытого прогноза есть специальная шпаргалка простыми словами: в какой раздел зайти у букмекера, какую кнопку нажать и при каком счете на табло вы забираете выигрыш.',
+    a: 'В открытом материале есть пояснение к исходу. Правила расчёта и названия рынков необходимо дополнительно проверять у соответствующей площадки.',
   },
   {
-    q: 'Откуда уверенность, что вы не рисуете статистику побед после матчей?',
-    a: 'До стартового свистка каждый прогноз запечатывается цифровым кодом SHA-256. После окончания встречи все матчи (и плюсовые, и минусовые) открываются в архиве — любой посетитель может нажать кнопку проверки и убедиться, что исход не менялся.',
+    q: 'Что показывает проверка SHA-256?',
+    a: 'Можно сравнить текущие данные прогноза с опубликованным отпечатком. Чтобы независимо проверить его неизменность, сохраните отпечаток вне сайта до начала матча: сам сайт не подтверждает время публикации.',
   },
 ];
 
 export default function HomePage() {
-  const { data, loading, reload } = usePublicPlatform();
+  const { data, loading, error, reload } = usePublicPlatform();
   const [sportFilter, setSportFilter] = useState<SportType | 'ALL'>('ALL');
   const [selectedBundleIds, setSelectedBundleIds] = useState<string[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<CheckoutModalTarget | null>(
@@ -140,11 +142,8 @@ export default function HomePage() {
 
   const toggleBundleItem = (prediction: PublicPredictionDto) => {
     if (!prediction.isLocked || prediction.salesClosed) return;
-    setSelectedBundleIds((prev) =>
-      prev.includes(prediction.id)
-        ? prev.filter((id) => id !== prediction.id)
-        : [...prev, prediction.id],
-    );
+    const eligible = activeList.filter((p) => p.isLocked && !p.salesClosed).map((p) => p.id);
+    setSelectedBundleIds((prev) => toggleBundleSelection(prev, prediction.id, eligible));
   };
 
   const selectedBundleItems = activeList.filter(
@@ -223,6 +222,7 @@ export default function HomePage() {
       brand={data?.brand ?? null}
       onViewerChange={() => reload()}
     >
+      <PublicLoadError message={error} onRetry={() => void reload()} />
       {/* 1. ГЛАВНЫЙ ЭКРАН + ГЛАВНЫЙ МАТЧ ДНЯ */}
       <section className="hero-surface text-white">
         <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-12 lg:px-8 lg:py-14">
@@ -242,8 +242,7 @@ export default function HomePage() {
               </h1>
 
               <p className="mt-3.5 max-w-2xl text-sm leading-relaxed text-slate-300 sm:text-base">
-                Выбирайте интересную игру, получайте точную рекомендацию простыми словами для Фонбет, Винлайн, Пари или Бетбум, а если прогноз не зайдет — мы вернем{' '}
-                <strong className="font-bold text-white">100% стоимости</strong> на ваш баланс для следующего матча.
+                Выбирайте матч и изучайте аналитический разбор. Для отмеченных платных прогнозов предусмотрено начисление на баланс по условиям оферты. <strong className="font-bold text-white">Выигрыш не гарантирован; любая ставка связана с риском.</strong>
               </p>
 
               {/* Кнопки первого экрана */}
@@ -312,12 +311,12 @@ export default function HomePage() {
 
                 <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3.5 py-3">
                   <div className="text-[11px] font-medium text-slate-400">
-                    Страховка
+                    Начисление
                   </div>
-                  <div className="mt-0.5 font-mono text-lg font-black text-white sm:text-xl">
-                    100%
+                  <div className="mt-0.5 text-lg font-black text-white sm:text-xl">
+                    На баланс
                   </div>
-                  <div className="text-[10px] text-slate-400">Возврат на счет</div>
+                  <div className="text-[10px] text-slate-400">Только по условиям</div>
                 </div>
               </div>
             </div>
@@ -352,10 +351,10 @@ export default function HomePage() {
                     {featuredEvent.homeTeam} — {featuredEvent.awayTeam}
                   </Link>
 
-                  {featuredEvent.insuredOnLoss && (
+                  {featuredEvent.insuredOnLoss && featuredEvent.accessTier === 'PAID_SINGLE' && (
                     <div className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-bold text-emerald-300">
                       <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
-                      <span>Если ставка не зайдет — вернем 100% на баланс</span>
+                      <span>Начисление на баланс по условиям оферты</span>
                     </div>
                   )}
 
@@ -382,7 +381,7 @@ export default function HomePage() {
                       className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 sm:ml-auto"
                     >
                       <ShieldCheck className="h-3.5 w-3.5" />
-                      <span>SHA-256 защита</span>
+                      <span>Отпечаток SHA-256</span>
                     </button>
                   </div>
 
@@ -547,7 +546,7 @@ export default function HomePage() {
               <span>Скидка за набор:</span>
             </span>
             <span>
-              2 матча со скидкой <strong>−{bundle2Pct}%</strong> или 3 матча со скидкой{' '}
+              2 прогноза со скидкой <strong>−{bundle2Pct}%</strong> или 3 и более со скидкой{' '}
               <strong>−{bundle3Pct}%</strong> (кнопка «+ В набор»)
             </span>
           </div>
@@ -559,7 +558,7 @@ export default function HomePage() {
           >
             <span className="inline-flex items-center gap-1.5">
               <Tag className="h-3.5 w-3.5 text-blue-600" />
-              <span>Скидка −15%:</span>
+              <span>Проверить промокод:</span>
             </span>
             <span className="inline-flex items-center gap-1.5">
               <code className="rounded bg-white px-1.5 py-0.5 font-mono font-black text-slate-950 shadow-2xs">
@@ -580,10 +579,10 @@ export default function HomePage() {
             <div className="min-w-0">
               <div className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/20 px-2.5 py-0.5 text-[11px] font-bold text-blue-300">
                 <Sparkles className="h-3.5 w-3.5 shrink-0 text-blue-400" />
-                <span>Набор дня · Скидка −{bundle3Pct}% + страховка 100%</span>
+                <span>Набор дня · Скидка −{bundle3Pct}%</span>
               </div>
               <div className="mt-1.5 text-base font-black sm:text-lg">
-                Заберите сразу 3 лучших прогноза дня дешевле, чем по одному
+                Три прогноза в одном наборе
               </div>
               <div className="mt-1 line-clamp-2 text-xs text-slate-300">
                 В наборе:{' '}
@@ -636,7 +635,7 @@ export default function HomePage() {
               Прогнозы на ближайшие матчи
             </h2>
             <p className="mt-1 text-xs text-slate-500 sm:text-sm">
-              Выберите матч — точная ставка, рабочий коэффициент и разбор откроются мгновенно после оплаты
+              Выберите матч — указанный исход, коэффициент и разбор откроются после подтверждения оплаты
             </p>
           </div>
 
@@ -694,6 +693,7 @@ export default function HomePage() {
                   onVerifyHash={setHashModalItem}
                   inBundle={selectedBundleIds.includes(prediction.id)}
                   onToggleBundle={toggleBundleItem}
+                  bundleLimitReached={selectedBundleItems.length >= MAX_BUNDLE_ITEMS}
                 />
               ))}
             </div>
@@ -752,13 +752,13 @@ export default function HomePage() {
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
                   <span>
-                    Автоматический возврат 100% на счет сайта по застрахованным играм
+                    Начисление на баланс по отмеченным прогнозам и условиям оферты
                   </span>
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
                   <span>
-                    Криптографическая защита SHA-256 каждого прогноза до начала встречи
+                    Контрольная сумма SHA-256 для сравнения данных прогноза
                   </span>
                 </li>
               </ul>
@@ -768,7 +768,7 @@ export default function HomePage() {
                   href="/stats"
                   className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-slate-800"
                 >
-                  <span>Посчитать прибыль в рублях</span>
+                  <span>Посмотреть расчёт в рублях</span>
                   <ArrowRight className="h-3.5 w-3.5" />
                 </Link>
                 {data?.brand.freeTelegramUrl && (
@@ -930,6 +930,7 @@ export default function HomePage() {
       <YooKassaCheckoutModal
         target={checkoutTarget}
         viewer={data?.viewer ?? null}
+        paymentMode={data?.brand.paymentMode}
         onClose={() => setCheckoutTarget(null)}
         onSuccess={async () => {
           setSelectedBundleIds([]);

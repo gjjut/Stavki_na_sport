@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ConfirmDialog } from './ui';
 import { AiAutopilotConfigForm } from './AiAutopilotConfig';
 import { AiAutopilotDrafts } from './AiAutopilotDrafts';
@@ -34,10 +34,19 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
   onRefresh,
   onToast,
 }) => {
-  const [draftConfig, setDraftConfig] = useState<AiAutopilotConfig>(config);
+  const [draftConfig, setDraftConfigState] = useState<AiAutopilotConfig>(config);
+  const dirtyRef = useRef(false);
+  const [configDirty, setConfigDirty] = useState(false);
+  const setDraftConfig = useCallback<React.Dispatch<React.SetStateAction<AiAutopilotConfig>>>((update) => {
+    dirtyRef.current = true;
+    setConfigDirty(true);
+    setDraftConfigState(update);
+  }, []);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [modeBusy, setModeBusy] = useState(false);
+  const effectiveBusyAction = busyAction ?? (modeBusy ? 'MODE' : null);
   const [diagnostics, setDiagnostics] = useState<AiDiagnosticsReport | null>(null);
-  const [confirmation, setConfirmation] = useState<{ type: 'draft'; id: string } | { type: 'logs' } | null>(null);
+  const [confirmation, setConfirmation] = useState<{ type: 'draft'; id: string } | { type: 'logs' | 'legacy' } | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [llmCheckStatus, setLlmCheckStatus] = useState<{
     ok: boolean;
@@ -45,15 +54,28 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
   } | null>(null);
 
   useEffect(() => {
-    setDraftConfig(config);
+    if (!dirtyRef.current) {
+      setDraftConfigState(config);
+    } else {
+      // Refresh status without discarding edits that have not been saved.
+      setDraftConfigState((draft) => ({
+        ...draft,
+        mode: config.mode,
+        llmApiKeyConfigured: config.llmApiKeyConfigured,
+        totalGeneratedCount: config.totalGeneratedCount,
+        lastFeedSource: config.lastFeedSource,
+        lastMorningRunDate: config.lastMorningRunDate,
+        lastEveningRunDate: config.lastEveningRunDate,
+        lastScanAt: config.lastScanAt,
+        lastSettleAt: config.lastSettleAt,
+      }));
+    }
   }, [config]);
 
   const saveModeImmediately = async (nextMode: AiAutopilotMode) => {
-    const previousConfig = draftConfig;
-    setBusyAction('MODE');
+    if (modeBusy) return;
+    setModeBusy(true);
     try {
-      const updated = { ...draftConfig, mode: nextMode };
-      setDraftConfig(updated);
       const res = await fetch('/api/v1/admin/autopilot', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -61,19 +83,20 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
       });
       const json = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(json.error || `Не удалось сохранить режим (HTTP ${res.status})`);
+      // A mode change is independent of unsaved form edits and of any running scan.
+      setDraftConfigState((current) => ({ ...current, mode: nextMode }));
       onToast(
         nextMode === 'FULL_AUTOPILOT'
-          ? 'Полный автопилот 24/7 включён.'
+          ? 'Полный режим включён; выпуски зависят от линии, модели и планировщика.'
           : nextMode === 'MODERATION'
             ? 'Включен режим премодерации черновиков ИИ.'
-            : 'ИИ-Автопилот поставлен на паузу.',
+            : 'Пауза сохранена: не завершившиеся сборы остановятся до создания оставшихся событий. Уже опубликованное не отменяется.',
       );
-      await onRefresh();
+      try { await onRefresh(); } catch { onToast('Режим сохранён, но панель не обновилась. Обновите страницу.', 'error'); }
     } catch (err) {
-      setDraftConfig(previousConfig);
       onToast(err instanceof Error ? err.message : 'Не удалось сохранить режим автопилота', 'error');
     } finally {
-      setBusyAction(null);
+      setModeBusy(false);
     }
   };
 
@@ -83,13 +106,15 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
     if (provider === 'PLUSVIBE') {
       setDraftConfig({
         ...draftConfig,
+        llmApiKey: '',
         llmProvider: 'PLUSVIBE',
         llmBaseUrl: 'https://plusvibeapi.ru/v1',
-        llmModel: 'deepseek-v4.1-flash-1017',
+        llmModel: 'deepseek-v4.1-flash',
       });
     } else if (provider === 'OLLAMA') {
       setDraftConfig({
         ...draftConfig,
+        llmApiKey: '',
         llmProvider: 'OLLAMA',
         llmBaseUrl: 'https://ollama.com/v1',
         llmModel: 'deepseek-v4.1-flash',
@@ -97,6 +122,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
     } else if (provider === 'ORCAROUTER') {
       setDraftConfig({
         ...draftConfig,
+        llmApiKey: '',
         llmProvider: 'ORCAROUTER',
         llmBaseUrl: 'https://www.orcarouter.ai/v1',
         llmModel: 'deepseek/deepseek-v4.1-flash-free',
@@ -104,6 +130,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
     } else if (provider === 'DEEPSEEK') {
       setDraftConfig({
         ...draftConfig,
+        llmApiKey: '',
         llmProvider: 'DEEPSEEK',
         llmBaseUrl: 'https://api.deepseek.com/v1',
         llmModel: 'deepseek-chat',
@@ -111,6 +138,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
     } else if (provider === 'OPENROUTER') {
       setDraftConfig({
         ...draftConfig,
+        llmApiKey: '',
         llmProvider: 'OPENROUTER',
         llmBaseUrl: 'https://openrouter.ai/api/v1',
         llmModel: 'deepseek/deepseek-chat',
@@ -118,6 +146,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
     } else if (provider === 'RU_GATEWAY') {
       setDraftConfig({
         ...draftConfig,
+        llmApiKey: '',
         llmProvider: 'RU_GATEWAY',
         llmBaseUrl: 'https://api.proxyapi.ru/openai/v1',
         llmModel: 'gpt-4o-mini',
@@ -125,6 +154,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
     } else if (provider === 'OPENAI') {
       setDraftConfig({
         ...draftConfig,
+        llmApiKey: '',
         llmProvider: 'OPENAI',
         llmBaseUrl: 'https://api.openai.com/v1',
         llmModel: 'gpt-4o-mini',
@@ -132,6 +162,7 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
     } else {
       setDraftConfig({
         ...draftConfig,
+        llmApiKey: '',
         llmProvider: 'BUILTIN_QUANT',
       });
     }
@@ -164,7 +195,9 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         keySaved?: boolean;
         keySavedNow?: boolean;
         keyConfigured?: boolean;
+        configSaved?: boolean;
       };
+      if (!res.ok) throw new Error(json.error || `Не удалось проверить настройки (HTTP ${res.status})`);
       if (Array.isArray(json.availableModels) && json.availableModels.length > 0) {
         setAvailableModels(json.availableModels);
       }
@@ -190,9 +223,10 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
           : 'Ключ на сервере не сохранён.';
       setLlmCheckStatus({
         ok: Boolean(json.ok),
-        message: `${json.message || json.error || 'Проверка завершена'} ${keyPersistenceNote}`,
+        message: `${json.message || json.error || 'Проверка завершена'} ${keyPersistenceNote}${json.configSaved ? ' Выбранные провайдер, адрес и модель сохранены.' : ''}`,
       });
       if (
+        json.configSaved ||
         json.keySavedNow ||
         json.ok ||
         (Array.isArray(json.availableModels) && json.availableModels.length > 0)
@@ -225,7 +259,25 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
       const res = await fetch('/api/v1/admin/autopilot', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: draftConfig }),
+        // Never send counters, timestamps or a stale mode back as editable settings.
+        body: JSON.stringify({ config: {
+          llmProvider: draftConfig.llmProvider,
+          llmBaseUrl: draftConfig.llmBaseUrl,
+          llmApiKey: draftConfig.llmApiKey,
+          llmModel: draftConfig.llmModel,
+          sportsEnabled: draftConfig.sportsEnabled,
+          morningHourMsk: draftConfig.morningHourMsk,
+          eveningHourMsk: draftConfig.eveningHourMsk,
+          maxPicksPerRun: draftConfig.maxPicksPerRun,
+          minActiveOnStorefront: draftConfig.minActiveOnStorefront,
+          minValueEdgePct: draftConfig.minValueEdgePct,
+          minAgentConfidencePct: draftConfig.minAgentConfidencePct ?? 60,
+          defaultAiPriceRub: draftConfig.defaultAiPriceRub,
+          freeEveryNthPick: draftConfig.freeEveryNthPick,
+          insureAiPicks: draftConfig.insureAiPicks,
+          autoSettleEnabled: draftConfig.autoSettleEnabled,
+          openSourceResearchEnabled: draftConfig.openSourceResearchEnabled !== false,
+        } }),
       });
       const json = (await res.json().catch(() => ({}))) as {
         error?: string;
@@ -233,18 +285,20 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
       };
       if (!res.ok) throw new Error(json.error || `Не удалось сохранить настройки (HTTP ${res.status})`);
       if (json.keySavedNow) {
-        setDraftConfig((prev) => ({
+        setDraftConfigState((prev) => ({
           ...prev,
           llmApiKey: '',
           llmApiKeyConfigured: true,
         }));
       }
+      dirtyRef.current = false;
+      setConfigDirty(false);
       onToast(
         json.keySavedNow
           ? 'Настройки сохранены. Новый API-ключ отдельно сохранён на сервере; доступность модели этим действием не проверялась.'
           : 'Настройки ИИ-Автопилота и расписания сохранены!',
       );
-      await onRefresh();
+      try { await onRefresh(); } catch { onToast('Настройки сохранены, но панель не обновилась. Обновите страницу.', 'error'); }
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'Не удалось сохранить настройки автопилота', 'error');
     } finally {
@@ -265,24 +319,20 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         scannedCount?: number;
         publishedDirectly?: boolean;
         feedSource?: string;
+        warning?: string;
         error?: string;
       };
       if (!res.ok) throw new Error(json.error || `Сканирование не выполнено (HTTP ${res.status})`);
       const createdCount = Number(json.createdCount) || 0;
-      if (createdCount > 0) {
-        onToast(
-          json.publishedDirectly
-            ? `Опубликовано прогнозов: ${createdCount} (${json.feedSource}).`
-            : `Подготовлено черновиков: ${createdCount} (${json.feedSource}).`,
-        );
-      } else {
-        onToast(
-          `Прогнозов не создано: реальных кандидатов, прошедших проверку, нет (обработано событий: ${Number(json.scannedCount) || 0}; ${json.feedSource}).`,
-        );
-      }
-      await onRefresh();
+      const message = createdCount > 0
+        ? json.publishedDirectly
+          ? `Опубликовано прогнозов: ${createdCount} (${json.feedSource}). Статус анонсов Telegram смотрите в журнале и канале.`
+          : `Подготовлено черновиков: ${createdCount} (${json.feedSource}).`
+        : `Прогнозов не создано (обработано событий: ${Number(json.scannedCount) || 0}; ${json.feedSource}). Причины — в журнале.`;
+      onToast(`${message}${json.warning ? ` ${json.warning}` : ''}`, json.warning ? 'error' : undefined);
+      try { await onRefresh(); } catch { onToast('Результат получен, но панель не обновилась. Обновите страницу.', 'error'); }
     } catch (err) {
-      onToast(err instanceof Error ? err.message : 'Не удалось выполнить сканирование', 'error');
+      onToast(`${err instanceof Error ? err.message : 'Нет ответа сервера'}. Итог сбора не подтверждён: проверьте витрину и черновики перед повтором.`, 'error');
     } finally {
       setBusyAction(null);
     }
@@ -300,17 +350,17 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         settledCount?: number;
         compensatedBuyers?: number;
         checkedCount?: number;
+        warning?: string;
         error?: string;
       };
       if (!res.ok) throw new Error(json.error || `Сверка результатов не выполнена (HTTP ${res.status})`);
-      onToast(
-        (json.settledCount ?? 0) > 0
-          ? `По подтверждённым источникам рассчитано матчей: ${json.settledCount}; страховок выплачено: ${json.compensatedBuyers ?? 0}.`
-          : `Новых расчётов нет. Проверено событий: ${json.checkedCount ?? 0}; неподтверждённые и неоднозначные исходы оставлены без расчёта.`,
-      );
+      const message = (json.settledCount ?? 0) > 0
+        ? `По подтверждённым источникам рассчитано матчей: ${json.settledCount}; начислений страховки на баланс: ${json.compensatedBuyers ?? 0}. Статус Telegram смотрите в журнале и канале.`
+        : `Новых расчётов нет. Проверено событий: ${json.checkedCount ?? 0}; неподтверждённые и неоднозначные исходы оставлены без расчёта.`;
+      onToast(`${message}${json.warning ? ` ${json.warning}` : ''}`, json.warning ? 'error' : undefined);
       await onRefresh();
     } catch (err) {
-      onToast(err instanceof Error ? err.message : 'Не удалось выполнить сверку результатов', 'error');
+      onToast(`${err instanceof Error ? err.message : 'Нет ответа сервера'}. Проверьте результаты и балансы перед повтором.`, 'error');
     } finally {
       setBusyAction(null);
     }
@@ -351,23 +401,23 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         createdCount?: number;
         scannedCount?: number;
         feedSource?: string;
+        warning?: string;
         error?: string;
       };
       if (res.ok) {
         const removedCount = Number(json.removedDemoCount) || 0;
         const createdCount = Number(json.createdCount) || 0;
         const scannedCount = Number(json.scannedCount) || 0;
-        onToast(
-          createdCount > 0
-            ? `Удалено демо-карточек: ${removedCount}. Сканировано: ${scannedCount}; опубликовано реальных прогнозов: ${createdCount} (${json.feedSource}).`
-            : `Удалено демо-карточек: ${removedCount}. Реальных прогнозов не опубликовано: сканирование проверило ${scannedCount} событий и не нашло прошедших кандидатов (${json.feedSource}).`,
-        );
-        await onRefresh();
+        const message = createdCount > 0
+          ? `Удалено демо-карточек: ${removedCount}. Сканировано: ${scannedCount}; опубликовано прогнозов: ${createdCount} (${json.feedSource}).`
+          : `Удалено демо-карточек: ${removedCount}. Реальных прогнозов не опубликовано; проверено событий: ${scannedCount} (${json.feedSource}).`;
+        onToast(`${message}${json.warning ? ` ${json.warning}` : ''}`, json.warning ? 'error' : undefined);
+        try { await onRefresh(); } catch { onToast('Результат получен, но панель не обновилась. Обновите страницу.', 'error'); }
       } else {
-        onToast(json.error || `Не удалось заменить демо-карточки (HTTP ${res.status})`, 'error');
+        onToast(`${json.error || `Ошибка операции (HTTP ${res.status})`}. Проверьте витрину и журнал перед повтором: часть операции могла выполниться.`, 'error');
       }
     } catch (err) {
-      onToast(err instanceof Error ? err.message : 'Не удалось заменить демо-карточки', 'error');
+      onToast(`${err instanceof Error ? err.message : 'Нет ответа сервера'}. Проверьте витрину и журнал перед повтором: часть операции могла выполниться.`, 'error');
     } finally {
       setBusyAction(null);
     }
@@ -458,12 +508,23 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'BROADCAST_DAILY_DIGEST' }),
       });
-      const json = (await res.json().catch(() => ({}))) as { error?: string };
-      if (!res.ok) throw new Error(json.error || 'Не удалось отправить сводку в Telegram');
-      onToast('Сводка свежих матчей и открытой статистики опубликована в Telegram-канале!');
-      await onRefresh();
-    } catch (err) {
-      onToast(err instanceof Error ? err.message : 'Не удалось отправить сводку в Telegram', 'error');
+      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; warning?: string };
+      if (!res.ok) {
+        onToast(json.error || 'Ответ сервера не получен. Итог публикации неизвестен: проверьте канал перед повтором.', 'error');
+        return;
+      }
+      if (json.ok !== true) {
+        onToast('Подтверждение публикации не получено. Проверьте канал перед повтором.', 'error');
+        return;
+      }
+      onToast(`Сводка опубликована в Telegram-канале!${json.warning ? ` ${json.warning}` : ''}`);
+      try {
+        await onRefresh();
+      } catch {
+        onToast('Публикация подтверждена, но панель не обновилась. Обновите страницу.', 'error');
+      }
+    } catch {
+      onToast('Нет ответа сервера. Итог публикации неизвестен: проверьте канал перед повтором.', 'error');
     } finally {
       setBusyAction(null);
     }
@@ -498,20 +559,21 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         config={config}
         aiStats={aiStats}
         draftsCount={drafts.length}
-        busyAction={busyAction}
+        busyAction={effectiveBusyAction}
+        modeBusy={modeBusy}
         diagnostics={diagnostics}
         isFullAutopilot={isFullAutopilot}
         onSaveMode={saveModeImmediately}
         onRunScan={handleRunScan}
         onRunSettlement={handleRunSettlement}
         onRunDiagnostics={handleRunDiagnostics}
-        onReplaceDemo={handleReplaceDemoWithReal}
+        onReplaceDemo={() => setConfirmation({ type: 'legacy' })}
         onBroadcastDigest={handleBroadcastDigest}
       />
 
       <AiAutopilotDrafts
         drafts={drafts}
-        busyAction={busyAction}
+        busyAction={effectiveBusyAction}
         onApprove={handleApproveDraft}
         onDelete={(id) => setConfirmation({ type: 'draft', id })}
         onApproveAll={handleApproveAllDrafts}
@@ -521,29 +583,34 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
         <AiAutopilotConfigForm
           draftConfig={draftConfig}
           setDraftConfig={setDraftConfig}
-          busyAction={busyAction}
+          busyAction={effectiveBusyAction}
+          configDirty={configDirty}
           availableModels={availableModels}
           llmCheckStatus={llmCheckStatus}
           onApplyProviderPreset={handleApplyProviderPreset}
+          onConnectionChange={() => { setAvailableModels([]); setLlmCheckStatus(null); }}
           onTestLlm={handleTestLlmAndFetchModels}
           onToggleSport={toggleSport}
           onSaveConfig={handleSaveConfig}
         />
-        <AiAutopilotLogs logs={logs} busyAction={busyAction} onClearLogs={() => setConfirmation({ type: 'logs' })} />
+        <AiAutopilotLogs logs={logs} busyAction={effectiveBusyAction} onClearLogs={() => setConfirmation({ type: 'logs' })} />
       </div>
 
       <ConfirmDialog
         open={confirmation !== null}
-        title={confirmation?.type === 'draft' ? 'Удалить черновик?' : 'Очистить журнал?'}
+        title={confirmation?.type === 'draft' ? 'Удалить черновик?' : confirmation?.type === 'legacy' ? 'Очистить старые демо и запустить выпуск?' : 'Очистить журнал?'}
         description={confirmation?.type === 'draft'
           ? 'Черновик будет удалён без публикации. Это действие нельзя отменить.'
-          : 'Все записи журнала автопилота будут удалены. Это действие нельзя отменить.'}
-        confirmLabel={confirmation?.type === 'draft' ? 'Удалить' : 'Очистить'}
-        busy={busyAction !== null}
-        onCancel={() => { if (!busyAction) setConfirmation(null); }}
+          : confirmation?.type === 'legacy'
+            ? 'Удаляются только старые демо без привязки к доступу и какой-либо истории заказов. Остальные скрыты с витрины. Затем запустится проверенный сбор с возможной немедленной публикацией, даже если автопилот на паузе.'
+            : 'Все записи журнала автопилота будут удалены. Это действие нельзя отменить.'}
+        confirmLabel={confirmation?.type === 'draft' ? 'Удалить' : confirmation?.type === 'legacy' ? 'Очистить и запустить выпуск' : 'Очистить'}
+        busy={effectiveBusyAction !== null}
+        onCancel={() => { if (!effectiveBusyAction) setConfirmation(null); }}
         onConfirm={() => {
-          if (busyAction || !confirmation) return;
+          if (effectiveBusyAction || !confirmation) return;
           if (confirmation.type === 'draft') void handleDeleteDraft(confirmation.id);
+          else if (confirmation.type === 'legacy') { setConfirmation(null); void handleReplaceDemoWithReal(); }
           else void handleClearLogs();
         }}
       />

@@ -13,7 +13,7 @@ export function AiAutopilotDiagnostics({ diagnostics }: { diagnostics: AiDiagnos
         Отчет самодиагностики · Серверное время: {diagnostics.mskTimeFormatted}
       </span>
       <span className="font-mono text-blue-300">
-        Следующий плановый слот: {diagnostics.nextSlotLabel}
+        Ближайшее время по расписанию (если полный режим включён): {diagnostics.nextSlotLabel}
       </span>
     </div>
     <div className="grid gap-2.5 sm:grid-cols-2">
@@ -44,7 +44,7 @@ export function AiAutopilotDiagnostics({ diagnostics }: { diagnostics: AiDiagnos
       <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-950/30 p-3.5">
         <div className="mb-2.5 flex items-center justify-between gap-2 text-xs font-bold text-emerald-300">
           <span>
-            Живая проверка: реальные предстоящие матчи в линии прямо сейчас
+            Найденные события при проверке (не гарантия допуска к выпуску)
           </span>
           <span className="rounded-md bg-emerald-500/20 px-2 py-0.5 font-mono text-[10px] text-emerald-200">
             Источник: {diagnostics.sampleMatches[0].source}

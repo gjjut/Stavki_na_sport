@@ -8,15 +8,20 @@ import {
 } from './database';
 import {
   gatherMatchOpenSourceIntel,
+  plusVibeSearchConnection,
   type OpenSourceMatchIntel,
 } from './ai-research';
-import { sendTelegramChannelAnnouncement } from './integrations';
+import { escapeTelegramHtml, sendTelegramChannelAnnouncement } from './integrations';
+import type { TelegramChannelSendResult } from './integrations';
+import type { PersistentState } from './database';
+import { assertLlmKeyMatchesProvider, normalizeLlmBaseUrl } from './llm-config-policy';
 import { hasSameVerifiedBookmakerQuote } from './bookmaker-line';
 import { runAgentCommittee, buildAgentAnalysis, type AgentCandidateInput } from './ai-agents';
 import { normalizeFonbetTeamImageUrl } from './fonbet-team-logos';
 import { evaluateMarketByScore } from './market-settlement';
-import { withoutLegacyStarterDemoPredictions } from './prediction-data-policy';
+import { isActiveStorefrontPrediction, isLegacyStarterDemoPrediction, removeUnownedLegacyDemoPredictions } from './prediction-data-policy';
 import { shouldPublishImmediately } from './autopilot-publish-policy';
+import { assertAutopilotConfigUnchanged, assertNewAutopilotFixture, AutopilotCommitConflict, sameFixtureByNamesAndTime } from './autopilot-commit-policy';
 import {
   localizeTeamName,
   matchTeamPairOrder,
@@ -261,29 +266,6 @@ const TIER1_LEAGUE_KEYWORDS = [
 function parsePositiveTeamId(raw: unknown): number | null {
   const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
   return Number.isSafeInteger(value) && value > 0 ? value : null;
-}
-
-function sameFixtureByNamesAndTime(
-  candidate: Pick<ScannedFixtureCandidate, 'sport' | 'homeTeam' | 'awayTeam' | 'matchStartsAt'>,
-  existing: Pick<PredictionRecord, 'sport' | 'homeTeam' | 'awayTeam' | 'matchStartsAt'> | Pick<AiPredictionDraft, 'sport' | 'homeTeam' | 'awayTeam' | 'matchStartsAt'>,
-): boolean {
-  if (candidate.sport !== existing.sport) return false;
-  if (
-    matchTeamPairOrder(
-      candidate.homeTeam,
-      candidate.awayTeam,
-      existing.homeTeam,
-      existing.awayTeam,
-      candidate.sport,
-    ) === null
-  ) {
-    return false;
-  }
-  const candidateStart = Date.parse(candidate.matchStartsAt);
-  const existingStart = Date.parse(existing.matchStartsAt);
-  return Number.isFinite(candidateStart) &&
-    Number.isFinite(existingStart) &&
-    Math.abs(candidateStart - existingStart) <= 36 * 60 * 60_000;
 }
 
 function isCleanMatchAndLeague(
@@ -1102,10 +1084,15 @@ const LLM_BROWSER_UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
 export function stripReasoningThinkTags(raw: string): string {
-  return (raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  // Never show reasoning when tags are complete, incomplete, or begin mid-stream.
+  return (raw || '')
+    .replace(/<think\b[^>]*>[\s\S]*?(?:<\/think\s*>|$)/gi, '')
+    .replace(/^[\s\S]*?<\/think\s*>/i, '')
+    .trim();
 }
 
 export const PLUSVIBE_RECOMMENDED_MODELS = [
+  'deepseek-v4.1-flash',
   'deepseek-v4.1-flash-1017',
   'gpt-6-luna',
   'gemini-3.8-flash',
@@ -1133,21 +1120,15 @@ export function isNonChatModelId(id: string, typeField?: string): boolean {
 
 /**
  * Сортирует список моделей токена под конкретный шлюз:
- * - Для платного PlusVibeAPI (РФ, ₽) ставит вперед оптимальные платные модели (deepseek-v4.1-flash-1017 за 2₽, gpt-6-luna, gemini-3.8-flash, qwen3.8-max, gpt-6.1-sol, claude-sonnet-5.5) и убирает :free.
- * - Для OrcaRouter / OpenRouter ставит БЕСПЛАТНЫЕ (-free, :free) модели первыми.
+ * - Для PlusVibe сортирует только фактически полученные от шлюза ID; цены и доступность уточняются у провайдера.
+ * - Для OrcaRouter / OpenRouter ставит ID с пометкой free первыми.
  */
 export function prioritizeModelsFreeFirst(
   models: string[],
   options?: { isPlusVibe?: boolean },
 ): string[] {
   const isPlusVibe = Boolean(options?.isPlusVibe);
-  const filtered = models.filter((m) => {
-    if (!m || isNonChatModelId(m)) return false;
-    if (isPlusVibe && (m.endsWith(':free') || m.endsWith('-free'))) {
-      return false;
-    }
-    return true;
-  });
+  const filtered = models.filter((m) => Boolean(m) && !isNonChatModelId(m));
 
   if (isPlusVibe) {
     const scorePv = (m: string): number => {
@@ -1192,11 +1173,8 @@ export async function fetchPlusVibeBalanceRub(
   const key = (apiKey || '').trim();
   if (!key) return null;
 
-  const bases = [
-    preferredBaseUrl?.replace(/\/+$/, ''),
-    'https://plusvibeapi.ru/v1',
-    'https://gw.plusvibeapi.ru/v1',
-  ].filter((v, idx, arr): v is string => Boolean(v) && arr.indexOf(v) === idx);
+  // Do not forward a saved key to an alternative origin implicitly.
+  const bases = preferredBaseUrl ? [preferredBaseUrl.replace(/\/+$/, '')] : [];
 
   for (const base of bases) {
     try {
@@ -1208,6 +1186,7 @@ export async function fetchPlusVibeBalanceRub(
           'User-Agent': LLM_BROWSER_UA,
         },
         signal: AbortSignal.timeout(4500),
+        redirect: 'error',
         cache: 'no-store',
       });
       if (!res.ok) continue;
@@ -1232,93 +1211,21 @@ export function buildCandidateLlmBaseUrls(
   provider: string,
   apiKey?: string,
 ): string[] {
-  const cleaned = (rawBaseUrl || '').trim();
-  const key = (apiKey || '').trim();
-  const isPlusVibeKey = key.startsWith('sk-pv-');
-  const candidates: string[] = [];
-
-  const pushUnique = (u: string) => {
-    let norm = u.replace(/\/+$/, '');
-    if (/^https?:\/\/(www\.|api\.)?orcarouter\.ai(\/|$)/i.test(norm)) {
-      norm = 'https://www.orcarouter.ai/v1';
-    } else if (/^https?:\/\/(www\.)?ollama\.com\/?$/i.test(norm)) {
-      norm = 'https://ollama.com/v1';
-    } else if (/^https?:\/\/(www\.)?plusvibeapi\.ru(\/|$)/i.test(norm)) {
-      norm = 'https://plusvibeapi.ru/v1';
-    } else if (/^https?:\/\/gw\.plusvibeapi\.ru\/?$/i.test(norm)) {
-      norm = 'https://gw.plusvibeapi.ru/v1';
-    }
-    if (norm && !candidates.includes(norm)) candidates.push(norm);
-  };
-
-  if (isPlusVibeKey && !cleaned.includes('127.0.0.1') && !cleaned.includes('localhost')) {
-    pushUnique('https://plusvibeapi.ru/v1');
-    pushUnique('https://gw.plusvibeapi.ru/v1');
+  // Local mode must never call a previously saved external key or pretend to
+  // provide the model-role consensus required for creating forecasts.
+  if (provider === 'BUILTIN_QUANT') return [];
+  try {
+    // The owner chose one origin. Do not send their secret to other hosts or
+    // change the configured provider just because a token has a known prefix.
+    assertLlmKeyMatchesProvider(apiKey || '', provider);
+    return [normalizeLlmBaseUrl(rawBaseUrl, provider)];
+  } catch {
+    return [];
   }
-
-  if (cleaned) {
-    try {
-      const parsed = new URL(
-        cleaned.startsWith('http') ? cleaned : `https://${cleaned}`,
-      );
-      if (parsed.hostname.includes('plusvibeapi.ru')) {
-        if (parsed.hostname.startsWith('gw.')) {
-          pushUnique('https://gw.plusvibeapi.ru/v1');
-          pushUnique('https://plusvibeapi.ru/v1');
-        } else {
-          pushUnique('https://plusvibeapi.ru/v1');
-          pushUnique('https://gw.plusvibeapi.ru/v1');
-        }
-      } else if (parsed.hostname.includes('orcarouter.ai')) {
-        pushUnique('https://www.orcarouter.ai/v1');
-      } else if (parsed.hostname.includes('ollama.com')) {
-        if (parsed.pathname === '/' || parsed.pathname === '') {
-          pushUnique('https://ollama.com/v1');
-        } else if (parsed.pathname.endsWith('/chat/completions')) {
-          pushUnique(
-            `${parsed.origin}${parsed.pathname.replace(/\/chat\/completions$/, '')}`,
-          );
-        } else {
-          pushUnique(`${parsed.origin}${parsed.pathname}`);
-        }
-      } else if (
-        parsed.pathname.includes('/console') ||
-        parsed.pathname.includes('/dashboard') ||
-        parsed.pathname === '/' ||
-        parsed.pathname === ''
-      ) {
-        pushUnique(`${parsed.origin}/v1`);
-      } else if (parsed.pathname.endsWith('/chat/completions')) {
-        pushUnique(
-          `${parsed.origin}${parsed.pathname.replace(/\/chat\/completions$/, '')}`,
-        );
-      } else {
-        pushUnique(`${parsed.origin}${parsed.pathname}`);
-      }
-    } catch {
-      pushUnique(cleaned);
-    }
-  }
-
-  if (provider === 'PLUSVIBE') {
-    pushUnique('https://plusvibeapi.ru/v1');
-    pushUnique('https://gw.plusvibeapi.ru/v1');
-  } else if (provider === 'OLLAMA') {
-    pushUnique('https://ollama.com/v1');
-  } else if (provider === 'ORCAROUTER') {
-    pushUnique('https://www.orcarouter.ai/v1');
-  }
-
-  if (candidates.length === 0) {
-    pushUnique('https://plusvibeapi.ru/v1');
-  }
-
-  return candidates;
 }
 
 /**
- * Надежный POST к /chat/completions с сохранением метода POST при 301/302/307/308 редиректах
- * и автоматическим повтором без system-роли для строгих бесплатных / reasoning моделей.
+ * POST к /chat/completions; авторизация и содержимое запроса не пересылаются на другой origin.
  */
 export async function postLlmChatCompletion(params: {
   baseUrl: string;
@@ -1328,6 +1235,7 @@ export async function postLlmChatCompletion(params: {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  allowRetry?: boolean;
 }): Promise<{
   ok: boolean;
   status: number;
@@ -1360,14 +1268,21 @@ export async function postLlmChatCompletion(params: {
     ) {
       const loc = res.headers.get('location');
       if (loc) {
-        const resolvedLoc = new URL(loc, targetUrl).toString();
-        return sendOnce(resolvedLoc, payloadObj, redirectsLeft - 1);
+        const resolved = new URL(loc, targetUrl);
+        const original = new URL(targetUrl);
+        if (resolved.origin === original.origin && !resolved.username && !resolved.password) {
+          return sendOnce(resolved.toString(), payloadObj, redirectsLeft - 1);
+        }
+        // Never forward Authorization or conversation contents to a different origin.
       }
     }
     return res;
   };
 
   const endpoint = `${params.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const redact = (text: string) => params.apiKey.trim()
+    ? text.split(params.apiKey.trim()).join('[ключ скрыт]')
+    : text;
   const primaryPayload: Record<string, unknown> = {
     model: params.model,
     messages: params.messages,
@@ -1385,9 +1300,6 @@ export async function postLlmChatCompletion(params: {
     choices?: Array<{
       message?: {
         content?: string | Array<{ text?: string }>;
-        reasoning?: string;
-        thinking?: string;
-        reasoning_content?: string;
       };
     }>;
   }): { text: string; returnedModel?: string } => {
@@ -1398,16 +1310,9 @@ export async function postLlmChatCompletion(params: {
     } else if (Array.isArray(msg?.content)) {
       rawText = msg!.content.map((part) => part?.text || '').join('');
     }
-    const cleaned = stripReasoningThinkTags(rawText);
-    const fallbackReasoning = (
-      msg?.reasoning ||
-      msg?.thinking ||
-      msg?.reasoning_content ||
-      ''
-    ).trim();
     return {
-      text: cleaned || rawText.trim() || fallbackReasoning,
-      returnedModel: json.model,
+      text: stripReasoningThinkTags(rawText),
+      returnedModel: typeof json.model === 'string' ? json.model.replace(/\s+/g, ' ').trim().slice(0, 200) || undefined : undefined,
     };
   };
 
@@ -1415,7 +1320,7 @@ export async function postLlmChatCompletion(params: {
     let res = await sendOnce(endpoint, primaryPayload);
 
     // При превышении лимита частоты (HTTP 429 с Retry-After <= 4 сек) повторяем один раз с паузой
-    if (res.status === 429) {
+    if (params.allowRetry !== false && res.status === 429) {
       const retryAfterRaw = Number(res.headers.get('retry-after') || '1.5');
       const waitMs = Math.min(
         4000,
@@ -1426,7 +1331,7 @@ export async function postLlmChatCompletion(params: {
     }
 
     // Если бесплатная / reasoning модель вернула 400 из-за role:"system" или temperature — склеиваем в user без temperature
-    if (res.status === 400 && params.messages.some((m) => m.role === 'system')) {
+    if (params.allowRetry !== false && res.status === 400 && params.messages.some((m) => m.role === 'system')) {
       const mergedMessages: Array<{
         role: 'user' | 'assistant';
         content: string;
@@ -1480,14 +1385,14 @@ export async function postLlmChatCompletion(params: {
       ok: false,
       status: res.status,
       content: '',
-      rawError: errText,
+      rawError: redact(errText.slice(0, 1_000)),
     };
   } catch (err) {
     return {
       ok: false,
       status: 0,
       content: '',
-      rawError: err instanceof Error ? `${err.name}: ${err.message}` : 'Сбой сети',
+      rawError: err instanceof Error ? redact(`${err.name}: ${err.message}`) : 'Сбой сети',
     };
   }
 }
@@ -1517,236 +1422,86 @@ export async function testLlmConnectionAndModels(input: {
 }> {
   const t0 = Date.now();
   const key = (input.llmApiKey || '').trim();
-
-  if (!key) {
-    return {
-      ok: false,
-      resolvedBaseUrl: input.llmBaseUrl,
-      testedModel: input.llmModel,
-      availableModels: [],
-      latencyMs: 0,
-      message:
-        'Вставьте ваш API-ключ (например платный ключ PlusVibe sk-pv-... или токен Ollama Cloud) и нажмите «Проверить и сохранить».',
-    };
-  }
-
+  const model = (input.llmModel || '').trim();
+  const base = buildCandidateLlmBaseUrls(input.llmBaseUrl, input.llmProvider, key)[0];
+  const early = (message: string) => ({
+    ok: false, resolvedBaseUrl: base || '', testedModel: model,
+    availableModels: [] as string[], latencyMs: Date.now() - t0, message,
+  });
+  if (!key) return early('Вставьте API-ключ выбранного провайдера и нажмите «Проверить и сохранить».');
   if (/\s/.test(key) || key.toLowerCase().includes('initial token')) {
-    return {
-      ok: false,
-      resolvedBaseUrl: input.llmBaseUrl,
-      testedModel: input.llmModel,
-      availableModels: [],
-      latencyMs: 0,
-      message:
-        'В поле ключа указан текст с пробелами (название ключа), а нужен сам секретный токен без пробелов (например sk-pv-...).',
-    };
+    return early('В поле ключа указан текст с пробелами; нужен сам секретный токен без пробелов.');
   }
+  if (!base) return early('Проверьте API Base URL: требуется HTTPS без логина, пароля и параметров в адресе.');
+  if (!model) return early('Укажите точный ID модели из каталога провайдера.');
 
-  const isPlusVibe =
-    key.startsWith('sk-pv-') ||
-    input.llmProvider === 'PLUSVIBE' ||
-    input.llmBaseUrl.toLowerCase().includes('plusvibeapi.ru');
-
-  const effectiveProvider: AiAutopilotConfig['llmProvider'] = isPlusVibe
-    ? 'PLUSVIBE'
-    : (input.llmProvider as AiAutopilotConfig['llmProvider']);
-
-  const baseUrls = buildCandidateLlmBaseUrls(
-    input.llmBaseUrl,
-    effectiveProvider,
-    key,
-  );
-  let resolvedBaseUrl = baseUrls[0];
-  let availableModels: string[] = [];
-
-  const balancePromise = isPlusVibe
-    ? fetchPlusVibeBalanceRub(key, resolvedBaseUrl)
-    : Promise.resolve(null);
-
-  // 1. Загружаем список моделей (/v1/models или /api/tags), отсеивая эмбеддинги и медиа
-  for (const base of baseUrls) {
+  const isPlusVibe = input.llmProvider === 'PLUSVIBE';
+  const listModels = async (): Promise<string[]> => {
     try {
       const res = await fetch(`${base}/models`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(8000),
-        headers: {
-          Accept: 'application/json',
-          Authorization: `Bearer ${key}`,
-          'User-Agent': LLM_BROWSER_UA,
-        },
+        method: 'GET', signal: AbortSignal.timeout(8000), redirect: 'error',
+        headers: { Accept: 'application/json', Authorization: `Bearer ${key}`, 'User-Agent': LLM_BROWSER_UA },
         cache: 'no-store',
       });
-
-      if (res.ok) {
-        const json = (await res.json()) as {
-          data?: Array<{ id?: string; type?: string }>;
-          models?: Array<{ name?: string; model?: string }>;
-        };
-        const rawIds = [
-          ...(json.data || [])
-            .filter((m) => !isNonChatModelId(m.id || '', m.type))
-            .map((m) => (m.id || '').trim()),
-          ...(json.models || []).map((m) => (m.name || m.model || '').trim()),
-        ].filter(Boolean);
-
-        if (rawIds.length > 0) {
-          resolvedBaseUrl = base;
-          availableModels = prioritizeModelsFreeFirst(rawIds, { isPlusVibe });
-          break;
-        }
-      }
-    } catch {
-      // пробуем следующий URL или переходим напрямую к POST /chat/completions
-    }
-  }
-
-  if (isPlusVibe) {
-    for (const rec of [...PLUSVIBE_RECOMMENDED_MODELS].reverse()) {
-      if (!availableModels.includes(rec)) {
-        availableModels.unshift(rec);
-      }
-    }
-  } else if (
-    (effectiveProvider === 'OLLAMA' || resolvedBaseUrl.includes('ollama.com')) &&
-    !availableModels.includes('deepseek-v4.1-flash')
-  ) {
-    availableModels = ['deepseek-v4.1-flash', ...availableModels];
-  }
-
-  // 2. Формируем очередь проверки моделей
-  const rawRequested = (input.llmModel || '').trim();
-  const requestedModel =
-    isPlusVibe &&
-    (!rawRequested ||
-      rawRequested.toLowerCase() === 'orcarouter/auto' ||
-      rawRequested.toLowerCase().includes('free') ||
-      rawRequested === 'deepseek-v4.1-flash')
-      ? 'deepseek-v4.1-flash-1017'
-      : rawRequested;
-
-  const modelsToProbe: string[] = [];
-
-  if (requestedModel && requestedModel.toLowerCase() !== 'orcarouter/auto') {
-    modelsToProbe.push(requestedModel);
-  }
-
-  if (availableModels.length > 0) {
-    if (!isPlusVibe) {
-      const freeOnes = availableModels.filter((m) =>
-        m.toLowerCase().includes('free'),
-      );
-      for (const fm of freeOnes) {
-        if (!modelsToProbe.includes(fm)) modelsToProbe.push(fm);
-      }
-    }
-    for (const m of availableModels) {
-      if (modelsToProbe.length >= 8) break;
-      if (!modelsToProbe.includes(m)) modelsToProbe.push(m);
-    }
-  } else if (modelsToProbe.length === 0) {
-    modelsToProbe.push(
-      isPlusVibe ? 'deepseek-v4.1-flash-1017' : 'deepseek-v4.1-flash',
-    );
-  }
-
-  const probeResults: ModelProbeResultItem[] = [];
-  let lastErrorText = 'Не удалось достучаться до сервера API';
-
-  for (const candidateModel of modelsToProbe) {
-    const out = await postLlmChatCompletion({
-      baseUrl: resolvedBaseUrl,
-      apiKey: key,
-      model: candidateModel,
-      timeoutMs: 22_000,
-      messages: [{ role: 'user', content: 'Ответь одним словом на русском: Готов' }],
-    });
-
-    if (out.ok) {
-      const balanceRub = await balancePromise;
-      const balanceBadge =
-        balanceRub !== null ? ` · Баланс PlusVibe: ${balanceRub.toFixed(2)} ₽` : '';
-
-      probeResults.push({
-        model: candidateModel,
-        ok: true,
-        status: out.status,
-        detail: `Ответила: «${out.content.slice(0, 40)}»`,
-      });
-      return {
-        ok: true,
-        detectedProvider: effectiveProvider,
-        resolvedBaseUrl,
-        testedModel: candidateModel,
-        availableModels,
-        balanceRub,
-        modelProbeResults: probeResults,
-        latencyMs: Date.now() - t0,
-        message: `Тестовый запрос получил ответ от модели «${candidateModel}»: «${out.content.slice(
-          0,
-          35,
-        )}»${balanceBadge}. Проверка подтверждает только этот тестовый запрос.`,
+      if (!res.ok) return [];
+      const json = (await res.json()) as {
+        data?: Array<{ id?: unknown; type?: unknown }>;
+        models?: Array<{ name?: unknown; model?: unknown }>;
       };
+      const data = Array.isArray(json.data) ? json.data : [];
+      const models = Array.isArray(json.models) ? json.models : [];
+      const rawIds = [
+        ...data.flatMap((item) => {
+          const id = typeof item?.id === 'string' ? item.id.trim() : '';
+          const type = typeof item?.type === 'string' ? item.type : undefined;
+          return id && !isNonChatModelId(id, type) ? [id] : [];
+        }),
+        ...models.flatMap((item) => {
+          const id = typeof item?.name === 'string' ? item.name : typeof item?.model === 'string' ? item.model : '';
+          return id.trim() ? [id.trim()] : [];
+        }),
+      ].filter((id) => id.length <= 160 && !id.includes(key));
+      return prioritizeModelsFreeFirst([...new Set(rawIds)], { isPlusVibe });
+    } catch {
+      return [];
     }
-
-    const cleanSnippet = out.rawError.includes('<html')
-      ? 'HTML-блокировка Cloudflare'
-      : out.rawError.replace(/\s+/g, ' ').trim().slice(0, 150);
-
-    probeResults.push({
-      model: candidateModel,
-      ok: false,
-      status: out.status,
-      detail: `HTTP ${out.status}: ${cleanSnippet}`,
-    });
-    lastErrorText = `HTTP ${out.status} (${candidateModel}): ${cleanSnippet}`;
-
-    // Останавливаем перебор при HTTP 401 (неверный ключ) или HTTP 402 (нулевой рублевый баланс на платном ключе)
-    if (out.status === 401 || out.status === 402) {
-      break;
-    }
-  }
-
-  const balanceRub = await balancePromise;
-  if (probeResults.some((r) => r.status === 402)) {
+  };
+  // One explicitly selected model is tested. A request may be billable.
+  const [availableModels, balanceRub, out] = await Promise.all([
+    listModels(),
+    isPlusVibe ? fetchPlusVibeBalanceRub(key, base) : Promise.resolve(null),
+    postLlmChatCompletion({
+      baseUrl: base, apiKey: key, model, timeoutMs: 22_000, allowRetry: false,
+      messages: [{ role: 'user', content: 'Ответь одним словом на русском: Готов' }],
+    }),
+  ]);
+  const detectedProvider = input.llmProvider as AiAutopilotConfig['llmProvider'];
+  if (out.ok) {
     return {
-      ok: false,
-      detectedProvider: effectiveProvider,
-      resolvedBaseUrl,
-      testedModel: modelsToProbe[0] || requestedModel,
-      availableModels,
-      balanceRub,
-      modelProbeResults: probeResults,
+      ok: true, detectedProvider, resolvedBaseUrl: base, testedModel: model,
+      availableModels, balanceRub,
+      modelProbeResults: [{ model, ok: true, status: out.status, detail: 'Тестовый запрос получил ответ.' }],
       latencyMs: Date.now() - t0,
-      message: `Ключ верный, но на балансе недостаточно средств${
-        balanceRub !== null ? ` (текущий баланс: ${balanceRub.toFixed(2)} ₽)` : ''
-      }. Пополните баланс картой РФ в кабинете https://plusvibeapi.ru/dashboard и повторите проверку.`,
+      message: `Модель «${model}» ответила на тестовый запрос. Проверка подтверждает только этот запрос.`,
     };
   }
-
-  const summaryPerModel = probeResults
-    .map((r) => `• ${r.model} → ${r.detail}`)
-    .join('\n');
-
+  const snippet = out.rawError.includes('<html')
+    ? 'Шлюз вернул HTML вместо ответа API'
+    : out.rawError.replace(/\s+/g, ' ').trim().slice(0, 150) || 'нет ответа';
+  const explanation = out.status === 401 ? 'Провайдер отклонил ключ (HTTP 401).'
+    : out.status === 402 ? 'Провайдер сообщил о платёжном ограничении (HTTP 402).'
+    : out.status === 429 ? 'Провайдер ограничил частоту запросов (HTTP 429).'
+    : out.status ? `Выбранная модель не ответила (HTTP ${out.status}): ${snippet}.`
+    : `Нет ответа от API: ${snippet}.`;
   return {
-    ok: false,
-    detectedProvider: effectiveProvider,
-    resolvedBaseUrl,
-    testedModel: modelsToProbe[0] || requestedModel,
-    availableModels,
-    balanceRub,
-    modelProbeResults: probeResults,
+    ok: false, detectedProvider, resolvedBaseUrl: base, testedModel: model,
+    availableModels, balanceRub,
+    modelProbeResults: [{ model, ok: false, status: out.status, detail: explanation }],
     latencyMs: Date.now() - t0,
-    message:
-      probeResults.length > 0
-        ? `Проверено моделей на вашем токене: ${probeResults.length} шт., ни одна пока не дала ответ:\n${summaryPerModel}`
-        : `Не удалось выполнить запрос (${lastErrorText}).`,
+    message: `${explanation} Проверьте ключ, Base URL и точный ID модели у провайдера. Другие модели не запускались.`,
   };
 }
 
-/**
- * Генерация аналитического досье через API нейросети (OrcaRouter / DeepSeek / OpenRouter / OpenAI)
- * либо встроенный понятный русскоязычный генератор (0 ₽).
- */
 /**
  * Этап отбора: одна настроенная LLM вызывается в нескольких специализированных ролях.
  * Роли оценивают шортлист и факты; их оценки не являются независимыми моделями или гарантией исхода.
@@ -1760,6 +1515,7 @@ interface CandidateWithAgentEvaluation extends CandidateWithIntel {
   agentInput: AgentCandidateInput;
   evaluation: Awaited<ReturnType<typeof runAgentCommittee>>['evaluations'][number];
   leaderSummary: string;
+  modelDescription: string;
 }
 
 async function evaluateCandidatesWithAgentCommittee(
@@ -1807,6 +1563,7 @@ async function evaluateCandidatesWithAgentCommittee(
     config.llmProvider,
     config.llmApiKey,
   );
+  const returnedModels = new Set<string>();
   const committee = await runAgentCommittee({
     candidates: agentInputs,
     limit: limitCount,
@@ -1827,9 +1584,17 @@ async function evaluateCandidatesWithAgentCommittee(
         maxTokens: request.maxTokens,
         timeoutMs: request.timeoutMs,
       });
+      if (result.ok && result.returnedModel && !result.returnedModel.includes(config.llmApiKey)) {
+        returnedModels.add(result.returnedModel.replace(/\s+/g, ' ').trim().slice(0, 200));
+      }
       return { ok: result.ok, content: result.content, rawError: result.rawError };
     },
   });
+  const requestedModel = config.llmApiKey && config.llmModel.includes(config.llmApiKey)
+    ? '[скрыто]' : config.llmModel.trim().slice(0, 200);
+  const modelDescription = `Провайдер ${config.llmProvider}; запрошенная модель ${requestedModel || 'не указана'}. ${
+    returnedModels.size ? `ID по ответам провайдера: ${[...returnedModels].join(', ')}.` : 'ID модели в ответах провайдера не указан.'
+  }`;
 
   const evaluationsById = new Map(
     committee.evaluations.map((evaluation) => [evaluation.id, evaluation]),
@@ -1843,7 +1608,7 @@ async function evaluateCandidatesWithAgentCommittee(
     const agentInput = agentInputs.find((candidate) => candidate.id === id);
     const evaluation = evaluationsById.get(id);
     if (!item || !agentInput || !evaluation?.accepted) return [];
-    return [{ ...item, agentInput, evaluation, leaderSummary }];
+    return [{ ...item, agentInput, evaluation, leaderSummary, modelDescription }];
   });
 
   const acceptedIds = new Set(committee.selectedIds);
@@ -1852,6 +1617,7 @@ async function evaluateCandidatesWithAgentCommittee(
     .slice(0, 8)
     .map((evaluation) => `${evaluation.id}: ${evaluation.rejectionReason || 'не прошёл финальный отбор'}`);
   const summary = [
+    modelDescription,
     `Ответивших специализированных ролей: ${committee.specialistRolesResponded}/3; консенсус отобранных: ${selected.length}/${shortlist.length}.`,
     leaderSummary,
     ...rejected,
@@ -1866,6 +1632,8 @@ async function evaluateCandidatesWithAgentCommittee(
 }
 
 function classifyMarketFamily(market: string): string {
+  // Legacy records can be incomplete; they must not block a new scan.
+  if (typeof market !== 'string' || !market.trim()) return 'UNKNOWN';
   const s = market.toLowerCase();
   if (s.includes('тотал')) return 'TOTAL';
   if (s.includes('фора')) return 'HANDICAP';
@@ -1940,18 +1708,32 @@ export async function runAiScanAndGenerateCycle(options?: {
   forcePublish?: boolean;
   triggerLabel?: string;
   maxCountOverride?: number;
+  // Used by the scheduler and multi-step cleanup so a stale trigger cannot
+  // start a fresh publish after the owner changed or paused the configuration.
+  expectedConfigSnapshot?: AiAutopilotConfig;
+  requireFullMode?: boolean;
 }): Promise<{
   scannedCount: number;
   createdCount: number;
   publishedDirectly: boolean;
   feedSource: string;
+  warning?: string;
 }> {
   const stateSnapshot = await readState();
   const config = stateSnapshot.aiAutopilot;
+  try {
+    if (options?.expectedConfigSnapshot) assertAutopilotConfigUnchanged(config, options.expectedConfigSnapshot);
+    if (options?.requireFullMode && config.mode !== 'FULL_AUTOPILOT') {
+      throw new AutopilotCommitConflict('CONFIG_CHANGED', 'Плановый выпуск остановлен: полный режим уже выключен.');
+    }
+  } catch (err) {
+    if (!(err instanceof AutopilotCommitConflict)) throw err;
+    return { scannedCount: 0, createdCount: 0, publishedDirectly: false, feedSource: 'Линия не проверялась', warning: err.message };
+  }
 
   const existingFixtureIds = new Set<string>();
   for (const p of stateSnapshot.predictions) {
-    if (p.externalFixtureId) existingFixtureIds.add(p.externalFixtureId);
+    if (!isLegacyStarterDemoPrediction(p) && p.externalFixtureId) existingFixtureIds.add(p.externalFixtureId);
   }
   for (const d of stateSnapshot.aiDrafts) {
     existingFixtureIds.add(d.externalFixtureId);
@@ -1984,13 +1766,14 @@ export async function runAiScanAndGenerateCycle(options?: {
   );
   const hasVerifiedBookmakerLine =
     feedSource.startsWith('Фонбет РФ') || feedSource.startsWith('Леон РФ');
-  const existingMatches = [...stateSnapshot.predictions, ...stateSnapshot.aiDrafts];
+  const existingMatches = [...stateSnapshot.predictions.filter((p) => !isLegacyStarterDemoPrediction(p)), ...stateSnapshot.aiDrafts];
   const eligible = hasVerifiedBookmakerLine
     ? rawCandidates.filter(
         (c) =>
           !existingFixtureIds.has(c.externalFixtureId) &&
           !existingMatches.some((match) => sameFixtureByNamesAndTime(c, match)) &&
-          c.valueEdgePct >= config.minValueEdgePct &&
+          // The owner's edge threshold belongs to the model/risk evaluation,
+          // not to the unrelated bounded heuristic used for shortlist ranking.
           !c.leagueName.toLowerCase().includes('товарищ') &&
           !c.leagueName.toLowerCase().includes('friendly'),
       )
@@ -2000,14 +1783,22 @@ export async function runAiScanAndGenerateCycle(options?: {
   const shortlistSize = Math.min(10, Math.max(limitCount * 3, 6));
   const shortlist = selectDiversifiedCandidates(
     eligible,
-    stateSnapshot.predictions,
+    stateSnapshot.predictions.filter((p) => !isLegacyStarterDemoPrediction(p)),
     shortlistSize,
   );
 
-  await mutateState((s) => {
-    s.aiAutopilot.lastScanAt = new Date().toISOString();
-    s.aiAutopilot.lastFeedSource = feedSource;
-  });
+  try {
+    await mutateState((s) => {
+      // Stop before paid research/model calls when the owner has already paused
+      // or edited the configuration while the bookmaker line was loading.
+      assertAutopilotConfigUnchanged(s.aiAutopilot, config);
+      s.aiAutopilot.lastScanAt = new Date().toISOString();
+      s.aiAutopilot.lastFeedSource = feedSource;
+    });
+  } catch (err) {
+    if (!(err instanceof AutopilotCommitConflict)) throw err;
+    return { scannedCount: rawCandidates.length, createdCount: 0, publishedDirectly: false, feedSource, warning: err.message };
+  }
 
   if (shortlist.length === 0) {
     await appendAutopilotLog(
@@ -2025,11 +1816,9 @@ export async function runAiScanAndGenerateCycle(options?: {
     };
   }
 
-  // Шаг 2: собираем реальные новости, травмы, таблицу и превью из открытых источников (и PlusVibe RU Web Search при наличии ключа sk-pv-)
+  // Шаг 2: открытые источники; коммерческий поиск PlusVibe возможен только через выбранное подключение.
   const doResearch = config.openSourceResearchEnabled !== false;
-  const pvKey = config.llmApiKey?.trim().startsWith('sk-pv-')
-    ? config.llmApiKey.trim()
-    : undefined;
+  const pvSearch = plusVibeSearchConnection(config);
   const shortlistWithIntel = await Promise.all(
     shortlist.map(async (cand) => {
       const intel = doResearch
@@ -2042,7 +1831,7 @@ export async function runAiScanAndGenerateCycle(options?: {
             drawOdds: cand.drawOdds,
             awayOdds: cand.awayOdds,
             existingNotes: cand.contextNotes,
-            plusVibeApiKey: pvKey,
+            plusVibeSearch: pvSearch,
           })
         : {
             homeTeam: cand.homeTeam,
@@ -2106,13 +1895,16 @@ export async function runAiScanAndGenerateCycle(options?: {
   );
 
   let createdCount = 0;
+  let commitWarning: string | null = null;
+  let duplicateCount = 0;
 
   for (let idx = 0; idx < selectedWithAgents.length; idx++) {
-    const { cand, intel, agentInput, evaluation, leaderSummary } = selectedWithAgents[idx];
+    const { cand, intel, agentInput, evaluation, leaderSummary, modelDescription } = selectedWithAgents[idx];
     const agentAnalysis = buildAgentAnalysis({
       candidate: agentInput,
       evaluation,
       leaderSummary,
+      modelDescription,
     });
     // Рынок и цена остаются именно теми, что были зафиксированы в линии; LLM их не переписывает.
     const dossier = {
@@ -2142,206 +1934,211 @@ export async function runAiScanAndGenerateCycle(options?: {
     const priceRub = accessTier === 'PAID_SINGLE' ? config.defaultAiPriceRub : null;
     const insured = accessTier === 'PAID_SINGLE' ? config.insureAiPicks : false;
 
-    if (publishImmediately) {
-      await createPredictionByAdmin({
-        sport: cand.sport,
-        leagueName: cand.leagueName,
-        homeTeam: cand.homeTeam,
-        awayTeam: cand.awayTeam,
-        homeLogoUrl: normalizeFonbetTeamImageUrl(cand.homeLogoUrl),
-        awayLogoUrl: normalizeFonbetTeamImageUrl(cand.awayLogoUrl),
-        fonbetHomeTeamId: cand.fonbetHomeTeamId ?? null,
-        fonbetAwayTeamId: cand.fonbetAwayTeamId ?? null,
-        agentReport: dossier.agentReport,
-        matchStartsAt: cand.matchStartsAt,
-        selectionTitle: dossier.selectionTitle,
-        fixedOdds: dossier.fixedOdds,
-        stakeUnits: dossier.stakeUnits,
-        bookmakerSource: cand.bookmakerSource,
-        accessTier,
-        singlePriceRub: priceRub,
-        isFeatured: idx === 0 && accessTier === 'PAID_SINGLE',
-        insuredOnLoss: insured,
-        authorSource: 'AI_AUTOPILOT',
-        externalFixtureId: cand.externalFixtureId,
-        aiConfidencePct: dossier.confidencePct,
-        aiEdgePct: dossier.valueEdgePct,
-        researchSummary: intel.formattedBrief,
-        researchSources: intel.sourcesChecked,
-        analysisTeaser: dossier.analysisTeaser,
-        analysisFull: dossier.analysisFull,
-        pushToTelegram: true,
-      });
+    try {
+      if (publishImmediately) {
+        await createPredictionByAdmin({
+          sport: cand.sport,
+          leagueName: cand.leagueName,
+          homeTeam: cand.homeTeam,
+          awayTeam: cand.awayTeam,
+          homeLogoUrl: normalizeFonbetTeamImageUrl(cand.homeLogoUrl),
+          awayLogoUrl: normalizeFonbetTeamImageUrl(cand.awayLogoUrl),
+          fonbetHomeTeamId: cand.fonbetHomeTeamId ?? null,
+          fonbetAwayTeamId: cand.fonbetAwayTeamId ?? null,
+          agentReport: dossier.agentReport,
+          matchStartsAt: cand.matchStartsAt,
+          selectionTitle: dossier.selectionTitle,
+          fixedOdds: dossier.fixedOdds,
+          stakeUnits: dossier.stakeUnits,
+          bookmakerSource: cand.bookmakerSource,
+          accessTier,
+          singlePriceRub: priceRub,
+          isFeatured: idx === 0 && accessTier === 'PAID_SINGLE',
+          insuredOnLoss: insured,
+          authorSource: 'AI_AUTOPILOT',
+          externalFixtureId: cand.externalFixtureId,
+          aiConfidencePct: dossier.confidencePct,
+          aiEdgePct: dossier.valueEdgePct,
+          researchSummary: intel.formattedBrief,
+          researchSources: intel.sourcesChecked,
+          analysisTeaser: dossier.analysisTeaser,
+          analysisFull: dossier.analysisFull,
+          pushToTelegram: true,
+        }, { kind: 'SCAN', configSnapshot: config });
+        createdCount += 1;
+      } else {
+        const draft: AiPredictionDraft = {
+          id: `aidraft_${randomUUID().slice(0, 8)}`,
+          externalFixtureId: cand.externalFixtureId,
+          sport: cand.sport,
+          leagueName: cand.leagueName,
+          homeTeam: cand.homeTeam,
+          awayTeam: cand.awayTeam,
+          homeLogoUrl: normalizeFonbetTeamImageUrl(cand.homeLogoUrl),
+          awayLogoUrl: normalizeFonbetTeamImageUrl(cand.awayLogoUrl),
+          fonbetHomeTeamId: cand.fonbetHomeTeamId ?? null,
+          fonbetAwayTeamId: cand.fonbetAwayTeamId ?? null,
+          agentReport: dossier.agentReport,
+          matchStartsAt: cand.matchStartsAt,
+          selectionTitle: dossier.selectionTitle,
+          fixedOdds: dossier.fixedOdds,
+          stakeUnits: dossier.stakeUnits,
+          bookmakerSource: cand.bookmakerSource,
+          accessTier,
+          singlePriceRub: priceRub,
+          insuredOnLoss: insured,
+          confidencePct: dossier.confidencePct,
+          valueEdgePct: dossier.valueEdgePct,
+          analysisTeaser: dossier.analysisTeaser,
+          analysisFull: dossier.analysisFull,
+          researchSummary: intel.formattedBrief,
+          researchSources: intel.sourcesChecked,
+          createdAt: new Date().toISOString(),
+        };
 
-      await mutateState((s) => {
-        s.aiAutopilot.totalGeneratedCount += 1;
-      });
-      createdCount += 1;
-    } else {
-      const draft: AiPredictionDraft = {
-        id: `aidraft_${randomUUID().slice(0, 8)}`,
-        externalFixtureId: cand.externalFixtureId,
-        sport: cand.sport,
-        leagueName: cand.leagueName,
-        homeTeam: cand.homeTeam,
-        awayTeam: cand.awayTeam,
-        homeLogoUrl: normalizeFonbetTeamImageUrl(cand.homeLogoUrl),
-        awayLogoUrl: normalizeFonbetTeamImageUrl(cand.awayLogoUrl),
-        fonbetHomeTeamId: cand.fonbetHomeTeamId ?? null,
-        fonbetAwayTeamId: cand.fonbetAwayTeamId ?? null,
-        agentReport: dossier.agentReport,
-        matchStartsAt: cand.matchStartsAt,
-        selectionTitle: dossier.selectionTitle,
-        fixedOdds: dossier.fixedOdds,
-        stakeUnits: dossier.stakeUnits,
-        bookmakerSource: cand.bookmakerSource,
-        accessTier,
-        singlePriceRub: priceRub,
-        insuredOnLoss: insured,
-        confidencePct: dossier.confidencePct,
-        valueEdgePct: dossier.valueEdgePct,
-        analysisTeaser: dossier.analysisTeaser,
-        analysisFull: dossier.analysisFull,
-        researchSummary: intel.formattedBrief,
-        researchSources: intel.sourcesChecked,
-        createdAt: new Date().toISOString(),
-      };
-
-      await mutateState((s) => {
-        s.aiDrafts.unshift(draft);
-        s.aiAutopilot.totalGeneratedCount += 1;
-      });
-      createdCount += 1;
+        await mutateState((s) => {
+          assertAutopilotConfigUnchanged(s.aiAutopilot, config);
+          assertNewAutopilotFixture(s, draft);
+          s.aiDrafts.unshift(draft);
+          s.aiAutopilot.totalGeneratedCount += 1;
+        });
+        createdCount += 1;
+      }
+    } catch (err) {
+      if (!(err instanceof AutopilotCommitConflict)) throw err;
+      if (err.reason === 'DUPLICATE') { duplicateCount += 1; continue; }
+      commitWarning = err.message;
+      break;
     }
   }
 
+  let warning = [
+    commitWarning,
+    duplicateCount ? `Пропущено событий, уже созданных другим запуском: ${duplicateCount}.` : null,
+  ].filter(Boolean).join(' ') || undefined;
   const completionMessage =
-    createdCount > 0
+    (createdCount > 0
       ? publishImmediately
-        ? `Выставлено ${createdCount} матчей на витрину (+анонс в Telegram). Источник: ${feedSource}.`
+        ? `Выставлено ${createdCount} матчей на витрину. Статус анонсов Telegram смотрите в журнале и канале. Источник: ${feedSource}.`
         : `Подготовлено ${createdCount} прогнозов в очередь проверки. Источник: ${feedSource}.`
-      : `${publishImmediately ? 'Ничего не опубликовано' : 'Черновиков не создано'}: нет кандидатов, прошедших AI-пороги${publishImmediately ? ' и повторную сверку линии' : ''}. Источник: ${feedSource}.`;
-  await appendAutopilotLog(
-    createdCount > 0 ? 'SUCCESS' : 'WARN',
-    publishImmediately ? 'PUBLISHER' : 'LLM_ANALYST',
-    completionMessage,
-  );
+      : warning
+        ? `${publishImmediately ? 'Ничего не опубликовано' : 'Черновиков не создано'}. Источник: ${feedSource}.`
+        : `${publishImmediately ? 'Ничего не опубликовано' : 'Черновиков не создано'}: нет кандидатов, прошедших AI-пороги${publishImmediately ? ' и повторную сверку линии' : ''}. Источник: ${feedSource}.`) +
+    (warning ? ` ${warning}` : '');
+  try {
+    await appendAutopilotLog(
+      warning ? 'WARN' : createdCount > 0 ? 'SUCCESS' : 'WARN',
+      publishImmediately ? 'PUBLISHER' : 'LLM_ANALYST',
+      completionMessage,
+    );
+  } catch {
+    // Existing publications or drafts are already committed and must not look undone.
+    warning = [warning, 'Итоговый журнал не удалось сохранить; проверьте витрину и черновики.'].filter(Boolean).join(' ');
+  }
 
   return {
     scannedCount: rawCandidates.length,
     createdCount,
     publishedDirectly: publishImmediately && createdCount > 0,
     feedSource,
+    ...(warning ? { warning } : {}),
   };
 }
 
-/**
- * В 1 клик удаляет стартовые демо-карточки (pred_init_*) и заполняет витрину свежими реальными матчами
- */
+/** Remove unowned demo cards and start a verified scan; preserve client access and drafts. */
 export async function replaceDemoWithRealMatches(): Promise<{
   removedDemoCount: number;
   scannedCount: number;
   createdCount: number;
   publishedDirectly: boolean;
   feedSource: string;
+  warning?: string;
 }> {
-  const removedDemoCount = await mutateState((s) => {
-    const before = s.predictions.length;
-    s.predictions = withoutLegacyStarterDemoPredictions(s.predictions);
-    s.aiDrafts = [];
-    return before - s.predictions.length;
-  });
+  const cleanup = await mutateState((state) => ({
+    removedDemoCount: removeUnownedLegacyDemoPredictions(state),
+    configSnapshot: structuredClone(state.aiAutopilot),
+  }));
 
   const scanRes = await runAiScanAndGenerateCycle({
     forcePublish: true,
     maxCountOverride: 6,
     triggerLabel: 'Замена стартовых демо на реальные матчи',
+    expectedConfigSnapshot: cleanup.configSnapshot,
   });
 
   return {
-    removedDemoCount,
+    removedDemoCount: cleanup.removedDemoCount,
     scannedCount: scanRes.scannedCount,
     createdCount: scanRes.createdCount,
     publishedDirectly: scanRes.publishedDirectly,
     feedSource: scanRes.feedSource,
+    ...(scanRes.warning ? { warning: scanRes.warning } : {}),
   };
 }
 
-/**
- * Публикация продающего дайджеста витрины и верифицированной статистики в Telegram-канал (в 1 клик или по автопилоту)
- */
-export async function broadcastDailyDigestToTelegram(): Promise<{
-  sent: boolean;
-  error?: string;
-}> {
-  const state = await readState();
-  const settled = state.predictions.filter(hasVerifiedSettledResult);
+/** Build the digest from the same verified results shown on the site. */
+export function buildDailyDigestHtml(
+  state: Pick<PersistentState, 'predictions' | 'settings'>,
+  nowMs = Date.now(),
+): string {
+  const settled = state.predictions.filter(
+    (p) => !isLegacyStarterDemoPrediction(p) && hasVerifiedSettledResult(p) && p.profitUnits !== null && Number.isFinite(p.profitUnits),
+  );
   const wins = settled.filter((p) => p.resultStatus === 'WIN').length;
   const losses = settled.filter((p) => p.resultStatus === 'LOSS').length;
-  const winRate =
-    wins + losses > 0 ? Math.round((wins / (wins + losses)) * 100) : 0;
+  const winRate = wins + losses > 0 ? `${((wins / (wins + losses)) * 100).toFixed(1)}%` : 'пока нет данных';
   const netUnits = settled.reduce((sum, prediction) => sum + (prediction.profitUnits ?? 0), 0);
-
   const upcoming = state.predictions
-    .filter(
-      (p) =>
-        p.resultStatus === 'PENDING' &&
-        new Date(p.matchStartsAt).getTime() > Date.now(),
-    )
-    .sort(
-      (a, b) =>
-        new Date(a.matchStartsAt).getTime() - new Date(b.matchStartsAt).getTime(),
-    )
+    .filter((p) => isActiveStorefrontPrediction(p, nowMs))
+    .sort((a, b) => new Date(a.matchStartsAt).getTime() - new Date(b.matchStartsAt).getTime())
     .slice(0, 5);
 
-  const upcomingLines =
-    upcoming.length > 0
-      ? upcoming.map((p, idx) => {
-          const tStr = new Date(p.matchStartsAt).toLocaleString('ru-RU', {
-            timeZone: 'Europe/Moscow',
-            hour: '2-digit',
-            minute: '2-digit',
-          });
-          const tag =
-            p.accessTier === 'FREE'
-              ? '🎁 0 ₽ (бесплатно)'
-              : `${p.singlePriceRub ?? state.settings.defaultSinglePriceRub} ₽${
-                  p.insuredOnLoss ? ' · 🛡 страховка' : ''
-                }`;
-          return `${idx + 1}. <b>${p.homeTeam} — ${p.awayTeam}</b> (${tStr} МСК) — ${tag}`;
-        })
-      : ['Свежая линия загружается — следите за витриной!'];
+  const upcomingLines = upcoming.length > 0
+    ? upcoming.map((p, idx) => {
+        const time = new Date(p.matchStartsAt).toLocaleString('ru-RU', {
+          timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+        });
+        const price = p.singlePriceRub ?? state.settings.defaultSinglePriceRub;
+        const tag = p.accessTier === 'FREE'
+          ? '🎁 бесплатно'
+          : `${Number.isFinite(price) ? price : '—'} ₽${p.insuredOnLoss ? ' · 🛡 страховка' : ''}`;
+        return `${idx + 1}. <b>${escapeTelegramHtml(p.homeTeam.slice(0, 90))} — ${escapeTelegramHtml(p.awayTeam.slice(0, 90))}</b> (${time} МСК) — ${tag}`;
+      })
+    : ['Ближайших прогнозов на витрине пока нет.'];
 
-  const siteBase = (process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/+$/, '');
-  const html = [
-    `🔥 <b>Сводка линии и результатов на ${state.settings.brandName}</b>`,
-    ``,
-    `📊 <b>Открытая статистика (защита SHA-256):</b>`,
-    `✅ Побед: <b>${wins}</b> · ❌ Минусов: <b>${losses}</b> (${winRate}% прохода)`,
-    `📈 Прирост к игровому банку: <b>${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(1)}%</b>`,
-    ``,
-    `⚡ <b>Сегодня на витрине:</b>`,
+  return [
+    `🔥 <b>Сводка линии и результатов: ${escapeTelegramHtml(state.settings.brandName.slice(0, 100))}</b>`,
+    '',
+    '📊 <b>Подтверждённые результаты за всё время:</b>',
+    `✅ Побед: <b>${wins}</b> · ❌ Поражений: <b>${losses}</b> · Проход: <b>${winRate}</b>`,
+    `📈 Суммарный результат: <b>${netUnits >= 0 ? '+' : ''}${netUnits.toFixed(2)} ед.</b>`,
+    '',
+    '⚡ <b>Ближайшие события на витрине:</b>',
     ...upcomingLines,
-    ``,
-    `💎 Набор из 3 матчей со скидкой <b>−${state.settings.bundle3DiscountPct}%</b> · Промокод новичкам: <code>START15</code> (−15%)`,
   ].join('\n');
+}
 
+/** One Telegram request only; an unconfirmed send must not be retried automatically. */
+export async function broadcastDailyDigestToTelegram(): Promise<TelegramChannelSendResult> {
+  const state = await readState();
+  const siteBase = (process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/+$/, '');
   const res = await sendTelegramChannelAnnouncement(
     state.settings,
-    html,
-    siteBase
-      ? { text: '🔥 Открыть витрину матчей →', url: siteBase }
-      : undefined,
+    buildDailyDigestHtml(state),
+    siteBase ? { text: '🔥 Открыть витрину матчей →', url: siteBase } : undefined,
   );
 
   if (res.sent) {
-    await appendAutopilotLog(
-      'SUCCESS',
-      'PUBLISHER',
-      'В Telegram-канал опубликована сводка актуальных матчей и открытой статистики.',
-    );
+    try {
+      await appendAutopilotLog(
+        'SUCCESS', 'PUBLISHER',
+        'В Telegram-канал опубликована сводка актуальных матчей и открытой статистики.',
+      );
+    } catch {
+      // Logging failed after Telegram confirmed delivery; do not turn it into a failed send.
+      return { ...res, warning: 'Telegram подтвердил публикацию, но запись в журнал не сохранилась.' };
+    }
   }
-
   return res;
 }
 
@@ -2407,17 +2204,17 @@ export async function approveAiDraftToStorefront(
     analysisTeaser: draft.analysisTeaser,
     analysisFull: draft.analysisFull,
     pushToTelegram: true,
-  });
+  }, { kind: 'DRAFT', draftSnapshot: draft });
 
-  await mutateState((s) => {
-    s.aiDrafts = s.aiDrafts.filter((d) => d.id !== draftId);
-  });
-
-  await appendAutopilotLog(
-    'SUCCESS',
-    'PUBLISHER',
-    `Опубликован прогноз «${draft.homeTeam} — ${draft.awayTeam}» (${draft.selectionTitle} @ ${draft.fixedOdds.toFixed(2)}).`,
-  );
+  try {
+    await appendAutopilotLog(
+      'SUCCESS',
+      'PUBLISHER',
+      `Опубликован прогноз «${draft.homeTeam} — ${draft.awayTeam}» (${draft.selectionTitle} @ ${draft.fixedOdds.toFixed(2)}).`,
+    );
+  } catch {
+    // Publication is already committed; do not report it as a failed operation.
+  }
 
   return created;
 }
@@ -2824,7 +2621,7 @@ export async function runMatchStatusWatchCycle(): Promise<{
   const state = await readState();
   const nowMs = Date.now();
   const monitored = state.predictions.filter((prediction) => {
-    if (prediction.resultStatus !== 'PENDING') return false;
+    if (isLegacyStarterDemoPrediction(prediction) || prediction.resultStatus !== 'PENDING') return false;
     const startsAt = Date.parse(prediction.matchStartsAt);
     return Number.isFinite(startsAt) && startsAt >= nowMs - 7 * 86_400_000 && startsAt <= nowMs + 24 * 60 * 60_000;
   });
@@ -3173,15 +2970,17 @@ export async function runMatchStatusWatchCycle(): Promise<{
  * Автосверка опирается на наблюдаемый LIVE/FINAL статус и проверенный счёт,
  * а не на истечение времени матча по расписанию.
  */
-export async function runAutoSettlementCycle(): Promise<{
+export async function runAutoSettlementCycle(options?: { requireEnabled?: boolean }): Promise<{
   checkedCount: number;
   settledCount: number;
   compensatedBuyers: number;
+  warning?: string;
 }> {
   await runMatchStatusWatchCycle();
   const state = await readState();
   const duePredictions = state.predictions.filter(
     (prediction) =>
+      !isLegacyStarterDemoPrediction(prediction) &&
       prediction.resultStatus === 'PENDING' &&
       prediction.matchLifecycleStatus === 'FINISHED',
   );
@@ -3196,6 +2995,7 @@ export async function runAutoSettlementCycle(): Promise<{
 
   let settledCount = 0;
   let compensatedBuyers = 0;
+  let warning: string | undefined;
   for (const prediction of duePredictions) {
     // Exact kickoff/end timestamps are optional feed metadata. Settlement instead
     // requires a verified final lifecycle, two persisted independent score sources,
@@ -3229,32 +3029,49 @@ export async function runAutoSettlementCycle(): Promise<{
     const finalScore = `${homeScore}:${awayScore}${
       prediction.finalScoreIsOvertime ? ' (ОТ)' : ''
     }`;
-    const result = await settlePredictionByAdmin({
-      predictionId: prediction.id,
-      resultStatus: evaluated,
-      finalScore,
-      pushResultToTelegram: true,
-    });
+    let result: Awaited<ReturnType<typeof settlePredictionByAdmin>>;
+    try {
+      result = await settlePredictionByAdmin({
+        predictionId: prediction.id,
+        resultStatus: evaluated,
+        finalScore,
+        pushResultToTelegram: true,
+        onlyIfPending: true,
+        requireAutoSettleEnabled: options?.requireEnabled === true,
+      });
+    } catch {
+      // A concurrent evidence change or a lost commit response can leave an
+      // uncertain partial batch. Stop instead of claiming the whole run failed.
+      warning = `Сверка остановлена на «${prediction.homeTeam} — ${prediction.awayTeam}». Проверьте результаты и балансы перед повтором; часть изменений могла сохраниться.`;
+      break;
+    }
+    if (!result.applied) continue;
     settledCount += 1;
     compensatedBuyers += result.compensatedUsers;
 
-    await appendAutopilotLog(
-      evaluated === 'WIN' ? 'SUCCESS' : 'INFO',
-      'SETTLEMENT',
-      `Расчёт подтверждённого финального счёта «${prediction.homeTeam} — ${prediction.awayTeam}» (${finalScore}, ${prediction.matchVerificationSource || 'источник не указан'}): ${
-        evaluated === 'WIN' ? 'Зашёл' : evaluated === 'PUSH' ? 'Возврат' : 'Не зашёл'
-      }.${
-        result.compensatedUsers > 0
-          ? ` Возвращена страховка на баланс ${result.compensatedUsers} покупателям.`
-          : ''
-      }`,
-    );
+    try {
+      await appendAutopilotLog(
+        evaluated === 'WIN' ? 'SUCCESS' : 'INFO',
+        'SETTLEMENT',
+        `Расчёт подтверждённого финального счёта «${prediction.homeTeam} — ${prediction.awayTeam}» (${finalScore}, ${prediction.matchVerificationSource || 'источник не указан'}): ${
+          evaluated === 'WIN' ? 'Зашёл' : evaluated === 'PUSH' ? 'Возврат' : 'Не зашёл'
+        }.${
+          result.compensatedUsers > 0
+            ? ` Начислена страховка на баланс ${result.compensatedUsers} покупателям.`
+            : ''
+        }`,
+      );
+    } catch {
+      warning = 'Часть результатов уже рассчитана, но журнал недоступен. Проверьте результаты и балансы перед повтором.';
+      break;
+    }
   }
 
   return {
     checkedCount: duePredictions.length,
     settledCount,
     compensatedBuyers,
+    ...(warning ? { warning } : {}),
   };
 }
 
@@ -3274,13 +3091,13 @@ export async function runAutopilotDiagnostics(): Promise<AiDiagnosticsReport> {
     liveSamplePool = fonMatches.slice(0, 6).map((cand) => ({ cand, src: 'Фонбет РФ' }));
   }
   items.push({
-    name: 'Прямая линия БК Фонбет РФ (0 ₽/мес)',
+    name: 'Прямая линия БК Фонбет РФ',
     ok: fonMatches.length > 0,
     latencyMs: Date.now() - tFon,
     details:
       fonMatches.length > 0
-        ? `Работает напрямую! Найдено реальных топ-матчей: ${fonMatches.length}`
-        : 'Зеркало недоступно с этого IP — переключение на резервный шлюз',
+        ? `Получено подходящих событий линии: ${fonMatches.length}. Доступность источника может измениться.`
+        : 'Котировки не получены или подходящих матчей нет; будет проверена линия Леон.',
   });
 
   // 2. Тест прямого шлюза Леон РФ
@@ -3290,13 +3107,13 @@ export async function runAutopilotDiagnostics(): Promise<AiDiagnosticsReport> {
     liveSamplePool = leonMatches.slice(0, 6).map((cand) => ({ cand, src: 'Леон РФ' }));
   }
   items.push({
-    name: 'Прямая линия БК Леон РФ (0 ₽/мес)',
+    name: 'Прямая линия БК Леон РФ',
     ok: leonMatches.length > 0,
     latencyMs: Date.now() - tLeon,
     details:
       leonMatches.length > 0
-        ? `Работает напрямую! Найдено реальных матчей: ${leonMatches.length}`
-        : 'Защита хостинг-IP у БК — работает канал расписаний ниже',
+        ? `Получено подходящих событий линии: ${leonMatches.length}. Доступность источника может измениться.`
+        : 'Котировки не получены или подходящих матчей нет. Расписание не заменяет подтверждённую линию для выпуска.',
   });
 
   // 3. Тест расписания матчей (РПЛ, ЛЧ, АПЛ, НХЛ, UFC)
@@ -3305,7 +3122,7 @@ export async function runAutopilotDiagnostics(): Promise<AiDiagnosticsReport> {
   if (espnMatches.length > 0 && liveSamplePool.length === 0) {
     liveSamplePool = espnMatches
       .slice(0, 6)
-      .map((cand) => ({ cand, src: 'Матч-центр RU' }));
+      .map((cand) => ({ cand, src: 'Матч-центр (только диагностика, не для выпуска)' }));
   }
   items.push({
     name: 'Канал реального расписания (РПЛ, ЛЧ, Топ-5, НХЛ, UFC)',
@@ -3313,21 +3130,20 @@ export async function runAutopilotDiagnostics(): Promise<AiDiagnosticsReport> {
     latencyMs: Date.now() - tEspn,
     details:
       espnMatches.length > 0
-        ? `Активен! Загружено реальных предстоящих игр: ${espnMatches.length}`
-        : 'Ограничен сетью изолированной среды',
+        ? `Найдено событий: ${espnMatches.length}. Этот источник не используется для выпуска прогнозов.`
+        : 'Данные не получены или подходящих событий нет.',
   });
 
   // 4. Тест нейросети-аналитика
   const tLlm = Date.now();
   if (cfg.llmProvider === 'BUILTIN_QUANT' || !cfg.llmApiKey.trim()) {
     items.push({
-      name: 'Генератор аналитических разборов',
-      ok: true,
-      latencyMs: 1,
-      details:
-        cfg.llmProvider === 'BUILTIN_QUANT'
-          ? 'Встроенный русскоязычный аналитик активен (работает бесплатно без ключей)'
-          : 'Ключ нейросети не заполнен — работает встроенный русскоязычный аналитик',
+      name: 'Нейросеть для отбора прогнозов',
+      ok: false,
+      latencyMs: Date.now() - tLlm,
+      details: cfg.llmProvider === 'BUILTIN_QUANT'
+        ? 'Выбран локальный алгоритм чата. Внешняя модель не вызывается; создание черновиков и выпуск прогнозов без неё заблокированы.'
+        : 'Ключ нейросети не заполнен; создание черновиков и выпуск прогнозов заблокированы.',
     });
   } else {
     const llmCheck = await testLlmConnectionAndModels({
@@ -3400,8 +3216,9 @@ export async function runScheduledAutopilotTick(): Promise<{
 
     let settled = 0;
     if (cfg.autoSettleEnabled) {
-      const settleRes = await runAutoSettlementCycle();
+      const settleRes = await runAutoSettlementCycle({ requireEnabled: true });
       settled = settleRes.settledCount;
+      if (settleRes.warning) return { skipped: false, reason: settleRes.warning, settled };
     } else {
       await runMatchStatusWatchCycle();
     }
@@ -3414,11 +3231,7 @@ export async function runScheduledAutopilotTick(): Promise<{
     const mskDateStr = mskNow.toISOString().slice(0, 10);
     const mskHour = mskNow.getUTCHours();
 
-    const activeOnStorefront = state.predictions.filter(
-      (p) =>
-        p.resultStatus === 'PENDING' &&
-        new Date(p.matchStartsAt).getTime() > Date.now(),
-    ).length;
+    const activeOnStorefront = state.predictions.filter((p) => isActiveStorefrontPrediction(p)).length;
 
     const dueMorning =
       mskHour >= cfg.morningHourMsk &&
@@ -3429,7 +3242,7 @@ export async function runScheduledAutopilotTick(): Promise<{
       mskHour >= cfg.eveningHourMsk && cfg.lastEveningRunDate !== mskDateStr;
 
     const needsTopUp =
-      activeOnStorefront < Math.max(2, Math.floor(cfg.minActiveOnStorefront / 2)) &&
+      cfg.minActiveOnStorefront > 0 && activeOnStorefront < cfg.minActiveOnStorefront &&
       (!cfg.lastScanAt ||
         Date.now() - new Date(cfg.lastScanAt).getTime() > 2 * 3600_000);
 
@@ -3446,12 +3259,21 @@ export async function runScheduledAutopilotTick(): Promise<{
     const scanRes = await runAiScanAndGenerateCycle({
       forcePublish: true,
       triggerLabel: slotName,
+      expectedConfigSnapshot: cfg,
+      requireFullMode: true,
     });
 
-    await mutateState((s) => {
-      if (dueMorning) s.aiAutopilot.lastMorningRunDate = mskDateStr;
-      if (dueEvening) s.aiAutopilot.lastEveningRunDate = mskDateStr;
-    });
+    try {
+      await mutateState((s) => {
+        // Do not consume a slot from a stale schedule after an edit or pause.
+        assertAutopilotConfigUnchanged(s.aiAutopilot, cfg);
+        if (dueMorning) s.aiAutopilot.lastMorningRunDate = mskDateStr;
+        if (dueEvening) s.aiAutopilot.lastEveningRunDate = mskDateStr;
+      });
+    } catch (err) {
+      if (!(err instanceof AutopilotCommitConflict)) throw err;
+      return { skipped: false, reason: 'CONFIG_CHANGED', published: scanRes.createdCount, settled };
+    }
 
     return {
       skipped: false,

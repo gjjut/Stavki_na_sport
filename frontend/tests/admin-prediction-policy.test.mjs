@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadTypeScriptModule } from './load-typescript-module.mjs';
+import { createRequire } from 'node:module';
 
-const { deleteUnownedPrediction, assertPredictionsExistForOrder, assertInsuranceChangeAllowed, assertPredictionSaleTermsUnchanged, validatePredictionForPublication, grantPredictionAccess } = await loadTypeScriptModule(
-  new URL('../src/server/admin-prediction-policy.ts', import.meta.url),
-);
+const require = createRequire(import.meta.url);
+require('./ui-test-utils.cjs');
+const { deleteUnownedPrediction, assertPredictionsExistForOrder, assertInsuranceChangeAllowed, assertPredictionSaleTermsUnchanged, validatePredictionForPublication, grantPredictionAccess } = require('../src/server/admin-prediction-policy.ts');
 
 const state = (transactions = [], users = []) => ({
   predictions: [{ id: 'pred-1' }, { id: 'pred-2' }], transactions, users,
@@ -35,6 +35,12 @@ test('deletion only removes an existing event without client access or active or
     const noAccess = state([order(status)]);
     assert.equal(deleteUnownedPrediction(noAccess, 'pred-1').id, 'pred-1');
   }
+});
+
+test('manual deletion also preserves historical orders for archived demo records', () => {
+  const archived = { predictions: [{ id: 'pred_init_1' }], users: [], transactions: [order('REFUNDED', 'pred_init_1')] };
+  assert.throws(() => deleteUnownedPrediction(archived, 'pred_init_1'), /история заказа/);
+  assert.equal(archived.predictions.length, 1);
 });
 
 test('gifts are tracked on new accounts but do not fabricate a complete legacy history', () => {

@@ -13,7 +13,14 @@ export async function POST(req: NextRequest) {
   try {
     await requireAdminAccount();
     const body = await req.json();
-    const created = await createPredictionByAdmin(body);
+    // Manual publication cannot assert model provenance or supply a forged AI report.
+    const created = await createPredictionByAdmin({
+      ...body,
+      authorSource: 'HUMAN',
+      agentReport: null,
+      aiConfidencePct: null,
+      aiEdgePct: null,
+    });
     return NextResponse.json({ prediction: created });
   } catch (err) {
     const code = err instanceof Error ? err.message : '';

@@ -3,6 +3,7 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Layers, Sparkles, Trash2 } from 'lucide-react';
+import { MAX_BUNDLE_ITEMS } from '@/lib/checkout-policy';
 import type { PublicPredictionDto } from '@/server/types';
 
 interface BundleCartBarProps {
@@ -54,15 +55,18 @@ export const BundleCartBar: React.FC<BundleCartBarProps> = ({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-1.5 text-xs font-extrabold">
                 <span>Набор: {selectedItems.length} шт.</span>
+                {selectedItems.length >= MAX_BUNDLE_ITEMS && <span className="text-[10px] text-amber-300">Достигнут лимит {MAX_BUNDLE_ITEMS}</span>}
                 {discountPct > 0 ? (
                   <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
                     <Sparkles className="h-3 w-3" />
                     <span>−{discountPct}%</span>
                   </span>
-                ) : (
+                ) : selectedItems.length === 1 && bundle2DiscountPct > 0 ? (
                   <span className="text-[11px] font-medium text-blue-300">
                     +1 матч для −{bundle2DiscountPct}%
                   </span>
+                ) : (
+                  <span className="text-[11px] font-medium text-blue-300">Без скидки на набор</span>
                 )}
               </div>
               <div className="mt-0.5 hidden max-w-xs truncate text-[11px] text-slate-400 sm:block">
@@ -96,6 +100,7 @@ export const BundleCartBar: React.FC<BundleCartBarProps> = ({
             <button
               type="button"
               title="Очистить выбор"
+              aria-label="Очистить выбор"
               onClick={onClear}
               className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white"
             >

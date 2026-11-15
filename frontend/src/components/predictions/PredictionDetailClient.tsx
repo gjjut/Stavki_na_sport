@@ -30,11 +30,12 @@ import {
   type CheckoutModalTarget,
 } from '@/components/billing/YooKassaCheckoutModal';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
+import { PublicLoadError } from '@/components/layout/PublicLoadError';
 import { explainMarketInPlainRussian } from '@/lib/plain-russian';
 import type { PublicPredictionDto } from '@/server/types';
 
 export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => {
-  const { data, loading, reload } = usePublicPlatform();
+  const { data, loading, error, reload } = usePublicPlatform();
   const [checkoutTarget, setCheckoutTarget] =
     useState<CheckoutModalTarget | null>(null);
   const [hashModalItem, setHashModalItem] =
@@ -110,6 +111,7 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
       brand={data?.brand ?? null}
       onViewerChange={() => reload()}
     >
+      <PublicLoadError message={error} onRetry={() => void reload()} />
       {/* ШАПКА МАТЧА */}
       <div className="hero-surface py-8 text-white sm:py-10">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -255,10 +257,8 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
             </div>
           ) : (
             <div className="mt-4">
-              <h1 className="text-xl font-bold">Матч не найден</h1>
-              <p className="mt-1 text-xs text-slate-400">
-                Возможно, событие было перенесено. Выберите другой актуальный матч в каталоге.
-              </p>
+              <h1 className="text-xl font-bold">{error && !data ? 'Данные временно недоступны' : 'Матч не найден'}</h1>
+              {!error && <p className="mt-1 text-xs text-slate-400">Возможно, событие было перенесено. Выберите другой актуальный матч в каталоге.</p>}
             </div>
           )}
         </div>
@@ -286,9 +286,9 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
                       <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
                       <div className="text-xs leading-relaxed">
                         <strong className="font-bold">
-                          Действует бесплатная страховка 100%:
+                          Начисление по программе «страховка»:
                         </strong>{' '}
-                        если этот прогноз не зайдет (или будет рассчитан возвратом), полная стоимость покупки автоматически вернется на ваш счет в личном кабинете для открытия любого следующего матча без доплат.
+                        при расчёте этого прогноза как проигрыш или возврат на баланс сайта начисляется стоимость оплаченного прогноза; в наборе — округлённая доля стоимости заказа. Это не возмещает проигранную ставку и не заменяет законный возврат денег.
                       </div>
                     </div>
                   )}
@@ -348,7 +348,7 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
                                 <p className="mt-1 leading-relaxed text-slate-600">
                                   {guide.whereToFindInBk}
                                   {prediction.minAcceptableOdds
-                                    ? ` (выгодно брать от ${prediction.minAcceptableOdds.toFixed(2)} и выше).`
+                                    ? ` (ориентир коэффициента по оценке автора: от ${prediction.minAcceptableOdds.toFixed(2)}).`
                                     : ''}
                                 </p>
                               </div>
@@ -393,18 +393,12 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
                                 </div>
 
                                 {(() => {
-                                  const recBetRub = Math.max(
-                                    50,
-                                    Math.round(
-                                      (userBankRub * prediction.stakeUnits) /
-                                        100,
-                                    ),
-                                  );
-                                  const oddsVal = prediction.fixedOdds ?? 1.85;
-                                  const totalPayoutRub = Math.round(
-                                    recBetRub * oddsVal,
-                                  );
-                                  const netWinRub = totalPayoutRub - recBetRub;
+                                  const recBetRub = Math.max(0, Math.round((userBankRub * prediction.stakeUnits) / 100));
+                                  const oddsVal = prediction.fixedOdds;
+                                  const totalPayoutRub = typeof oddsVal === 'number' && Number.isFinite(oddsVal) && oddsVal > 1
+                                    ? Math.round(recBetRub * oddsVal)
+                                    : null;
+                                  const netWinRub = totalPayoutRub === null ? null : totalPayoutRub - recBetRub;
                                   return (
                                     <div className="mt-2.5 grid grid-cols-3 gap-2 rounded-xl bg-slate-50 p-2.5 text-center">
                                       <div>
@@ -417,26 +411,24 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
                                       </div>
                                       <div>
                                         <div className="text-[10px] text-slate-500">
-                                          Чистая прибыль
+                                          Прибыль при выигрыше
                                         </div>
                                         <div className="font-mono text-xs font-black text-emerald-600 sm:text-sm">
-                                          +{netWinRub.toLocaleString('ru-RU')} ₽
+                                          {netWinRub === null ? '—' : `+${netWinRub.toLocaleString('ru-RU')} ₽`}
                                         </div>
                                       </div>
                                       <div>
                                         <div className="text-[10px] text-slate-500">
-                                          Выплата БК
+                                          Пример выплаты
                                         </div>
                                         <div className="font-mono text-xs font-black text-blue-600 sm:text-sm">
-                                          {totalPayoutRub.toLocaleString(
-                                            'ru-RU',
-                                          )}{' '}
-                                          ₽
+                                          {totalPayoutRub === null ? '—' : `${totalPayoutRub.toLocaleString('ru-RU')} ₽`}
                                         </div>
                                       </div>
                                     </div>
                                   );
                                 })()}
+                                <p className="mt-2 text-[11px] leading-relaxed text-slate-500">Пример при полном выигрыше по указанному коэффициенту, без цены прогноза, налогов и комиссий. Реальные условия и расчёт определяет букмекер; выигрыш не гарантирован.</p>
                               </div>
 
                               <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2.5 sm:col-span-2">
@@ -490,33 +482,33 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
                           <span>Разовый доступ без подписок</span>
                         </div>
                         <div className="mt-1 text-lg font-extrabold text-slate-950">
-                          Что мгновенно откроется на этой странице после оплаты:
+                          Что откроется на этой странице после подтверждения оплаты:
                         </div>
 
                         <ul className="mt-3.5 space-y-2 text-xs text-slate-700 sm:text-sm">
                           <li className="flex items-start gap-2">
                             <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
                             <span>
-                              Точная ставка простыми словами (как в Фонбет, Винлайн, Пари и Бетбум)
+                              Выбранный исход и пояснение к нему
                             </span>
                           </li>
                           <li className="flex items-start gap-2">
                             <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
                             <span>
-                              Рабочий коэффициент и калькулятор безопасной суммы ставки под ваш банк
+                              Указанный коэффициент и пример расчёта; условия могут измениться
                             </span>
                           </li>
                           <li className="flex items-start gap-2">
                             <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
                             <span>
-                              Полный разбор формы, мотивации и факторов выбора на 3 абзаца
+                              Опубликованный аналитический разбор
                             </span>
                           </li>
                           {prediction.insuredOnLoss && (
                             <li className="flex items-start gap-2 font-semibold text-emerald-800">
                               <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
                               <span>
-                                Автоматический возврат 100% оплаты на баланс при минусе или возврате
+                                Начисление на баланс при минусе или возврате по условиям оферты
                               </span>
                             </li>
                           )}
@@ -554,7 +546,7 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
                       </div>
 
                       <div className="mt-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                        Скидка <strong>−15%</strong> на первый заказ по промокоду{' '}
+                        При оформлении можно проверить промокод{' '}
                         <code className="font-mono font-black text-slate-950">
                           START15
                         </code>
@@ -605,10 +597,10 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
                   <div className="flex items-center gap-2 text-xs font-extrabold text-slate-900">
                     <ShieldCheck className="h-4 w-4 text-emerald-600" />
-                    <span>Цифровая защита SHA-256</span>
+                    <span>Контрольная сумма SHA-256</span>
                   </div>
                   <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
-                    Исход и коэффициент зафиксированы криптографической подписью до стартового свистка. Подмена задним числом технически исключена.
+                    Отпечаток позволяет сравнить время матча, исход, коэффициент и долю банка. Это не цифровая подпись и не независимое доказательство даты: сохраните хеш заранее вне сайта для сравнения.
                   </p>
                   <button
                     type="button"
@@ -630,7 +622,7 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
                       Другие актуальные прогнозы
                     </h2>
                     <p className="text-xs text-slate-500">
-                      Возьмите 2–3 матча на главной витрине со скидкой до −25%
+                      Выберите несколько событий в каталоге и проверьте действующую скидку при оформлении
                     </p>
                   </div>
                   <Link
@@ -664,7 +656,7 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
           <div className="mx-auto flex max-w-md items-center justify-between gap-3">
             <div>
               <div className="text-[10px] font-semibold text-slate-500">
-                Разовый доступ · Страховка 100%
+                Разовый доступ {prediction.insuredOnLoss ? '· Начисление по условиям' : ''}
               </div>
               <div className="font-mono text-lg font-black text-slate-950">
                 {(prediction.singlePriceRub ?? defaultPrice).toLocaleString(
@@ -688,6 +680,7 @@ export const PredictionDetailClient: React.FC<{ slug: string }> = ({ slug }) => 
       <YooKassaCheckoutModal
         target={checkoutTarget}
         viewer={data?.viewer ?? null}
+        paymentMode={data?.brand.paymentMode}
         onClose={() => setCheckoutTarget(null)}
         onSuccess={reload}
       />

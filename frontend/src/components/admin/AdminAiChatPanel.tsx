@@ -24,6 +24,12 @@ interface AdminAiChatPanelProps {
   onRefresh: () => Promise<void>;
 }
 
+function mergeUnconfirmedMessages(saved: AiChatMessage[], transient: AiChatMessage[]): AiChatMessage[] {
+  const ids = new Set(saved.map((message) => message.id));
+  return [...saved, ...transient.filter((message) => !ids.has(message.id))]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 const QUICK_PROMPTS = [
   'Привет! Какая ты модель и что ты сейчас видишь по моему сайту?',
   'Проверь открытые источники и выложи 3 самых надежных матча на витрину',
@@ -52,11 +58,15 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
   const [error, setError] = useState<string | null>(null);
   const sendingRef = useRef(false);
   const clearingRef = useRef(false);
+  // Retain unconfirmed turns locally if the parent refreshes its saved history.
+  const unconfirmedMessages = useRef<AiChatMessage[]>([]);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [setupOpen, setSetupOpen] = useState(!hasConfiguredExternalModel);
 
   useEffect(() => {
-    if (!sendingRef.current && !clearingRef.current) setMessages(initialMessages);
+    if (!sendingRef.current && !clearingRef.current) {
+      setMessages(mergeUnconfirmedMessages(initialMessages, unconfirmedMessages.current));
+    }
   }, [initialMessages]);
 
   const sendMessage = async () => {
@@ -84,18 +94,23 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
       });
       const json = (await res.json().catch(() => ({}))) as {
         messages?: AiChatMessage[];
+        userMessage?: AiChatMessage;
         assistantMessage?: AiChatMessage;
+        historyStatus?: 'saved' | 'unconfirmed';
         error?: string;
       };
       if (!res.ok) throw new Error(json.error || `Не удалось получить ответ (HTTP ${res.status})`);
+      if (json.historyStatus === 'unconfirmed' && json.userMessage && json.assistantMessage) {
+        unconfirmedMessages.current.push(json.userMessage, json.assistantMessage);
+      }
       if (Array.isArray(json.messages)) {
-        setMessages(json.messages);
+        setMessages(mergeUnconfirmedMessages(json.messages, unconfirmedMessages.current));
       } else if (json.assistantMessage) {
         setMessages((prev) => [...prev, json.assistantMessage!]);
       } else {
         throw new Error('Сервер не вернул ответ чата');
       }
-      if (json.assistantMessage?.executedActions?.length) {
+      if (json.assistantMessage?.executedActions?.length && json.historyStatus !== 'unconfirmed') {
         try {
           await onRefresh();
         } catch {
@@ -122,6 +137,7 @@ export const AdminAiChatPanel: React.FC<AdminAiChatPanelProps> = ({
       const res = await fetch('/api/v1/admin/ai-chat', { method: 'DELETE' });
       const json = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(json.error || `Не удалось очистить историю (HTTP ${res.status})`);
+      unconfirmedMessages.current = [];
       setMessages([]);
       setConfirmClear(false);
       try {

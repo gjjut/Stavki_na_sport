@@ -1,12 +1,18 @@
-import { getSessionUserIdFromCookies } from './auth';
+import { getSessionCandidatesFromCookies, sessionMatchesPassword } from './auth';
 import { readState } from './database';
 import type { UserAccount } from './types';
 
 export async function getOptionalViewer(): Promise<UserAccount | null> {
-  const uid = await getSessionUserIdFromCookies();
-  if (!uid) return null;
+  const sessions = await getSessionCandidatesFromCookies();
+  if (sessions.length === 0) return null;
   const state = await readState();
-  return state.users.find((u) => u.id === uid) ?? null;
+  // A valid signature does not prove that the password has not since changed.
+  // A newer partitioned token for the *same* user can replace a revoked normal
+  // token, but never silently switch to another account from a stale partition.
+  const user = state.users.find((u) => u.id === sessions[0].uid);
+  if (!user || user.status !== 'ACTIVE') return null;
+  return sessions.some((session) => session.uid === user.id && sessionMatchesPassword(session, user.passwordHash))
+    ? user : null;
 }
 
 export async function requireAuthenticatedUser(): Promise<UserAccount> {

@@ -29,9 +29,11 @@ import {
   type CheckoutModalTarget,
 } from '@/components/billing/YooKassaCheckoutModal';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
+import { PublicLoadError } from '@/components/layout/PublicLoadError';
+import { openTelegramExternalLink } from '@/lib/embedded-browser';
 import type {
   AffiliateLinkRecord,
-  OrderTransaction,
+  CustomerOrder,
   PayoutRequestRecord,
   PublicPredictionDto,
   SafeSessionUser,
@@ -42,15 +44,17 @@ interface CabinetPayload {
   telegramBotUsername?: string;
   telegramBotConfigured?: boolean;
   purchasedPredictions: PublicPredictionDto[];
-  orders: OrderTransaction[];
+  orders: CustomerOrder[];
   affiliateLinks: AffiliateLinkRecord[];
   payouts: PayoutRequestRecord[];
 }
 
 export default function CabinetPage() {
   const router = useRouter();
-  const { data: pub, reload: reloadPublic } = usePublicPlatform();
+  const { data: pub, error: publicError, reload: reloadPublic } = usePublicPlatform();
   const [cabinet, setCabinet] = useState<CabinetPayload | null>(null);
+  const [cabinetLoading, setCabinetLoading] = useState(true);
+  const [cabinetError, setCabinetError] = useState<string | null>(null);
   const [checkoutTarget, setCheckoutTarget] = useState<CheckoutModalTarget | null>(null);
   const [hashItem, setHashItem] = useState<PublicPredictionDto | null>(null);
   const [copiedRef, setCopiedRef] = useState(false);
@@ -97,6 +101,8 @@ export default function CabinetPage() {
         showToast('Уведомления в Telegram отключены');
       }
       await loadAll();
+    } catch {
+      showToast('Не удалось связаться с сервером. Проверьте состояние подключения перед повтором.');
     } finally {
       setTgBusy(false);
     }
@@ -108,16 +114,26 @@ export default function CabinetPage() {
   };
 
   const loadCabinet = useCallback(async () => {
-    const cabRes = await fetch('/api/v1/cabinet', { cache: 'no-store' });
-    if (cabRes.status === 401) {
-      router.push('/login');
-      return;
-    }
-    if (cabRes.ok) {
+    setCabinetLoading(true);
+    try {
+      const cabRes = await fetch('/api/v1/cabinet', { cache: 'no-store' });
+      if (cabRes.status === 401 || cabRes.status === 403) {
+        setCabinet(null);
+        if (cabRes.status === 401) router.push('/login');
+        else setCabinetError('Доступ к кабинету ограничен. Обратитесь в поддержку.');
+        return;
+      }
+      if (!cabRes.ok) throw new Error('Cabinet unavailable');
       const cabJson = (await cabRes.json()) as CabinetPayload;
+      if (!cabJson?.user || !Array.isArray(cabJson.orders)) throw new Error('Invalid cabinet data');
       setCabinet(cabJson);
       setEditName(cabJson.user.displayName);
       setEditTelegram(cabJson.user.telegramUsername || '');
+      setCabinetError(null);
+    } catch {
+      setCabinetError('Не удалось обновить кабинет. Ранее показанные сведения могут быть устаревшими.');
+    } finally {
+      setCabinetLoading(false);
     }
   }, [router]);
 
@@ -137,9 +153,13 @@ export default function CabinetPage() {
   const copyPartnerLink = async () => {
     if (!cabinet?.user.referralCode) return;
     const url = `${window.location.origin}/?ref=${cabinet.user.referralCode}`;
-    await navigator.clipboard.writeText(url);
-    setCopiedRef(true);
-    window.setTimeout(() => setCopiedRef(false), 2000);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedRef(true);
+      window.setTimeout(() => setCopiedRef(false), 2000);
+    } catch {
+      showToast('Не удалось скопировать ссылку автоматически. Скопируйте её вручную.');
+    }
   };
 
   const handleTransferPartnerToWallet = async () => {
@@ -183,7 +203,7 @@ export default function CabinetPage() {
       setPayoutOpen(false);
       setPayoutAmount('');
       setPayoutRequisites('');
-      showToast('Заявка на вывод создана! Выплата поступит после проверки реквизитов.');
+      showToast('Заявка на выплату создана и будет рассмотрена.');
       await loadAll();
     } catch (err) {
       setPayoutError(err instanceof Error ? err.message : 'Ошибка вывода');
@@ -221,12 +241,26 @@ export default function CabinetPage() {
     }
   };
 
+  if (!cabinet) {
+    return (
+      <SiteShell viewer={pub?.viewer ?? null} brand={pub?.brand ?? null} onViewerChange={() => router.push('/')}>
+        <div className="mx-auto w-full max-w-3xl px-4 py-10">
+          <h1 className="text-2xl font-black text-slate-950">Личный кабинет</h1>
+          <PublicLoadError message={cabinetError || publicError} onRetry={() => void loadAll()} />
+          {cabinetLoading && <p role="status" className="mt-4 text-sm text-slate-600">Загружаем кабинет…</p>}
+          {!cabinetLoading && !cabinetError && <p role="status" className="mt-4 text-sm text-slate-600">Переходим к входу…</p>}
+        </div>
+      </SiteShell>
+    );
+  }
+
   return (
     <SiteShell
       viewer={pub?.viewer ?? null}
       brand={pub?.brand ?? null}
       onViewerChange={() => router.push('/')}
     >
+      <PublicLoadError message={cabinetError || publicError} onRetry={() => void loadAll()} />
       {notice && (
         <div className="fixed right-4 top-20 z-50 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-900 shadow-lg">
           {notice}
@@ -315,7 +349,7 @@ export default function CabinetPage() {
                           : `Пополнение баланса на ${amount.toLocaleString('ru-RU')} ₽`,
                       subtitle:
                         bonus > 0
-                          ? `К оплате ${amount.toLocaleString('ru-RU')} ₽ · Подарок +${bonus.toLocaleString('ru-RU')} ₽ зачисляется мгновенно (без подписок)`
+                          ? `К оплате ${amount.toLocaleString('ru-RU')} ₽ · Бонус +${bonus.toLocaleString('ru-RU')} ₽ после подтверждения оплаты (без подписок)`
                           : 'Разовое пополнение для быстрой оплаты прогнозов в 1 клик',
                       priceRub: amount,
                     })
@@ -357,8 +391,9 @@ export default function CabinetPage() {
               <div className="mt-1.5 flex items-center gap-3 text-[11px] text-slate-500">
                 <span>Переходов: {totalClicks}</span>
                 <span>·</span>
-                <span>Покупок друзей: {totalBuyers}</span>
+                <span>Учтённых оплат: {totalBuyers}</span>
               </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-500">Начисление рассчитывается с подтверждённых внешних платежей приглашённых пользователей, включая пополнение баланса. Тестовые и повторные оплаты внутренним балансом не начисляют комиссию. Выплаты рассматриваются вручную; ранее учтённые операции могут требовать сверки.</p>
             </div>
 
             <div className="mt-4 space-y-2">
@@ -420,8 +455,8 @@ export default function CabinetPage() {
                   Личные уведомления в Telegram
                 </h2>
                 {cabinet?.user.telegramChatId ? (
-                  <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
-                    Подключено
+                  <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${cabinet.user.telegramBindingVerified ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'}`}>
+                    {cabinet.user.telegramBindingVerified ? 'Подключено' : 'Нужно переподключить'}
                   </span>
                 ) : (
                   <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
@@ -431,8 +466,10 @@ export default function CabinetPage() {
               </div>
               <p className="mt-0.5 text-xs text-slate-500">
                 {cabinet?.user.telegramChatId
-                  ? 'Все купленные прогнозы, расчеты матчей и возвраты 100% по страховке мгновенно дублируются вам в личные сообщения.'
-                  : 'Подключите нашего бота в 2 клика — купленные прогнозы и уведомления о возврате страховки на баланс будут приходить прямо в ваш Telegram (плюс мгновенный сброс пароля по коду).'}
+                  ? cabinet.user.telegramBindingVerified
+                    ? 'Уведомления о покупках и начислениях могут приходить в ваш Telegram.'
+                    : 'Старая привязка требует подтверждения. Отключите её и подключите бота заново; до этого уведомления и сброс пароля через Telegram отключены.'
+                  : 'Подключите бота для уведомлений и восстановления доступа через Telegram.'}
               </p>
             </div>
           </div>
@@ -442,7 +479,7 @@ export default function CabinetPage() {
               <>
                 <button
                   type="button"
-                  disabled={tgBusy}
+                  disabled={tgBusy || !cabinet.user.telegramBindingVerified}
                   onClick={() => handleTelegramAction('TEST_TELEGRAM_DM')}
                   className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3.5 py-2 text-xs font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50"
                 >
@@ -584,26 +621,32 @@ export default function CabinetPage() {
                       )}
                     </div>
                     <div className="mt-0.5 text-slate-400">
-                      {new Date(order.createdAt).toLocaleString('ru-RU')}
+                      Заказ {order.id} · {new Date(order.createdAt).toLocaleString('ru-RU')}
                       {order.discountRub > 0
                         ? ` · Ваша выгода ${order.discountRub.toLocaleString('ru-RU')} ₽`
                         : ''}
                     </div>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-3">
                     <span className="font-mono font-bold text-slate-950">
                       {order.amountRub.toLocaleString('ru-RU')} ₽
                     </span>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 font-bold text-emerald-700">
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 font-bold ${order.status === 'SUCCEEDED' && !(order.paymentMethod === 'yookassa' && order.paymentModeAtCreation === 'TEST_INSTANT') ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-700'}`}>
                       <CheckCircle2 className="h-3 w-3" />
                       <span>
                         {order.status === 'SUCCEEDED'
-                          ? 'Оплачено'
+                          ? order.paymentMethod === 'internal_balance' ? 'Списано с баланса' : order.paymentModeAtCreation === 'TEST_INSTANT' ? 'Тестовый заказ' : 'Оплачено'
                           : order.status === 'REFUNDED'
-                            ? 'Возврат'
-                            : 'В обработке'}
+                            ? order.refundDestination === 'BALANCE' ? 'Возврат на баланс' : 'Возврат'
+                            : order.status === 'CANCELED' ? 'Отменён' : order.paymentModeAtCreation === 'YOOKASSA_LIVE' && !order.confirmationUrl ? 'На проверке' : 'Ожидает оплаты'}
                       </span>
                     </span>
+                    {order.status === 'PENDING' && order.paymentMethod === 'yookassa' && (
+                      <span className="flex flex-wrap gap-2">
+                        {order.confirmationUrl && <a href={order.confirmationUrl} target="_blank" rel="noopener noreferrer" onClick={(event) => { if (order.confirmationUrl && openTelegramExternalLink(order.confirmationUrl)) event.preventDefault(); }} className="font-semibold text-blue-700 underline">Продолжить оплату</a>}
+                        <Link href={`/payment/return?orderId=${encodeURIComponent(order.id)}`} className="font-semibold text-blue-700 underline">Проверить статус</Link>
+                      </span>
+                    )}
                   </div>
                 </div>
               ))
@@ -733,6 +776,7 @@ export default function CabinetPage() {
                 <input
                   type="text"
                   required
+                  maxLength={160}
                   value={payoutRequisites}
                   onChange={(e) => setPayoutRequisites(e.target.value)}
                   placeholder={
@@ -742,6 +786,7 @@ export default function CabinetPage() {
                   }
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm"
                 />
+                <p className="mt-1 text-xs text-slate-500">Не указывайте CVV, срок действия карты или одноразовые коды.</p>
               </div>
 
               {payoutError && (
@@ -822,7 +867,7 @@ export default function CabinetPage() {
                   type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Новый пароль (от 6 символов)"
+                  placeholder="Новый пароль (от 10 символов)"
                   className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm"
                 />
               </div>
@@ -846,6 +891,7 @@ export default function CabinetPage() {
       <YooKassaCheckoutModal
         target={checkoutTarget}
         viewer={pub?.viewer ?? null}
+        paymentMode={pub?.brand.paymentMode}
         onClose={() => setCheckoutTarget(null)}
         onSuccess={loadAll}
       />

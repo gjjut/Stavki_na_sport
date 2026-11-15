@@ -44,10 +44,13 @@ export async function PATCH(req: NextRequest) {
         grantPredictionAccess(u, body.predictionId);
       } else if (body.action === 'RESET_PASSWORD') {
         const cleanPass = (body.newPassword || '').trim();
-        if (cleanPass.length < 6) {
-          throw new Error('Новый пароль должен содержать минимум 6 символов');
+        if (cleanPass.length < 10 || cleanPass.length > 256) {
+          throw new Error('Новый пароль должен содержать от 10 до 256 символов');
         }
         u.passwordHash = hashPassword(cleanPass);
+        u.passwordResetCode = null;
+        u.passwordResetExpiresAt = null;
+        u.passwordResetAttempts = 0;
       }
 
       return toSafeSessionUser(u);

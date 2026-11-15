@@ -1,3 +1,6 @@
+# Local preview, browser and test scratch files
+.cache/
+
 # Dependencies
 node_modules/
 **/node_modules/

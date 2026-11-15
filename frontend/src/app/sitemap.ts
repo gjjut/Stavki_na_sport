@@ -1,14 +1,14 @@
 import type { MetadataRoute } from 'next';
 import { SEO_LEAGUE_PAGES } from '@/lib/seo-leagues';
+import { configuredSiteOrigin } from '@/lib/site-origin';
 import { readState } from '@/server/database';
+import { isLegacyStarterDemoPrediction } from '@/server/prediction-data-policy';
 
 export const dynamic = 'force-dynamic';
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const baseUrl = (process.env.NEXT_PUBLIC_SITE_URL || 'http://194.67.125.155').replace(
-    /\/+$/,
-    '',
-  );
+  const baseUrl = configuredSiteOrigin();
+  if (!baseUrl) return [];
   const state = await readState();
 
   const staticRoutes: MetadataRoute.Sitemap = [
@@ -42,6 +42,18 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       changeFrequency: 'monthly',
       priority: 0.4,
     },
+    {
+      url: `${baseUrl}/legal/rules`,
+      lastModified: new Date(),
+      changeFrequency: 'monthly',
+      priority: 0.4,
+    },
+    {
+      url: `${baseUrl}/legal/consent`,
+      lastModified: new Date(),
+      changeFrequency: 'monthly',
+      priority: 0.4,
+    },
   ];
 
   const leagueRoutes: MetadataRoute.Sitemap = SEO_LEAGUE_PAGES.map((lg) => ({
@@ -52,6 +64,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   }));
 
   const matchRoutes: MetadataRoute.Sitemap = state.predictions
+    .filter((prediction) => !isLegacyStarterDemoPrediction(prediction))
     .slice(0, 200)
     .map((pred) => ({
       url: `${baseUrl}/predictions/${pred.slug}`,

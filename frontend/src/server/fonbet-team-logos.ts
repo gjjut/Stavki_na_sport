@@ -12,7 +12,7 @@ const FONBET_STATIC_HOSTS = new Set([
  * эмблем команд; поэтому здесь намеренно нет выдуманных URL-шаблонов по ID.
  */
 export function normalizeFonbetTeamImageUrl(raw: unknown): string | null {
-  if (typeof raw !== 'string' || !raw.trim()) return null;
+  if (typeof raw !== 'string' || raw.length > 2048 || !raw.trim()) return null;
   const value = raw.trim();
   const candidate = value.startsWith('//')
     ? `https:${value}`
@@ -22,11 +22,9 @@ export function normalizeFonbetTeamImageUrl(raw: unknown): string | null {
   try {
     const url = new URL(candidate);
     const host = url.hostname.toLowerCase();
-    const isFonbetStatic =
-      FONBET_STATIC_HOSTS.has(host) ||
-      host.endsWith('.bk6bba-resources.com') ||
-      host.endsWith('.bk6bba-resources.ru');
-    if (url.protocol !== 'https:' || !isFonbetStatic) return null;
+    // Do not trust arbitrary subdomains returned by a third-party response.
+    const isFonbetStatic = FONBET_STATIC_HOSTS.has(host);
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || !isFonbetStatic) return null;
     if (!url.pathname.toLowerCase().startsWith('/contentcommon/')) return null;
     return url.toString();
   } catch {

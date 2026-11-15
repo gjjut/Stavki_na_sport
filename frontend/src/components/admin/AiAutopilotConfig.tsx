@@ -21,9 +21,11 @@ interface AiAutopilotConfigFormProps {
   draftConfig: AiAutopilotConfig;
   setDraftConfig: React.Dispatch<React.SetStateAction<AiAutopilotConfig>>;
   busyAction: string | null;
+  configDirty: boolean;
   availableModels: string[];
   llmCheckStatus: { ok: boolean; message: string } | null;
   onApplyProviderPreset: (provider: AiLlmProvider) => void;
+  onConnectionChange: () => void;
   onTestLlm: () => void;
   onToggleSport: (sport: SportType) => void;
   onSaveConfig: (e: React.FormEvent) => void;
@@ -33,9 +35,11 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
   draftConfig,
   setDraftConfig,
   busyAction,
+  configDirty,
   availableModels,
   llmCheckStatus,
   onApplyProviderPreset,
+  onConnectionChange,
   onTestLlm,
   onToggleSport,
   onSaveConfig,
@@ -43,8 +47,9 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
   return (
     <form
       onSubmit={onSaveConfig}
-      className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 lg:col-span-7"
+      className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 sm:p-6 lg:col-span-7"
     >
+      <fieldset disabled={busyAction !== null} className="min-w-0 space-y-4">
       <div className="flex items-center gap-2">
         <Cpu className="h-4 w-4 text-blue-600" />
         <h3 className="text-base font-extrabold text-slate-950">
@@ -53,8 +58,7 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
       </div>
 
       <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/60 p-3 text-xs text-emerald-900">
-        <strong>Сбор линии и результатов (0 ₽/мес):</strong> каскад прямых российских шлюзов{' '}
-        <strong>Фонбет РФ → Леон РФ → Резервный Матч-центр</strong> встроен в ядро и работает автоматически без внешних ключей.
+        <strong>Источники:</strong> для выпуска используются котировки Фонбет или Леон при их доступности. Расписание матч-центра — только диагностика и не заменяет линию букмекера. Выпуск и черновики также требуют ответа настроенной внешней модели; вызовы модели и поиск могут быть платными.
       </div>
 
       {/* Пресеты провайдеров ИИ */}
@@ -72,7 +76,7 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
               ['OPENROUTER', 'OpenRouter'],
               ['RU_GATEWAY', 'ProxyAPI / AITunnel'],
               ['OPENAI', 'OpenAI'],
-              ['BUILTIN_QUANT', 'Встроенный аналитик (0 ₽, без ключей)'],
+              ['BUILTIN_QUANT', 'Локальные команды чата (без выпуска прогнозов)'],
             ] as const
           ).map(([prov, label]) => (
             <button
@@ -96,19 +100,15 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
           {draftConfig.llmProvider === 'PLUSVIBE' && (
             <div className="space-y-2">
               <p className="text-[11px] leading-relaxed text-slate-600">
-                Российский платный шлюз <strong>PlusVibeAPI</strong> (<code className="font-mono font-bold text-slate-900">https://plusvibeapi.ru/v1</code> + автозеркало <code className="font-mono text-slate-700">gw.plusvibeapi.ru/v1</code>). Вставьте ваш ключ <code className="font-mono font-bold">sk-pv-...</code> ниже и нажмите <strong>«Проверить токен и загрузить модели»</strong> — отобразится живой баланс в ₽ и автоматически включится коммерческий русский веб-поиск для прогнозов!
+                Российский платный шлюз <strong>PlusVibeAPI</strong> (<code className="font-mono font-bold text-slate-900">https://plusvibeapi.ru/v1</code>). Проверка отправляет один запрос выбранной модели и может быть платной. При использовании ключа PlusVibe поиск по открытым источникам также может оплачиваться отдельно. При смене провайдера или адреса введите ключ заново.
               </p>
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[10px] font-bold text-slate-500">
-                  Модели PlusVibe (₽/1М):
+                  Примеры ID (наличие и цены уточняйте у провайдера):
                 </span>
                 {[
-                  ['deepseek-v4.1-flash-1017', 'DeepSeek V4.1 Flash (2/8₽)'],
-                  ['gpt-6-luna', 'GPT-6 Luna (3/19₽)'],
-                  ['gemini-3.8-flash', 'Gemini 3.8 Flash (4.7/24₽)'],
-                  ['qwen3.8-max', 'Qwen 3.8 Max (5.3/16₽)'],
-                  ['gpt-6.1-sol', 'GPT-6.1 Sol (14/71₽)'],
-                  ['claude-sonnet-5.5', 'Claude Sonnet 5.5 (23/114₽)'],
+                  ['deepseek-v4.1-flash', 'DeepSeek V4.1 Flash'],
+                  ['gpt-6-luna', 'GPT-6 Luna'],
                 ].map(([mid, mlabel]) => (
                   <button
                     key={mid}
@@ -155,9 +155,10 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
               </label>
               <input
                 value={draftConfig.llmBaseUrl}
-                onChange={(e) =>
-                  setDraftConfig({ ...draftConfig, llmBaseUrl: e.target.value })
-                }
+                onChange={(e) => {
+                  setDraftConfig({ ...draftConfig, llmBaseUrl: e.target.value, llmApiKey: '' });
+                  onConnectionChange();
+                }}
                 placeholder="https://ollama.com/v1"
                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs"
               />
@@ -174,6 +175,9 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
                   }
                   className="mt-1 w-full rounded-xl border border-blue-300 bg-white px-2.5 py-2 font-mono text-xs font-bold text-slate-900"
                 >
+                  {!availableModels.includes(draftConfig.llmModel) && (
+                    <option value={draftConfig.llmModel}>{draftConfig.llmModel} (выбрана ранее)</option>
+                  )}
                   {availableModels.map((m) => (
                     <option key={m} value={m}>
                       {m}
@@ -204,26 +208,8 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
                 }
                 value={draftConfig.llmApiKey}
                 onChange={(e) => {
-                  const val = e.target.value;
-                  if (
-                    val.trim().startsWith('sk-pv-') &&
-                    draftConfig.llmProvider !== 'PLUSVIBE'
-                  ) {
-                    setDraftConfig({
-                      ...draftConfig,
-                      llmProvider: 'PLUSVIBE',
-                      llmBaseUrl: 'https://plusvibeapi.ru/v1',
-                      llmApiKey: val,
-                      llmModel:
-                        !draftConfig.llmModel ||
-                        draftConfig.llmModel.includes('free') ||
-                        draftConfig.llmModel === 'deepseek-v4.1-flash'
-                          ? 'deepseek-v4.1-flash-1017'
-                          : draftConfig.llmModel,
-                    });
-                  } else {
-                    setDraftConfig({ ...draftConfig, llmApiKey: val });
-                  }
+                  setDraftConfig({ ...draftConfig, llmApiKey: e.target.value });
+                  onConnectionChange();
                 }}
                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs"
               />
@@ -278,6 +264,7 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
               <button
                 key={sp.id}
                 type="button"
+                aria-pressed={active}
                 onClick={() => onToggleSport(sp.id)}
                 className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${
                   active
@@ -350,12 +337,12 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
         </div>
         <div>
           <label className="text-[11px] font-bold text-slate-500">
-            Мин. перевес EV%
+            Мин. оценочный перевес, п.п.
           </label>
           <input
             type="number"
-            step="0.5"
-            min={1}
+            step="0.1"
+            min={0}
             max={20}
             value={draftConfig.minValueEdgePct}
             onChange={(e) =>
@@ -371,12 +358,44 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
 
       <div className="grid grid-cols-2 gap-3">
         <div>
+          <label htmlFor="ai-confidence-threshold" className="text-[11px] font-bold text-slate-500">
+            Мин. уверенность ролей, %
+          </label>
+          <input
+            id="ai-confidence-threshold"
+            type="number" min={0} max={100} step="0.1"
+            value={draftConfig.minAgentConfidencePct ?? 60}
+            onChange={(e) => setDraftConfig({ ...draftConfig, minAgentConfidencePct: Number(e.target.value) })}
+            className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold"
+          />
+        </div>
+        <div>
+          <label htmlFor="ai-min-active" className="text-[11px] font-bold text-slate-500">
+            Дополнять витрину ниже, шт. (0 = выкл.)
+          </label>
+          <input
+            id="ai-min-active"
+            type="number" min={0} max={50} step={1}
+            value={draftConfig.minActiveOnStorefront}
+            onChange={(e) => setDraftConfig({ ...draftConfig, minActiveOnStorefront: Number(e.target.value) })}
+            className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs font-bold"
+          />
+        </div>
+      </div>
+      <p className="text-[11px] leading-relaxed text-slate-500">
+        Порог уверенности относится к среднему ответу ролей модели, а не к вероятности победы. Минимальный перевес применяется после оценки модели и серверной коррекции; предварительная эвристика используется только для отбора шортлиста. Если для рынка нет сопоставимой количественной оценки, перевес ограничен 8 п.п. до штрафов и округления. Перевес не гарантирует доходность. Дополнение витрины работает только в полном режиме и не чаще одного раза в два часа после сбора; слоты остаются отдельными.
+      </p>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
           <label className="text-[11px] font-bold text-slate-500">
             Цена платного прогноза ИИ (₽)
           </label>
           <input
             type="number"
             min={50}
+            max={10000000}
+            step={1}
             value={draftConfig.defaultAiPriceRub}
             onChange={(e) =>
               setDraftConfig({
@@ -432,7 +451,7 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
               setDraftConfig({ ...draftConfig, insureAiPicks: e.target.checked })
             }
           />
-          <span>Включать «Страховку 100% на баланс» для всех платных прогнозов ИИ</span>
+          <span>Включать начисление на баланс по программе «страховка» для платных прогнозов ИИ</span>
         </label>
 
         <label className="flex items-center gap-2 text-xs font-bold text-slate-800">
@@ -447,11 +466,12 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
             }
           />
           <span>
-            Автоматически сверять официальный счет после игр и выплачивать страховки
+            Сверять результаты по доступным источникам и начислять страховку на внутренний баланс по условиям оферты
           </span>
         </label>
       </div>
 
+      {configDirty && <p role="status" className="text-xs font-semibold text-amber-800">Есть несохранённые настройки. Обновление статуса их не сбросит.</p>}
       <button
         type="submit"
         disabled={busyAction !== null}
@@ -459,6 +479,7 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
       >
         Сохранить настройки Автопилота
       </button>
+      </fieldset>
     </form>
   );
 };

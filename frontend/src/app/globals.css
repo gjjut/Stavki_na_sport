@@ -43,6 +43,11 @@ body {
   padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
 }
 
+:where(a, button, input, select, textarea):focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 3px;
+}
+
 ::selection {
   background-color: rgba(37, 99, 235, 0.16);
   color: #1e3a8a;

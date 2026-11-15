@@ -5,7 +5,7 @@ import { Download, ReceiptText, Search, Wallet } from 'lucide-react';
 import { LocalDateTime } from '@/components/LocalDateTime';
 import type { OrderTransaction, PayoutRequestRecord } from '@/server/types';
 import { quoteBalanceRefund } from '@/lib/admin-finance-policy';
-import { Badge, ConfirmDialog, EmptyState, SectionCard, type ToastKind } from './ui';
+import { Badge, ConfirmDialog, EmptyState, Modal, SectionCard, type ToastKind } from './ui';
 import { compareValues, escapeCsvCell, formatRub, nextSort, type SortState } from './admin-format';
 import { OrderStatusBadge, SortableHeader } from './AdminTableHelpers';
 
@@ -33,6 +33,9 @@ export function FinanceTab({
   const [refunding, setRefunding] = useState(false);
   const [payoutBusy, setPayoutBusy] = useState<string | null>(null);
   const [payoutTarget, setPayoutTarget] = useState<{ payout: PayoutRequestRecord; decision: 'PAID' | 'REJECTED' } | null>(null);
+  const [syncTarget, setSyncTarget] = useState<OrderTransaction | null>(null);
+  const [paymentId, setPaymentId] = useState('');
+  const [syncBusy, setSyncBusy] = useState(false);
 
   const downloadOrdersCsv = () => {
     const rows = transactions;
@@ -43,6 +46,9 @@ export function FinanceTab({
       'Наименование',
       'Сумма (RUB)',
       'Способ оплаты',
+      'Режим при создании',
+      'ID платежа ЮKassa',
+      'Создание платежа',
       'Статус',
       'Промокод',
       'Возврат по страховке',
@@ -58,6 +64,9 @@ export function FinanceTab({
           r.title,
           r.amountRub,
           r.paymentMethod === 'yookassa' ? 'ЮKassa (Карта/СБП)' : 'Внутренний баланс',
+          r.paymentModeAtCreation === 'TEST_INSTANT' ? 'Тестовый режим кассы' : r.paymentModeAtCreation === 'YOOKASSA_LIVE' ? 'Реальный режим' : 'Неизвестен (старая запись)',
+          r.paymentMethod === 'yookassa' && r.paymentModeAtCreation !== 'TEST_INSTANT' ? r.externalPaymentId : '',
+          r.providerCreationState || '',
           r.status,
           r.promoCode || '',
           r.insuranceCredited ? 'Да' : 'Нет',
@@ -79,7 +88,10 @@ export function FinanceTab({
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     const rows = transactions.filter((o) => {
-      if (statusFilter === 'REVIEW' && !o.externalRefundNotices?.length) return false;
+      const unidentifiedPayment = o.status === 'PENDING' && o.paymentModeAtCreation === 'YOOKASSA_LIVE' &&
+        (o.providerCreationState === 'CREATING' || o.providerCreationState === 'UNKNOWN' ||
+         (o.providerCreationState === 'IDENTIFIED' && !o.confirmationUrl));
+      if (statusFilter === 'REVIEW' && !o.externalRefundNotices?.length && !unidentifiedPayment) return false;
       if (statusFilter !== 'ALL' && statusFilter !== 'REVIEW' && o.status !== statusFilter) return false;
       if (!q) return true;
       if (initialOrderId && q === initialOrderId.toLowerCase()) return o.id === initialOrderId;
@@ -147,6 +159,35 @@ export function FinanceTab({
       onToast(err instanceof Error ? err.message : 'Не удалось выполнить возврат', 'error');
     } finally {
       setRefunding(false);
+    }
+  };
+
+  const syncPayment = async () => {
+    if (!syncTarget || syncBusy) return;
+    if (!paymentId.trim()) {
+      onToast('Сначала найдите ID платежа в ЮKassa по номеру заказа.', 'error');
+      return;
+    }
+    setSyncBusy(true);
+    try {
+      const res = await fetch('/api/v1/admin/finance', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'SYNC_PAYMENT', orderId: syncTarget.id, externalPaymentId: paymentId.trim() }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { error?: string; order?: { status?: string } };
+      if (!res.ok) throw new Error(json.error || 'Не удалось проверить платёж.');
+      setSyncTarget(null);
+      await onRefresh();
+      onToast(json.order?.status === 'SUCCEEDED'
+        ? 'Оплата подтверждена ЮKassa, заказ исполнен.'
+        : json.order?.status === 'CANCELED'
+          ? 'ЮKassa подтвердила отмену, резерв заказа снят.'
+          : 'Платёж найден, но всё ещё ожидает подтверждения. Резерв сохранён.', 'info');
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Не удалось проверить платёж.', 'error');
+    } finally {
+      setSyncBusy(false);
     }
   };
 
@@ -278,7 +319,11 @@ export function FinanceTab({
                   <tr key={order.id} className="hover:bg-slate-50/60">
                     <td className="px-5 py-3">
                       <div className="font-bold text-slate-900">{order.title}</div>
+                      <div className="mt-0.5 font-mono text-[10px] text-slate-500">Заказ: {order.id}</div>
                       <div className="mt-0.5 flex flex-wrap gap-1">
+                        {order.paymentMethod === 'yookassa' && order.paymentModeAtCreation === 'TEST_INSTANT' && (
+                          <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">Тестовый заказ</span>
+                        )}
                         {order.promoCode && (
                           <span className="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-blue-700">
                             {order.promoCode}
@@ -300,6 +345,9 @@ export function FinanceTab({
                     </td>
                     <td className="px-5 py-3">
                       <OrderStatusBadge status={order.status} />
+                      {order.status === 'PENDING' && order.paymentModeAtCreation === 'YOOKASSA_LIVE' && !order.confirmationUrl && (
+                        <div className="mt-1 max-w-xs text-[10px] leading-relaxed text-amber-800">Нет подтверждённой ссылки оплаты. Сверьте заказ в ЮKassa; не снимайте резерв без проверки.</div>
+                      )}
                       {order.refundDestination === 'BALANCE' && <div className="mt-1 text-[10px] text-slate-500">На баланс: {formatRub(order.refundBalanceAmountRub ?? 0)}</div>}
                       {order.externalRefundNotices?.length ? (
                         <div className="mt-1 max-w-xs text-[10px] leading-relaxed text-amber-800">
@@ -311,6 +359,15 @@ export function FinanceTab({
                       ) : null}
                     </td>
                     <td className="px-5 py-3 text-right">
+                      {order.status === 'PENDING' && order.paymentMethod === 'yookassa' && order.paymentModeAtCreation !== 'TEST_INSTANT' && (
+                        <button
+                          type="button"
+                          onClick={() => { setPaymentId(order.externalPaymentId || ''); setSyncTarget(order); }}
+                          className="rounded-lg border border-blue-200 px-2.5 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-50"
+                        >
+                          Сверить платёж
+                        </button>
+                      )}
                       {order.status === 'SUCCEEDED' && (quoteBalanceRefund(order).ok ? (
                         <button
                           type="button"
@@ -332,6 +389,21 @@ export function FinanceTab({
           </div>
         )}
       </SectionCard>
+
+      <Modal
+        open={syncTarget !== null}
+        onClose={() => { if (!syncBusy) setSyncTarget(null); }}
+        title="Сверка платежа с ЮKassa"
+        description={syncTarget ? `Заказ ${syncTarget.id}. Проверка использует сохранённые ключи магазина.` : ''}
+        footer={<>
+          <button type="button" onClick={() => setSyncTarget(null)} disabled={syncBusy} className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 disabled:opacity-50">Отмена</button>
+          <button type="button" onClick={() => void syncPayment()} disabled={syncBusy || !paymentId.trim()} className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{syncBusy ? 'Проверяем…' : 'Проверить в ЮKassa'}</button>
+        </>}
+      >
+        <p className="text-xs leading-relaxed text-slate-600">Если ID не сохранился, найдите платёж в личном кабинете ЮKassa по номеру заказа и его метаданным. Проверка запросит статус, сумму и данные непосредственно у ЮKassa. Подтверждённый платёж исполнит заказ, подтверждённая отмена снимет резерв. Не вводите ID наугад и не отменяйте неизвестный платёж без сверки.</p>
+        <label className="mt-4 block text-xs font-bold text-slate-700" htmlFor="sync-payment-id">ID платежа ЮKassa</label>
+        <input id="sync-payment-id" value={paymentId} onChange={(event) => setPaymentId(event.target.value)} readOnly={Boolean(syncTarget?.externalPaymentId)} maxLength={128} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 font-mono text-xs" />
+      </Modal>
 
       <ConfirmDialog
         open={refundTarget !== null}

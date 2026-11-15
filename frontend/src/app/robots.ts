@@ -1,10 +1,8 @@
 import type { MetadataRoute } from 'next';
+import { configuredSiteOrigin } from '@/lib/site-origin';
 
 export default function robots(): MetadataRoute.Robots {
-  const baseUrl = (process.env.NEXT_PUBLIC_SITE_URL || 'http://194.67.125.155').replace(
-    /\/+$/,
-    '',
-  );
+  const baseUrl = configuredSiteOrigin();
 
   return {
     rules: [
@@ -14,6 +12,6 @@ export default function robots(): MetadataRoute.Robots {
         disallow: ['/admin', '/cabinet', '/api/', '/payment/'],
       },
     ],
-    sitemap: `${baseUrl}/sitemap.xml`,
+    ...(baseUrl ? { sitemap: `${baseUrl}/sitemap.xml` } : {}),
   };
 }

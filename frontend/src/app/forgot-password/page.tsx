@@ -6,11 +6,12 @@ import { useRouter } from 'next/navigation';
 import { ArrowLeft, KeyRound, Loader2, Send } from 'lucide-react';
 import { SiteShell } from '@/components/layout/SiteShell';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
+import { PublicLoadError } from '@/components/layout/PublicLoadError';
 import type { SafeSessionUser } from '@/server/types';
 
 export default function ForgotPasswordPage() {
   const router = useRouter();
-  const { data, reload } = usePublicPlatform();
+  const { data, error: publicError, reload } = usePublicPlatform();
   const [email, setEmail] = useState('');
   const [step, setStep] = useState<'EMAIL' | 'CODE'>('EMAIL');
   const [code, setCode] = useState('');
@@ -45,8 +46,9 @@ export default function ForgotPasswordPage() {
       }
       if (json.sentViaTelegram) {
         setStep('CODE');
+        if (json.supportTelegram) setSupportUrl(json.supportTelegram);
         setInfoMsg(
-          json.message || 'Код отправлен в ваш привязанный Telegram!',
+          json.message || 'Если Telegram подтверждён, код будет отправлен в личные сообщения.',
         );
       } else {
         setInfoMsg(
@@ -100,6 +102,7 @@ export default function ForgotPasswordPage() {
       viewer={data?.viewer ?? null}
       onViewerChange={() => reload()}
     >
+      <PublicLoadError message={publicError} onRetry={() => void reload()} />
       <div className="mx-auto flex max-w-md flex-col justify-center px-4 py-10 sm:py-16">
         <div className="w-full overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
           <div className="hero-surface px-6 py-5 text-white sm:px-7">
@@ -116,7 +119,7 @@ export default function ForgotPasswordPage() {
             {step === 'EMAIL' ? (
               <form onSubmit={handleRequestCode} className="space-y-4">
                 <p className="text-xs leading-relaxed text-slate-500">
-                  Введите E-mail вашего кабинета. Если у вас подключены уведомления в Telegram — 6-значный код придет мгновенно в личку бота.
+                  Введите E-mail кабинета. Если к нему заранее подключён и подтверждён Telegram, код будет отправлен в личные сообщения при доступности бота.
                 </p>
 
                 <div>
@@ -168,8 +171,9 @@ export default function ForgotPasswordPage() {
             ) : (
               <form onSubmit={handleConfirmReset} className="space-y-4">
                 {infoMsg && (
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-semibold text-emerald-800">
-                    {infoMsg}
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs leading-relaxed text-slate-700">
+                    {infoMsg}{' '}
+                    {supportUrl && <a href={supportUrl} target="_blank" rel="noreferrer" className="font-bold text-blue-700 underline">Поддержка</a>}
                   </div>
                 )}
 
@@ -191,11 +195,13 @@ export default function ForgotPasswordPage() {
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700">
-                    Придумайте новый пароль (от 6 символов)
+                    Придумайте новый пароль (от 10 символов)
                   </label>
                   <input
                     type="password"
-                    minLength={6}
+                    minLength={10}
+                    maxLength={256}
+                    autoComplete="new-password"
                     required
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}

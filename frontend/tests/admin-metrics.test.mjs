@@ -20,8 +20,10 @@ test('sales exclude balance top-ups and refunds and use the local payment day', 
       { ...base, status: 'REFUNDED', amountRub: 200 },
       { ...base, paymentMethod: 'internal_balance', amountRub: 500 },
       { ...base, amountRub: 700, externalRefundNotices: [{ id: 'refund', amountValue: '100.00', currency: 'RUB', verifiedAt: 'now' }] },
+      { ...base, amountRub: 900, paymentModeAtCreation: 'TEST_INSTANT' },
     ];
     assert.equal(isPaidPredictionSale(orders[1]), false);
+    assert.equal(isPaidPredictionSale(orders[5]), false);
     const points = buildPredictionSalesChart(orders, new Date('2026-11-12T01:00:00+07:00'), 2);
     assert.deepEqual(points.map((p) => p.value), [0, 800]);
     assert.deepEqual(points.map((p) => p.orders), [0, 2]);

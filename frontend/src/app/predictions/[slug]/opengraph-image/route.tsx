@@ -1,14 +1,10 @@
 import fs from 'node:fs';
 import { ImageResponse } from 'next/og';
 import { readState } from '@/server/database';
+import { isLegacyStarterDemoPrediction } from '@/server/prediction-data-policy';
 
 export const runtime = 'nodejs';
-export const alt = 'Прогноз на матч | VALUEX';
-export const size = {
-  width: 1200,
-  height: 630,
-};
-export const contentType = 'image/png';
+const size = { width: 1200, height: 630 };
 
 let cachedRegularFont: ArrayBuffer | null = null;
 let cachedBoldFont: ArrayBuffer | null = null;
@@ -71,33 +67,25 @@ function loadSystemCyrillicFonts() {
   return fonts;
 }
 
-export default async function Image({
-  params,
-}: {
-  params: Promise<{ slug: string }> | { slug: string };
-}) {
+export async function GET(_request: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const state = await readState();
   const pred = state.predictions.find((p) => p.slug === slug);
+  if (!pred || isLegacyStarterDemoPrediction(pred)) return new Response('Not found', { status: 404 });
 
   const brandLabel = `${state.settings.brandName || 'VALUEX'}.`;
-  const league = pred?.leagueName || 'Спортивная аналитика';
-  const matchTitle = pred
-    ? `${pred.homeTeam} — ${pred.awayTeam}`
-    : 'Прогнозы на спорт без подписок';
-  const teaserText =
-    pred?.analysisTeaser?.slice(0, 145) ||
-    'Понятный разбор матча для Фонбет, Винлайн и Пари без подписок.';
+  const league = pred.leagueName || 'Спортивная аналитика';
+  const matchTitle = `${pred.homeTeam} — ${pred.awayTeam}`;
+  const teaserText = pred.analysisTeaser?.slice(0, 145) ||
+    'Информационный разбор матча. Результат не гарантирован.';
 
-  const priceText = !pred
-    ? 'Открытая статистика'
-    : pred.accessTier === 'FREE'
-      ? 'Бесплатный прогноз (0 ₽)'
-      : `Разовый доступ: ${pred.singlePriceRub ?? state.settings.defaultSinglePriceRub} ₽`;
+  const priceText = pred.accessTier === 'FREE'
+    ? 'Бесплатный прогноз (0 ₽)'
+    : `Разовый доступ: ${pred.singlePriceRub ?? state.settings.defaultSinglePriceRub} ₽`;
 
-  const badgeText = pred?.insuredOnLoss
-    ? 'Страховка 100% возврата на баланс при минусе'
-    : 'Прогноз запечатан цифровым кодом до начала игры';
+  const badgeText = pred.insuredOnLoss && pred.accessTier === 'PAID_SINGLE'
+    ? 'Начисление на баланс по условиям оферты'
+    : 'Контрольная сумма прогноза SHA-256';
 
   const fonts = loadSystemCyrillicFonts();
 

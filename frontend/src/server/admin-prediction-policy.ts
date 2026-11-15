@@ -1,6 +1,7 @@
 import type { OrderTransaction, PredictionRecord, UserAccount } from './types';
+import { isLegacyStarterDemoPrediction, protectedPredictionIds } from './prediction-data-policy';
 
-type PredictionOwner = Pick<UserAccount, 'purchasedPredictionIds'>;
+type PredictionOwner = Pick<UserAccount, 'purchasedPredictionIds' | 'grantedPredictionIds'>;
 type LinkedOrder = Pick<OrderTransaction, 'status' | 'predictionId' | 'predictionIds'>;
 
 function orderProtectsPrediction(order: LinkedOrder, predictionId: string): boolean {
@@ -31,6 +32,10 @@ export function deleteUnownedPrediction(state: {
   const hasActiveOrder = state.transactions.some((order) => orderProtectsPrediction(order, predictionId));
   if (hasAccess || hasActiveOrder) {
     throw new Error('Событие нельзя удалить: у клиентов есть доступ или связанный оплаченный/ожидающий заказ.');
+  }
+  if (isLegacyStarterDemoPrediction(state.predictions[index]) &&
+      protectedPredictionIds(state.users, state.transactions).has(predictionId)) {
+    throw new Error('Архивную запись нельзя удалить: к ней привязана история заказа или подаренный доступ.');
   }
   return state.predictions.splice(index, 1)[0];
 }

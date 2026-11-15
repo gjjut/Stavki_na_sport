@@ -13,12 +13,14 @@ import {
   type CheckoutModalTarget,
 } from '@/components/billing/YooKassaCheckoutModal';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
+import { PublicLoadError } from '@/components/layout/PublicLoadError';
 import { isOnBrowserLocalDay } from '@/lib/date-time';
 import { SEO_LEAGUE_PAGES } from '@/lib/seo-leagues';
+import { MAX_BUNDLE_ITEMS, toggleBundleSelection } from '@/lib/checkout-policy';
 import type { PublicPredictionDto, SportType } from '@/server/types';
 
 export default function PredictionsCatalogPage() {
-  const { data, loading, reload } = usePublicPlatform();
+  const { data, loading, error, reload } = usePublicPlatform();
   const [mode, setMode] = useState<
     'ACTIVE' | 'TODAY' | 'INSURED' | 'FREE' | 'SETTLED'
   >('ACTIVE');
@@ -61,11 +63,8 @@ export default function PredictionsCatalogPage() {
 
   const toggleBundleItem = (prediction: PublicPredictionDto) => {
     if (!prediction.isLocked || prediction.salesClosed) return;
-    setSelectedBundleIds((prev) =>
-      prev.includes(prediction.id)
-        ? prev.filter((id) => id !== prediction.id)
-        : [...prev, prediction.id],
-    );
+    const eligible = activePredictions.filter((p) => p.isLocked && !p.salesClosed).map((p) => p.id);
+    setSelectedBundleIds((prev) => toggleBundleSelection(prev, prediction.id, eligible));
   };
 
   const selectedBundleItems = activePredictions.filter(
@@ -105,7 +104,7 @@ export default function PredictionsCatalogPage() {
         : mode === 'FREE'
           ? activePredictions.filter((p) => p.accessTier === 'FREE')
           : mode === 'INSURED'
-            ? activePredictions.filter((p) => p.insuredOnLoss)
+            ? activePredictions.filter((p) => p.insuredOnLoss && p.accessTier === 'PAID_SINGLE')
             : activePredictions;
 
   const filtered = baseItems
@@ -132,7 +131,8 @@ export default function PredictionsCatalogPage() {
         return b.stakeUnits - a.stakeUnits;
       }
       if (sortBy === 'PRICE_ASC') {
-        return (a.singlePriceRub ?? 0) - (b.singlePriceRub ?? 0);
+        const price = (p: PublicPredictionDto) => p.accessTier === 'FREE' ? 0 : p.singlePriceRub ?? defaultPrice;
+        return price(a) - price(b);
       }
       return (
         new Date(a.matchStartsAt).getTime() - new Date(b.matchStartsAt).getTime()
@@ -145,13 +145,14 @@ export default function PredictionsCatalogPage() {
       brand={data?.brand ?? null}
       onViewerChange={() => reload()}
     >
+      <PublicLoadError message={error} onRetry={() => void reload()} />
       <div className="hero-surface py-8 text-white sm:py-10">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <h1 className="text-2xl font-black tracking-tight sm:text-3xl">
             Прогнозы на матчи
           </h1>
           <p className="mt-1.5 text-xs text-slate-300 sm:text-sm">
-            Выберите один интересующий матч или соберите набор из 2–3 игр со скидкой до −{bundle3Pct}% (без подписок)
+            Выберите один матч или соберите набор из нескольких прогнозов; действующая цена и скидка будут показаны при оформлении (без подписок).
           </p>
 
           {/* Быстрые переходы по топ-лигам */}
@@ -185,8 +186,8 @@ export default function PredictionsCatalogPage() {
                 ],
                 [
                   'INSURED',
-                  'Страховка 100%',
-                  activePredictions.filter((p) => p.insuredOnLoss).length,
+                  'Со страховкой',
+                  activePredictions.filter((p) => p.insuredOnLoss && p.accessTier === 'PAID_SINGLE').length,
                 ],
                 [
                   'FREE',
@@ -200,7 +201,8 @@ export default function PredictionsCatalogPage() {
                 key={key}
                 type="button"
                 onClick={() => setMode(key)}
-                className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold transition ${
+                aria-pressed={mode === key}
+                className={`inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold transition ${
                   mode === key
                     ? 'bg-blue-600 text-white shadow-2xs'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
@@ -225,6 +227,7 @@ export default function PredictionsCatalogPage() {
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:flex lg:items-center lg:gap-2.5">
             {mode !== 'SETTLED' && (
               <select
+                aria-label="Порядок сортировки"
                 value={sortBy}
                 onChange={(e) =>
                   setSortBy(
@@ -234,12 +237,13 @@ export default function PredictionsCatalogPage() {
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 focus:border-blue-600 focus:outline-none lg:w-auto"
               >
                 <option value="SOONEST">Сначала ближайшие</option>
-                <option value="CONFIDENCE">Выше надежность</option>
+                <option value="CONFIDENCE">Больше доля банка по оценке автора</option>
                 <option value="PRICE_ASC">Сначала бесплатные / дешевле</option>
               </select>
             )}
 
             <select
+              aria-label="Вид спорта"
               value={sport}
               onChange={(e) => setSport(e.target.value as SportType | 'ALL')}
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 focus:border-blue-600 focus:outline-none lg:w-auto"
@@ -256,7 +260,8 @@ export default function PredictionsCatalogPage() {
             <div className="relative w-full lg:w-56">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
               <input
-                type="text"
+                type="search"
+                aria-label="Поиск команды или лиги"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Найти команду или лигу..."
@@ -266,6 +271,7 @@ export default function PredictionsCatalogPage() {
                 <button
                   type="button"
                   onClick={() => setSearch('')}
+                  aria-label="Очистить поиск"
                   className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
                 >
                   <X className="h-3.5 w-3.5" />
@@ -275,6 +281,7 @@ export default function PredictionsCatalogPage() {
           </div>
         </div>
 
+        {!loading && data && <p role="status" className="mt-4 text-xs font-medium text-slate-600">Найдено прогнозов: {filtered.length}</p>}
         {/* Сетка 3 карточки в ряд */}
         {loading && !data ? (
           <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
@@ -282,7 +289,7 @@ export default function PredictionsCatalogPage() {
               <PredictionCardSkeleton key={n} />
             ))}
           </div>
-        ) : filtered.length > 0 ? (
+        ) : error && !data ? null : filtered.length > 0 ? (
           <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {filtered.map((prediction) => (
               <PredictionCard
@@ -293,6 +300,7 @@ export default function PredictionsCatalogPage() {
                 onVerifyHash={setHashModalItem}
                 inBundle={selectedBundleIds.includes(prediction.id)}
                 onToggleBundle={toggleBundleItem}
+                bundleLimitReached={selectedBundleItems.length >= MAX_BUNDLE_ITEMS}
               />
             ))}
           </div>
@@ -328,6 +336,7 @@ export default function PredictionsCatalogPage() {
       <YooKassaCheckoutModal
         target={checkoutTarget}
         viewer={data?.viewer ?? null}
+        paymentMode={data?.brand.paymentMode}
         onClose={() => setCheckoutTarget(null)}
         onSuccess={async () => {
           setSelectedBundleIds([]);

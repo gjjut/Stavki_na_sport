@@ -1,17 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { hashPassword } from '@/server/auth';
+import { hashPassword, SESSION_COOKIE_NAME, signSessionToken } from '@/server/auth';
+import { sessionCookieOptions } from '@/server/security-policy';
 import {
   mutateState,
   readState,
+  StorageUnavailableError,
   toAdminSettingsDto,
 } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
 import {
+  diagnoseTelegramChannel,
+  escapeTelegramHtml,
   fetchTelegramBotUsername,
   installTelegramMiniAppAndWebhook,
   sendTelegramChannelAnnouncement,
 } from '@/server/integrations';
 import type { PlatformSettings } from '@/server/types';
+
+function settingsError(err: unknown, fallback: string) {
+  if (err instanceof StorageUnavailableError) return NextResponse.json({ error: err.message }, { status: 503 });
+  const code = err instanceof Error ? err.message : '';
+  if (code === 'UNAUTHORIZED') return NextResponse.json({ error: 'Войдите как администратор.' }, { status: 401 });
+  if (code === 'BLOCKED' || code === 'FORBIDDEN') return NextResponse.json({ error: 'Доступ только для администратора.' }, { status: 403 });
+  return NextResponse.json({ error: code || fallback }, { status: 400 });
+}
 
 export async function PATCH(req: NextRequest) {
   try {
@@ -55,22 +67,26 @@ export async function PATCH(req: NextRequest) {
           adminRow.email = body.newAdminEmail.trim().toLowerCase();
         }
         if (body.newAdminPassword) {
-          if (body.newAdminPassword.length < 12) {
-            throw new Error('Новый пароль администратора должен содержать минимум 12 символов.');
+          if (body.newAdminPassword.length < 12 || body.newAdminPassword.length > 256) {
+            throw new Error('Новый пароль администратора должен содержать от 12 до 256 символов.');
           }
           adminRow.passwordHash = hashPassword(body.newAdminPassword);
+          adminRow.passwordResetCode = null;
+          adminRow.passwordResetExpiresAt = null;
+          adminRow.passwordResetAttempts = 0;
         }
       }
 
-      return state.settings;
+      return { settings: state.settings, passwordHash: adminRow?.passwordHash ?? admin.passwordHash };
     });
 
-    return NextResponse.json({ settings: toAdminSettingsDto(nextSettings) });
+    const response = NextResponse.json({ settings: toAdminSettingsDto(nextSettings.settings) });
+    if (body.newAdminPassword) {
+      response.cookies.set(SESSION_COOKIE_NAME, signSessionToken({ id: admin.id, passwordHash: nextSettings.passwordHash }), sessionCookieOptions(req));
+    }
+    return response;
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Ошибка сохранения настроек' },
-      { status: 400 },
-    );
+    return settingsError(err, 'Ошибка сохранения настроек');
   }
 }
 
@@ -78,7 +94,7 @@ export async function POST(req: NextRequest) {
   try {
     await requireAdminAccount();
     const body = (await req.json().catch(() => ({}))) as {
-      action?: 'TEST_CHANNEL' | 'INSTALL_MINI_APP';
+      action?: 'TEST_CHANNEL' | 'DIAGNOSE_CHANNEL' | 'INSTALL_MINI_APP';
     };
     const state = await readState();
 
@@ -94,21 +110,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, message: result.message });
     }
 
+    if (body.action === 'DIAGNOSE_CHANNEL') {
+      return NextResponse.json(await diagnoseTelegramChannel(state.settings));
+    }
+    if (body.action !== 'TEST_CHANNEL') {
+      return NextResponse.json({ error: 'Укажите действие проверки Telegram.' }, { status: 400 });
+    }
+
     const res = await sendTelegramChannelAnnouncement(
       state.settings,
-      `✅ <b>${state.settings.brandName}</b>: подключение Telegram-бота для публикации анонсов успешно проверено!`,
+      `✅ <b>${escapeTelegramHtml(state.settings.brandName.slice(0, 100))}</b>: подключение Telegram-бота для публикации анонсов успешно проверено!`,
     );
     if (!res.sent) {
       return NextResponse.json(
-        { error: res.error || 'Не удалось отправить сообщение в Telegram' },
-        { status: 400 },
+        { error: res.error, outcome: res.outcome },
+        { status: res.outcome === 'unknown' ? 502 : 400 },
       );
     }
     return NextResponse.json({ sent: true });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Ошибка проверки Telegram' },
-      { status: 400 },
-    );
+    return settingsError(err, 'Ошибка проверки Telegram');
   }
 }

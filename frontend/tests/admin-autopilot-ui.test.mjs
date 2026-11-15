@@ -69,6 +69,104 @@ test('mode changes and diagnostic reports use the existing API actions', async (
   assert.match(view.container.textContent, /A — Б/);
 });
 
+test('manual draft and publish buttons send the action named on the button, even in full mode', async (t) => {
+  const requests = [];
+  global.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    return response({ createdCount: 0, scannedCount: 0, feedSource: 'недоступно' });
+  };
+  const view = await mount(AiAutopilotPanel, props({ config: { ...config, mode: 'FULL_AUTOPILOT' } }));
+  t.after(view.cleanup);
+  await click(buttonWithText(view.container, 'Собрать линию РФ в черновики'));
+  await click(buttonWithText(view.container, 'Выпустить сразу на витрину'));
+  assert.deepEqual(requests, [
+    { action: 'RUN_SCAN_NOW', forcePublish: false },
+    { action: 'RUN_SCAN_NOW', forcePublish: true },
+  ]);
+});
+
+test('legacy cleanup explicitly warns that it may also publish before it runs', async (t) => {
+  const requests = [];
+  global.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    return response({ removedDemoCount: 0, scannedCount: 0, createdCount: 0 });
+  };
+  const view = await mount(AiAutopilotPanel, props());
+  t.after(view.cleanup);
+  await click(buttonWithText(view.container, 'Очистить старые демо и запустить выпуск'));
+  const dialog = view.container.querySelector('[role="dialog"]');
+  assert.match(dialog.textContent, /немедленной публикацией/);
+  assert.equal(requests.length, 0);
+  await click(buttonWithText(dialog, 'Очистить и запустить выпуск'));
+  assert.equal(requests[0].action, 'REPLACE_DEMO_WITH_REAL');
+});
+
+test('cancelling legacy cleanup makes no request and leaves the dialog closed', async (t) => {
+  let calls = 0;
+  global.fetch = async () => { calls++; return response({}); };
+  const view = await mount(AiAutopilotPanel, props());
+  t.after(view.cleanup);
+  await click(buttonWithText(view.container, 'Очистить старые демо и запустить выпуск'));
+  const dialog = view.container.querySelector('[role="dialog"]');
+  assert.ok(dialog);
+  await click(buttonWithText(dialog, 'Отмена'));
+  assert.equal(calls, 0);
+  assert.equal(view.container.querySelector('[role="dialog"]'), null);
+});
+
+test('pause stays available while a manual scan is pending and does not unlock other actions', async (t) => {
+  const { act } = require('./ui-test-utils.cjs');
+  const requests = [];
+  let finishScan;
+  global.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    if (options.method === 'PATCH') return response({});
+    return new Promise((resolve) => { finishScan = resolve; });
+  };
+  const toasts = [];
+  const view = await mount(AiAutopilotPanel, props({ onToast: (...args) => toasts.push(args) }));
+  t.after(view.cleanup);
+  await click(buttonWithText(view.container, 'Выпустить сразу на витрину'));
+  assert.equal(requests[0].action, 'RUN_SCAN_NOW');
+  assert.equal(buttonWithText(view.container, 'Пауза').disabled, false);
+  assert.equal(buttonWithText(view.container, 'Собрать линию РФ в черновики').disabled, true);
+  await click(buttonWithText(view.container, 'Пауза'));
+  assert.deepEqual(requests[1], { config: { mode: 'OFF' } });
+  assert.equal(buttonWithText(view.container, 'Собрать линию РФ в черновики').disabled, true);
+  assert.match(toasts[0][0], /Пауза сохранена/);
+  await act(async () => {
+    finishScan(response({ createdCount: 0, scannedCount: 1, feedSource: 'Макет', warning: 'Настройки изменились во время сбора' }));
+  });
+  assert.equal(buttonWithText(view.container, 'Собрать линию РФ в черновики').disabled, false);
+  assert.match(toasts.at(-1)[0], /Настройки изменились/);
+});
+
+test('unsaved fine-tuning survives a status refresh and sends no counters or stale mode', async (t) => {
+  const { act, dom } = require('./ui-test-utils.cjs');
+  const requests = [];
+  global.fetch = async (_url, options) => { requests.push(JSON.parse(options.body)); return response({}); };
+  const initial = props();
+  const view = await mount(AiAutopilotPanel, initial);
+  t.after(view.cleanup);
+  const confidence = view.container.querySelector('#ai-confidence-threshold');
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(confidence, '72.5');
+    confidence.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  assert.match(view.container.textContent, /Есть несохранённые настройки/);
+  await view.rerender({ ...initial, config: { ...config, totalGeneratedCount: 99, mode: 'MODERATION' } });
+  assert.equal(confidence.value, '72.5');
+  assert.equal(buttonWithText(view.container, 'Премодерация черновиков').getAttribute('aria-pressed'), 'true');
+  await click(buttonWithText(view.container, 'Сохранить настройки Автопилота'));
+  assert.equal(requests[0].config.minAgentConfidencePct, 72.5);
+  assert.equal(requests[0].config.minActiveOnStorefront, 6);
+  assert.equal('mode' in requests[0].config, false);
+  assert.equal('totalGeneratedCount' in requests[0].config, false);
+  assert.equal('requireAgentConsensus' in requests[0].config, false);
+  assert.doesNotMatch(view.container.textContent, /Есть несохранённые настройки/);
+});
+
 test('draft deletion asks for confirmation, reports errors, and can be retried', async (t) => {
   const toasts = [];
   let calls = 0;
@@ -109,4 +207,44 @@ test('clearing logs requires confirmation and reports network failures', async (
   await click(buttonWithText(dialog, 'Очистить'));
   assert.equal(calls, 1);
   assert.deepEqual(toasts[0], ['Нет соединения', 'error']);
+});
+
+test('a lost digest response warns to check the channel before retrying', async (t) => {
+  const toasts = [];
+  let calls = 0;
+  global.fetch = async (_url, options) => {
+    calls++;
+    assert.equal(JSON.parse(options.body).action, 'BROADCAST_DAILY_DIGEST');
+    throw new Error('connection lost');
+  };
+  const view = await mount(AiAutopilotPanel, props({ onToast: (...args) => toasts.push(args) }));
+  t.after(view.cleanup);
+  await click(buttonWithText(view.container, 'Сводка дня в Telegram'));
+  assert.equal(calls, 1);
+  assert.match(toasts[0][0], /Итог публикации неизвестен/);
+  assert.match(toasts[0][0], /проверьте канал перед повтором/i);
+  assert.equal(toasts[0][1], 'error');
+});
+
+test('the configuration form keeps the chosen provider and clears an unsaved secret on URL changes', async (t) => {
+  const { act, dom } = require('./ui-test-utils.cjs');
+  const view = await mount(AiAutopilotPanel, props());
+  t.after(view.cleanup);
+  await click(buttonWithText(view.container, 'Ollama Cloud (deepseek-v4.1-flash)'));
+  const keyInput = view.container.querySelector('input[type="password"]');
+  const fillInput = async (input, value) => act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  await fillInput(keyInput, 'sk-pv-test-draft');
+  let urlInput = [...view.container.querySelectorAll('input')].find((el) => el.value === 'https://ollama.com/v1');
+  assert.ok(urlInput);
+  assert.equal(keyInput.value, 'sk-pv-test-draft');
+  await click(buttonWithText(view.container, 'PlusVibeAPI.ru (Платный РФ · ₽ без VPN)'));
+  assert.equal(view.container.querySelector('input[type="password"]').value, '');
+  urlInput = [...view.container.querySelectorAll('input')].find((el) => el.value === 'https://plusvibeapi.ru/v1');
+  const nextKey = view.container.querySelector('input[type="password"]');
+  await fillInput(nextKey, 'sk-pv-test-draft');
+  await fillInput(urlInput, 'https://other.example/v1');
+  assert.equal(nextKey.value, '');
 });

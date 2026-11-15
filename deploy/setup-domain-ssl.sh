@@ -74,11 +74,12 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
+        # Preserve the original host and port for exact origin checks.
+        proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Host \$http_host;
         proxy_cache_bypass \$http_upgrade;
     }
 }
@@ -194,5 +195,6 @@ echo " Адрес HTTP-уведомлений (Webhook) для личного к
 echo "   https://${DOMAIN}/api/v1/webhooks/yookassa"
 echo ""
 echo " SSL-сертификат продлевается автоматически (certbot.timer)."
+echo " Если используется www.${DOMAIN}, настройте его HTTPS-перенаправление на https://${DOMAIN}."
 echo " Production env: ${ENV_FILE} (права 600)."
 echo "=================================================================="

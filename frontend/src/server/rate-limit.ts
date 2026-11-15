@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
+
 interface RateBucket {
   timestamps: number[];
 }
@@ -37,10 +40,15 @@ export function checkRateLimit(params: {
 }
 
 export function extractClientIp(headers: Headers): string {
-  const xff = headers.get('x-forwarded-for');
-  if (xff) {
-    const first = xff.split(',')[0]?.trim();
-    if (first) return first;
-  }
-  return headers.get('x-real-ip')?.trim() || '127.0.0.1';
+  // The supplied nginx configuration overwrites X-Real-IP with the connecting address.
+  const real = headers.get('x-real-ip')?.trim() || '';
+  if (isIP(real)) return real;
+  // nginx appends the connecting address on the right; the first item may be spoofed.
+  const forwarded = (headers.get('x-forwarded-for') || '').split(',').map((v) => v.trim());
+  const lastValid = [...forwarded].reverse().find((value) => isIP(value));
+  return lastValid || 'unknown';
+}
+
+export function accountRateKey(email: string): string {
+  return createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
 }

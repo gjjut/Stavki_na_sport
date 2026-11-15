@@ -99,11 +99,22 @@ export function AdminAiChatMessages({ messages, sending, error, setupOpen, onOpe
                       <>
                         <span className="inline-flex items-center gap-1 text-blue-700">
                           <Bot className="h-3 w-3 text-blue-600" />
-                          <span>ИИ-Управляющий</span>
+                          <span>Помощник сайта</span>
+                        </span>
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-700">
+                          {msg.replySource === 'MODEL'
+                            ? (msg.executedActions?.length ? 'Текст: нейросеть · действия: сервер' : 'Ответ: нейросеть')
+                            : msg.replySource === 'SERVER'
+                              ? 'Ответ: алгоритм сайта, не нейросеть'
+                              : msg.replySource === 'MIXED'
+                                ? 'Ответ: нейросеть и дополнение сервера'
+                                : 'Источник ответа не установлен (старая запись)'}
                         </span>
                         {msg.modelLabel && (
-                          <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[9px] text-slate-600">
-                            {msg.modelLabel}
+                          <span className="break-all rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[9px] text-slate-600">
+                            {msg.replySource
+                              ? `Метка запроса модели: ${msg.modelLabel}`
+                              : `Старая отметка модели не подтверждена: ${msg.modelLabel}`}
                           </span>
                         )}
                       </>
@@ -154,17 +165,21 @@ export function AdminAiChatMessages({ messages, sending, error, setupOpen, onOpe
                           className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-[11px] font-semibold ${
                             act.ok
                               ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                              : 'border-rose-200 bg-rose-50 text-rose-800'
+                              : act.outcome === 'unknown'
+                                ? 'border-amber-300 bg-amber-50 text-amber-900'
+                                : 'border-rose-200 bg-rose-50 text-rose-800'
                           }`}
                         >
                           {act.ok ? (
                             <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                          ) : act.outcome === 'unknown' ? (
+                            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-700" />
                           ) : (
                             <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-600" />
                           )}
                           <div>
                             <span className="font-extrabold">
-                              Действие на сайте:
+                              {act.outcome === 'unknown' ? 'Итог не подтверждён:' : 'Действие на сайте:'}
                             </span>{' '}
                             {act.summary}
                           </div>

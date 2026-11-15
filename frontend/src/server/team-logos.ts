@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { SportType } from './types';
 import { teamNamesMatch } from './team-names';
 import { normalizeFonbetTeamImageUrl } from './fonbet-team-logos';
+import { normalizeAllowedLogoImageUrl } from './logo-fetch-policy';
 
 export type CrestPattern =
   | 'stripes'
@@ -834,27 +835,52 @@ async function fetchImageBinary(
   requireFonbetHost = false,
 ): Promise<CachedBinaryLogo | null> {
   try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': BROWSER_UA,
-        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-      },
-      signal: AbortSignal.timeout(4500),
-      cache: 'no-store',
-    });
-    if (!res.ok) return null;
-    if (requireFonbetHost && !normalizeFonbetTeamImageUrl(res.url)) return null;
-    const ct = (res.headers.get('content-type') || '').toLowerCase();
-    if (!ct.startsWith('image/')) return null;
-
-    const ab = await res.arrayBuffer();
-    if (ab.byteLength < 120 || ab.byteLength > 1_600_000) return null;
-
-    return {
-      contentType: ct.split(';')[0],
-      buffer: Buffer.from(ab),
-      fetchedAt: Date.now(),
-    };
+    let current = normalizeAllowedLogoImageUrl(url, requireFonbetHost);
+    if (!current) return null;
+    const signal = AbortSignal.timeout(4500);
+    // Validate every hop before fetching it: validating res.url after automatic
+    // redirects is too late to prevent requests to internal services.
+    for (let redirects = 0; redirects <= 2; redirects++) {
+      const res = await fetch(current, {
+        headers: {
+          'User-Agent': BROWSER_UA,
+          Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif',
+        },
+        signal,
+        cache: 'no-store',
+        redirect: 'manual',
+      });
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location');
+        if (!location || redirects === 2) return null;
+        current = normalizeAllowedLogoImageUrl(new URL(location, current).toString(), requireFonbetHost);
+        if (!current) return null;
+        continue;
+      }
+      if (!res.ok) return null;
+      const contentType = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      // Never serve an active SVG as a same-origin document.
+      if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'].includes(contentType)) return null;
+      const maxBytes = 1_600_000;
+      const declaredSize = Number(res.headers.get('content-length') || 0);
+      if (declaredSize > maxBytes || !res.body) return null;
+      const reader = res.body.getReader();
+      const chunks: Buffer[] = [];
+      let size = 0;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxBytes) {
+          await reader.cancel().catch(() => undefined);
+          return null;
+        }
+        chunks.push(Buffer.from(value));
+      }
+      if (size < 120) return null;
+      return { contentType, buffer: Buffer.concat(chunks, size), fetchedAt: Date.now() };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -873,6 +899,7 @@ async function lookupEspnLogoUrl(
       headers: { 'User-Agent': BROWSER_UA, Accept: 'application/json' },
       signal: AbortSignal.timeout(3800),
       cache: 'no-store',
+      redirect: 'error',
     });
     if (!res.ok) return null;
     const json = (await res.json()) as {
@@ -903,6 +930,7 @@ async function lookupSportsDbLogoUrl(
       headers: { 'User-Agent': BROWSER_UA, Accept: 'application/json' },
       signal: AbortSignal.timeout(3800),
       cache: 'no-store',
+      redirect: 'error',
     });
     if (!res.ok) return null;
     const json = (await res.json()) as {
@@ -944,6 +972,7 @@ async function lookupWikipediaPageImage(
       headers: { 'User-Agent': BROWSER_UA, Accept: 'application/json' },
       signal: AbortSignal.timeout(3800),
       cache: 'no-store',
+      redirect: 'error',
     });
     if (res.ok) {
       const json = (await res.json()) as {
@@ -963,6 +992,7 @@ async function lookupWikipediaPageImage(
       headers: { 'User-Agent': BROWSER_UA, Accept: 'application/json' },
       signal: AbortSignal.timeout(3800),
       cache: 'no-store',
+      redirect: 'error',
     });
     if (!sRes.ok) return null;
     const sJson = (await sRes.json()) as {
@@ -999,10 +1029,9 @@ async function discoverOfficialLogoBinary(params: {
   // Командные эмблемы — только прямой ресурс Фонбет, вложенный им в событие.
   // Спортсменам можно передать прямой headshot из спортивного фида.
   const fonbetImageUrl = normalizeFonbetTeamImageUrl(params.directUrl);
-  const individualImageUrl =
-    isIndividual && params.directUrl && /^https?:\/\//i.test(params.directUrl.trim())
-      ? params.directUrl.trim()
-      : null;
+  const individualImageUrl = isIndividual
+    ? normalizeAllowedLogoImageUrl(params.directUrl)
+    : null;
   const directImageUrl = fonbetImageUrl || individualImageUrl;
   if (directImageUrl) {
     const directImg = await fetchImageBinary(directImageUrl, Boolean(fonbetImageUrl));
@@ -1058,11 +1087,16 @@ export async function resolveTeamLogoResponse(params: {
   isOfficialBinary: boolean;
 }> {
   const cleanTeam = (params.teamName || 'Team').trim().slice(0, 90);
+  const cleanEnglishName = (params.enName || '').trim().slice(0, 90);
+  const isIndividual = params.sport === 'TENNIS' || params.sport === 'MMA';
+  const directImageUrl = isIndividual
+    ? normalizeAllowedLogoImageUrl(params.directUrl)
+    : normalizeFonbetTeamImageUrl(params.directUrl);
   const cacheKey = createHash('sha1')
     .update(
-      `fonbet-team-only-v2__${normalizeLookupName(cleanTeam)}__${params.sport || 'ANY'}__${
-        normalizeFonbetTeamImageUrl(params.directUrl) || ''
-      }__${(params.enName || '').trim()}`,
+      `safe-logo-v3__${normalizeLookupName(cleanTeam)}__${params.sport || 'ANY'}__${
+        directImageUrl || ''
+      }__${cleanEnglishName}`,
     )
     .digest('hex');
 
@@ -1120,8 +1154,8 @@ export async function resolveTeamLogoResponse(params: {
   const discovered = await discoverOfficialLogoBinary({
     teamName: cleanTeam,
     sport: params.sport,
-    directUrl: params.directUrl,
-    enName: params.enName,
+    directUrl: directImageUrl,
+    enName: cleanEnglishName,
   });
 
   if (discovered) {
@@ -1155,6 +1189,10 @@ export async function resolveTeamLogoResponse(params: {
     };
   }
 
+  if (negativeLookupUntil.size >= 1000) {
+    const oldestKey = negativeLookupUntil.keys().next().value;
+    if (oldestKey) negativeLookupUntil.delete(oldestKey);
+  }
   negativeLookupUntil.set(cacheKey, Date.now() + NEGATIVE_RETRY_MS);
 
   return {

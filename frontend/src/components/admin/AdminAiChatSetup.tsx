@@ -5,12 +5,8 @@ import { Loader2 } from 'lucide-react';
 import type { AiLlmProvider } from '@/server/types';
 
 const PLUSVIBE_QUICK_MODELS: Array<{ id: string; label: string }> = [
-  { id: 'deepseek-v4.1-flash-1017', label: 'DeepSeek V4.1 Flash (2/8₽ · Эконом)' },
-  { id: 'gpt-6-luna', label: 'GPT-6 Luna (3/19₽)' },
-  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (4.7/24₽)' },
-  { id: 'qwen3.8-max', label: 'Qwen 3.8 Max (5.3/16₽)' },
-  { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol (14/71₽ · Топ)' },
-  { id: 'claude-sonnet-5.5', label: 'Claude Sonnet 5.5 (23/114₽)' },
+  { id: 'deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash' },
+  { id: 'gpt-6-luna', label: 'GPT-6 Luna' },
 ];
 
 const PROVIDER_PRESETS: Array<{
@@ -23,7 +19,7 @@ const PROVIDER_PRESETS: Array<{
     id: 'PLUSVIBE',
     label: 'PlusVibeAPI.ru (Платный РФ · ₽)',
     baseUrl: 'https://plusvibeapi.ru/v1',
-    defaultModel: 'deepseek-v4.1-flash-1017',
+    defaultModel: 'deepseek-v4.1-flash',
   },
   {
     id: 'OLLAMA',
@@ -84,7 +80,7 @@ export function AdminAiChatSetup({ open, llmProvider, llmBaseUrl, llmApiKey, llm
   );
   const [apiKeyDraft, setApiKeyDraft] = useState<string>(llmApiKey || '');
   const [modelDraft, setModelDraft] = useState<string>(
-    llmModel || 'deepseek-v4.1-flash-1017',
+    llmModel || 'deepseek-v4.1-flash',
   );
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [balanceRub, setBalanceRub] = useState<number | null>(null);
@@ -106,6 +102,7 @@ export function AdminAiChatSetup({ open, llmProvider, llmBaseUrl, llmApiKey, llm
   const applyPreset = (id: AiLlmProvider) => {
     const found = PROVIDER_PRESETS.find((p) => p.id === id);
     if (!found) return;
+    if (found.id !== providerDraft || found.baseUrl !== baseUrlDraft) setApiKeyDraft('');
     setProviderDraft(found.id);
     setBaseUrlDraft(found.baseUrl);
     setModelDraft(found.defaultModel);
@@ -142,6 +139,7 @@ export function AdminAiChatSetup({ open, llmProvider, llmBaseUrl, llmApiKey, llm
         keySaved?: boolean;
         keySavedNow?: boolean;
         keyConfigured?: boolean;
+        configSaved?: boolean;
         message?: string;
         error?: string;
       };
@@ -155,9 +153,7 @@ export function AdminAiChatSetup({ open, llmProvider, llmBaseUrl, llmApiKey, llm
       if (Array.isArray(json.availableModels) && json.availableModels.length > 0) {
         setAvailableModels(json.availableModels);
       }
-      const nextProvider =
-        json.detectedProvider ||
-        (apiKeyDraft.trim().startsWith('sk-pv-') ? 'PLUSVIBE' : providerDraft);
+      const nextProvider = json.detectedProvider || providerDraft;
       const nextUrl = json.resolvedBaseUrl || baseUrlDraft;
       const nextModel = json.testedModel || modelDraft;
       setProviderDraft(nextProvider);
@@ -179,7 +175,7 @@ export function AdminAiChatSetup({ open, llmProvider, llmBaseUrl, llmApiKey, llm
             : ' Ключ на сервере не сохранён.';
       setKeyResult({
         ok: Boolean(json.ok),
-        message: `${json.message || json.error || 'Проверка выполнена'}${connectionNote}`,
+        message: `${json.message || json.error || 'Проверка выполнена'}${connectionNote}${json.configSaved ? ' Выбранные провайдер, адрес и модель сохранены.' : ''}`,
       });
       if (keySaved) setApiKeyDraft('');
       await onRefresh();
@@ -279,7 +275,13 @@ export function AdminAiChatSetup({ open, llmProvider, llmBaseUrl, llmApiKey, llm
           id="admin-chat-base-url"
           disabled={testingKey || savingModel}
           value={baseUrlDraft}
-          onChange={(e) => setBaseUrlDraft(e.target.value)}
+          onChange={(e) => {
+            setBaseUrlDraft(e.target.value);
+            setApiKeyDraft('');
+            setAvailableModels([]);
+            setBalanceRub(null);
+            setKeyResult(null);
+          }}
           placeholder="https://plusvibeapi.ru/v1"
           className="mt-0.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-[11px]"
         />
@@ -296,17 +298,10 @@ export function AdminAiChatSetup({ open, llmProvider, llmBaseUrl, llmApiKey, llm
           disabled={testingKey || savingModel}
           value={apiKeyDraft}
           onChange={(e) => {
-            const val = e.target.value;
-            setApiKeyDraft(val);
-            if (val.trim().startsWith('sk-pv-') && providerDraft !== 'PLUSVIBE') {
-              setProviderDraft('PLUSVIBE');
-              setBaseUrlDraft('https://plusvibeapi.ru/v1');
-              setAvailableModels([]);
-              setBalanceRub(null);
-              if (!modelDraft || modelDraft.includes('free') || modelDraft === 'deepseek-v4.1-flash') {
-                setModelDraft('deepseek-v4.1-flash-1017');
-              }
-            }
+            setApiKeyDraft(e.target.value);
+            setAvailableModels([]);
+            setBalanceRub(null);
+            setKeyResult(null);
           }}
           placeholder={
             hasApiKey
@@ -344,7 +339,7 @@ export function AdminAiChatSetup({ open, llmProvider, llmBaseUrl, llmApiKey, llm
             disabled={testingKey || savingModel}
             value={modelDraft}
             onChange={(e) => setModelDraft(e.target.value)}
-            placeholder="deepseek-v4.1-flash-1017"
+            placeholder="deepseek-v4.1-flash"
             className="mt-0.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-[11px]"
           />
         )}
@@ -354,7 +349,7 @@ export function AdminAiChatSetup({ open, llmProvider, llmBaseUrl, llmApiKey, llm
     {providerDraft === 'PLUSVIBE' && (
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
         <span className="text-[10px] font-bold text-slate-500">
-          Быстрый выбор модели PlusVibe (₽/1М):
+          Примеры ID моделей (наличие и цены проверяйте у провайдера):
         </span>
         {PLUSVIBE_QUICK_MODELS.map((qm) => (
           <button
@@ -398,7 +393,8 @@ export function AdminAiChatSetup({ open, llmProvider, llmBaseUrl, llmApiKey, llm
           <>
             Укажите ключ выбранного шлюза и нажмите «Проверить связь и СОХРАНИТЬ».
           </>
-        )}
+        )}{' '}
+        При смене провайдера или адреса введите ключ заново. Проверка выполняет один запрос выбранной модели и может быть платной.
       </span>
 
       <button

@@ -5,6 +5,7 @@ import { CheckCircle2, Loader2, Pencil, Plus, Search, Send, ShieldCheck, Trash2 
 import { LocalDateTime } from '@/components/LocalDateTime';
 import { TeamAvatar } from '@/components/predictions/TeamAvatar';
 import { dateTimeLocalInputToIso, toDateTimeLocalInputValue } from '@/lib/date-time';
+import { isLegacyStarterDemoPrediction } from '@/server/prediction-data-policy';
 import type { AccessTier, PredictionRecord, SportType } from '@/server/types';
 import { formatRub } from './admin-format';
 import { Badge, ConfirmDialog, EmptyState, Field, Modal, SectionCard, inputCls, inputMonoCls, type ToastKind } from './ui';
@@ -218,17 +219,17 @@ export function PredictionsTab({
         checkedCount?: number;
         settledCount?: number;
         compensatedBuyers?: number;
+        warning?: string;
         error?: string;
       };
       if (!res.ok) {
-        onToast(json.error || `Не удалось проверить результаты (HTTP ${res.status})`, 'error');
+        onToast(`${json.error || `Не удалось проверить результаты (HTTP ${res.status})`}. Проверьте результаты и балансы перед повтором.`, 'error');
         return;
       }
-      onToast(
-        (json.settledCount ?? 0) > 0
-          ? `Рассчитано матчей: ${json.settledCount}; страховок выплачено: ${json.compensatedBuyers ?? 0}.`
-          : `Новых расчётов нет. Проверено событий: ${json.checkedCount ?? 0}.`,
-      );
+      const message = (json.settledCount ?? 0) > 0
+        ? `Рассчитано матчей: ${json.settledCount}; начислений страховки на баланс: ${json.compensatedBuyers ?? 0}. Статус Telegram смотрите в журнале и канале.`
+        : `Новых расчётов нет. Проверено событий: ${json.checkedCount ?? 0}.`;
+      onToast(`${message}${json.warning ? ` ${json.warning}` : ''}`, json.warning ? 'error' : undefined);
       await refreshAfterAction();
     } catch {
       onToast('Ответ о расчёте не получен. Обновите данные и проверьте результаты перед повтором.', 'error');
@@ -450,7 +451,7 @@ export function PredictionsTab({
         </div>
       )}
 
-      <SectionCard title={`События (${filtered.length})`} subtitle="Управление прогнозами на витрине. Страховку нельзя изменить при оплаченных или ожидающих заказах.">
+      <SectionCard title={`События (${filtered.length})`} subtitle="Управление событиями. Старые демо-записи скрыты с витрины и не продаются. Страховку нельзя изменить при оплаченных или ожидающих заказах.">
         {filtered.length === 0 ? (
           <EmptyState
             icon={<Search className="h-5 w-5" />}
@@ -487,6 +488,7 @@ export function PredictionsTab({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[11px] font-bold text-slate-400">{item.leagueName}</span>
+                      {isLegacyStarterDemoPrediction(item) && <Badge tone="amber">Демо · скрыто с витрины</Badge>}
                       <Badge tone={item.matchLifecycleStatus === 'LIVE' ? 'rose' : item.matchLifecycleStatus === 'FINISHED' ? 'slate' : 'blue'}>
                         {getAdminMatchStatusLabel(item)}
                       </Badge>
@@ -976,7 +978,7 @@ function CreatePredictionModal({
           {accessTier === 'PAID_SINGLE' && (
             <label className="flex items-center gap-2 text-xs font-bold text-emerald-800">
               <input type="checkbox" checked={insuredOnLoss} onChange={(e) => setInsuredOnLoss(e.target.checked)} />
-              <span>Страховка 100% возврата на баланс при минусе</span>
+              <span>Страховка: начисление на баланс при проигрыше или возврате</span>
             </label>
           )}
           <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">

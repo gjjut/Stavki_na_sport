@@ -6,30 +6,19 @@ import Script from 'next/script';
 import { ArrowRight, ShieldCheck, Sparkles, User, Wallet } from 'lucide-react';
 import { PredictionCard } from '@/components/predictions/PredictionCard';
 import { HashVerifyModal } from '@/components/predictions/HashVerifyModal';
+import { AnalyticsConsent, openAnalyticsSettings } from '@/components/layout/AnalyticsConsent';
+import { PublicLoadError } from '@/components/layout/PublicLoadError';
 import { BundleCartBar } from '@/components/billing/BundleCartBar';
 import {
   YooKassaCheckoutModal,
   type CheckoutModalTarget,
 } from '@/components/billing/YooKassaCheckoutModal';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
+import { MAX_BUNDLE_ITEMS, toggleBundleSelection } from '@/lib/checkout-policy';
 import type { PublicPredictionDto, SportType } from '@/server/types';
 
-declare global {
-  interface Window {
-    Telegram?: {
-      WebApp?: {
-        ready?: () => void;
-        expand?: () => void;
-        initDataUnsafe?: {
-          user?: { first_name?: string; username?: string };
-        };
-      };
-    };
-  }
-}
-
 export default function TelegramMiniAppPage() {
-  const { data, reload } = usePublicPlatform();
+  const { data, loading, error, reload } = usePublicPlatform();
   const [sport, setSport] = useState<SportType | 'ALL'>('ALL');
   const [selectedBundleIds, setSelectedBundleIds] = useState<string[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<CheckoutModalTarget | null>(null);
@@ -54,6 +43,7 @@ export default function TelegramMiniAppPage() {
   const defaultPrice = data?.brand.defaultSinglePriceRub ?? 790;
   const bundle2Pct = data?.brand.bundle2DiscountPct ?? 15;
   const bundle3Pct = data?.brand.bundle3DiscountPct ?? 25;
+  const metrikaId = Number((data?.brand.yandexMetrikaId || '').replace(/\D/g, ''));
 
   const active = (data?.predictions ?? []).filter((p) => p.resultStatus === 'PENDING');
   const filtered = active.filter((p) => sport === 'ALL' || p.sport === sport);
@@ -71,11 +61,8 @@ export default function TelegramMiniAppPage() {
 
   const toggleBundle = (prediction: PublicPredictionDto) => {
     if (!prediction.isLocked || prediction.salesClosed) return;
-    setSelectedBundleIds((prev) =>
-      prev.includes(prediction.id)
-        ? prev.filter((id) => id !== prediction.id)
-        : [...prev, prediction.id],
-    );
+    const eligible = active.filter((p) => p.isLocked && !p.salesClosed).map((p) => p.id);
+    setSelectedBundleIds((prev) => toggleBundleSelection(prev, prediction.id, eligible));
   };
 
   const selectedBundleItems = active.filter(
@@ -111,6 +98,7 @@ export default function TelegramMiniAppPage() {
 
   return (
     <div className="min-h-screen bg-[#F4F6FA] pb-24 text-slate-900">
+      <AnalyticsConsent counterId={metrikaId} />
       <Script
         src="https://telegram.org/js/telegram-web-app.js"
         strategy="afterInteractive"
@@ -132,7 +120,7 @@ export default function TelegramMiniAppPage() {
             <div className="text-[11px] text-slate-400">
               {tgGreetingName
                 ? `${tgGreetingName}, выберите матч на сегодня`
-                : 'Разовые прогнозы со страховкой 100%'}
+                : 'Разовые аналитические прогнозы · 18+'}
             </div>
           </div>
 
@@ -164,12 +152,14 @@ export default function TelegramMiniAppPage() {
       </header>
 
       <main className="mx-auto max-w-2xl space-y-4 px-3.5 pt-4">
+        <PublicLoadError message={error} onRetry={() => void reload()} />
+        {loading && !data && <p role="status" className="rounded-2xl bg-white p-5 text-sm text-slate-600">Загружаем прогнозы…</p>}
         {/* Набор дня в 1 тап */}
         {top3Pack.length >= 3 && (
           <div className="rounded-2xl bg-gradient-to-r from-[#0B0F19] to-blue-950 p-4 text-white shadow-md">
             <div className="inline-flex items-center gap-1 rounded-full bg-blue-500/20 px-2.5 py-0.5 text-[10px] font-bold text-blue-300">
               <Sparkles className="h-3 w-3" />
-              <span>Набор дня · Скидка −{bundle3Pct}% + страховка</span>
+              <span>Набор дня · Скидка −{bundle3Pct}%</span>
             </div>
             <div className="mt-1.5 text-sm font-black">
               Забрать все 3 главных прогноза дня со скидкой
@@ -243,7 +233,8 @@ export default function TelegramMiniAppPage() {
               key={id}
               type="button"
               onClick={() => setSport(id)}
-              className={`shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold ${
+              aria-pressed={sport === id}
+              className={`min-h-10 shrink-0 rounded-xl px-3 py-1.5 text-xs font-bold ${
                 sport === id
                   ? 'bg-slate-900 text-white'
                   : 'border border-slate-200 bg-white text-slate-600'
@@ -253,6 +244,12 @@ export default function TelegramMiniAppPage() {
             </button>
           ))}
         </div>
+
+        {!loading && !error && data && filtered.length === 0 && (
+          <p className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600">
+            {sport === 'ALL' ? 'Сейчас нет доступных прогнозов. Загляните позже.' : 'По выбранному виду спорта прогнозов пока нет.'}
+          </p>
+        )}
 
         {/* Карточки матчей */}
         <div className="space-y-3.5">
@@ -265,13 +262,22 @@ export default function TelegramMiniAppPage() {
               onVerifyHash={setHashItem}
               inBundle={selectedBundleIds.includes(p.id)}
               onToggleBundle={toggleBundle}
+              bundleLimitReached={selectedBundleItems.length >= MAX_BUNDLE_ITEMS}
             />
           ))}
         </div>
 
         <div className="flex items-center justify-center gap-1.5 pt-2 text-center text-[11px] text-slate-500">
           <ShieldCheck className="h-3.5 w-3.5 text-blue-600" />
-          <span>Без подписок и автосписаний · Промокод новичкам: START15</span>
+          <span>Без подписок и автосписаний · Прогнозы не гарантируют выигрыш</span>
+        </div>
+        <div className="flex flex-wrap justify-center gap-x-4 gap-y-2 text-center text-xs text-slate-600">
+          <Link href="/legal/offer" className="underline">Оферта</Link>
+          <Link href="/legal/rules" className="underline">Правила</Link>
+          <Link href="/legal/privacy" className="underline">Персональные данные</Link>
+          {Number.isSafeInteger(metrikaId) && metrikaId > 0 && (
+            <button type="button" onClick={openAnalyticsSettings} className="underline">Настройки аналитических cookies</button>
+          )}
         </div>
       </main>
 
@@ -287,9 +293,9 @@ export default function TelegramMiniAppPage() {
       <YooKassaCheckoutModal
         target={checkoutTarget}
         viewer={data?.viewer ?? null}
+        paymentMode={data?.brand.paymentMode}
         onClose={() => setCheckoutTarget(null)}
         onSuccess={async () => {
-          setCheckoutTarget(null);
           setSelectedBundleIds([]);
           await reload();
         }}

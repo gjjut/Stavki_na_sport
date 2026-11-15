@@ -33,9 +33,17 @@ export interface UserAccount {
   referenceBankrollRub: number;
   telegramUsername: string | null;
   telegramChatId?: string | null;
+  /** Only bindings confirmed through the authenticated Telegram webhook/polling are trusted. */
+  telegramBindingVerified?: boolean;
   telegramLinkCode?: string;
   passwordResetCode?: string | null;
   passwordResetExpiresAt?: string | null;
+  passwordResetAttempts?: number;
+  passwordResetRequestedAt?: string | null;
+  personalDataConsentAt?: string | null;
+  personalDataConsentVersion?: string | null;
+  rulesAcceptedAt?: string | null;
+  rulesAcceptedVersion?: string | null;
   purchasedPredictionIds: string[];
   /** Present only when the history of gifted access is complete from account creation. */
   grantedPredictionIds?: string[];
@@ -63,6 +71,7 @@ export interface SafeSessionUser {
   referenceBankrollRub: number;
   telegramUsername: string | null;
   telegramChatId: string | null;
+  telegramBindingVerified?: boolean;
   telegramLinkCode: string;
   purchasedPredictionIds: string[];
   referralCode: string;
@@ -164,6 +173,8 @@ export interface PublicPredictionDto {
   analysisTeaser: string;
   isFeatured: boolean;
   insuredOnLoss: boolean;
+  /** A private historical starter example, never a current offer or verified result. */
+  isLegacyDemo?: boolean;
   salesClosed: boolean;
   isLocked: boolean;
   isPurchased: boolean;
@@ -207,7 +218,10 @@ export interface ExternalRefundNotice {
 export interface OrderTransaction {
   id: string;
   idempotenceKey: string;
+  /** Empty while a new live payment has not yet been identified at the provider. */
   externalPaymentId: string;
+  /** New live orders are recorded before the external request; legacy orders may omit this. */
+  providerCreationState?: 'CREATING' | 'UNKNOWN' | 'IDENTIFIED' | 'READY';
   userId: string;
   userEmail: string;
   kind: 'SINGLE_PREDICTION' | 'BUNDLE_PREDICTIONS' | 'BALANCE_TOPUP';
@@ -218,7 +232,11 @@ export interface OrderTransaction {
   title: string;
   amountRub: number;
   paymentMethod: 'yookassa' | 'internal_balance';
+  /** Captured at checkout, including balance orders; absent/null on some older records. */
+  paymentModeAtCreation?: 'TEST_INSTANT' | 'YOOKASSA_LIVE' | null;
   status: 'PENDING' | 'SUCCEEDED' | 'CANCELED' | 'REFUNDED';
+  /** Absent on historical orders, whose existing rounding terms remain unchanged. */
+  insuranceAllocationVersion?: 'EQUAL_REMAINDER_V1' | null;
   insuranceCredited?: boolean;
   insuredRefundedPredictionIds?: string[];
   insuranceRefundedAmountRub?: number;
@@ -233,7 +251,16 @@ export interface OrderTransaction {
   affiliateCommissionRub: number;
   createdAt: string;
   paidAt: string | null;
+  offerAcceptedAt?: string | null;
+  offerAcceptedVersion?: string | null;
 }
+
+/** Only the order fields a buyer needs; excludes provider IDs, idempotency keys and affiliate data. */
+export type CustomerOrder = Pick<OrderTransaction,
+  'id' | 'kind' | 'title' | 'amountRub' | 'paymentMethod' | 'paymentModeAtCreation' |
+  'status' | 'confirmationUrl' | 'promoCode' | 'discountRub' | 'createdAt' |
+  'insuranceCredited' | 'insuranceRefundedAmountRub' | 'refundDestination'
+>;
 
 export interface AffiliateLinkRecord {
   id: string;
@@ -268,6 +295,8 @@ export interface PlatformSettings {
   freeTelegramUrl: string;
   legalSellerName: string;
   legalInn: string;
+  legalAddress?: string;
+  legalRegistrationNumber?: string;
   supportEmail: string;
 
   paymentMode: 'TEST_INSTANT' | 'YOOKASSA_LIVE';
@@ -354,15 +383,16 @@ export interface AiAutopilotConfig {
   morningHourMsk: number; // напр. 9 (09:00 МСК)
   eveningHourMsk: number; // напр. 18 (18:00 МСК)
   maxPicksPerRun: number; // сколько событий публиковать за слот (напр. 3)
-  minActiveOnStorefront: number; // минимум активных карточек на витрине (напр. 6)
-  minValueEdgePct: number; // минимальный математический перевес EV% (напр. 3.5)
+  minActiveOnStorefront: number; // порог автодополнения; 0 отключает дополнение вне слотов
+  minValueEdgePct: number; // минимальный оценочный перевес в п.п., не гарантированный EV
   defaultAiPriceRub: number; // цена разового прогноза от ИИ (₽)
   freeEveryNthPick: number; // 0 = только платные, 4 = каждый 4-й открытый для привлечения
   insureAiPicks: boolean; // включать ли страховку 100% на баланс при минусе
   autoSettleEnabled: boolean; // автопроверка счета после матча + выплата страховки
   openSourceResearchEnabled?: boolean; // сбор новостей, травм, турнирной таблицы и формы из открытых источников перед отбором
-  minAgentConfidencePct?: number; // минимальный консенсус команды (по умолчанию 70)
-  requireAgentConsensus?: boolean; // не публиковать без согласия специализированных агентов
+  minAgentConfidencePct?: number; // минимальная средняя уверенность ответивших ролей модели (по умолчанию 60)
+  requireAgentConsensus?: boolean; // сервер всегда требует минимум два PASS и отсутствие VETO
+  runRevision?: string; // служебная версия для отмены устаревших сборов; клиент её не редактирует
   totalGeneratedCount: number;
   lastFeedSource: string | null;
   lastMorningRunDate: string | null;
@@ -428,6 +458,8 @@ export interface AiChatExecutedAction {
   tool: string;
   summary: string;
   ok: boolean;
+  /** An external action may have happened even when its acknowledgement was lost. */
+  outcome?: 'unknown';
 }
 
 export interface AiChatErrorDiagnostic {
@@ -441,6 +473,9 @@ export interface AiChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** Missing on older messages: their source cannot be reliably reconstructed. */
+  replySource?: 'MODEL' | 'SERVER' | 'MIXED';
+  /** Model reported by the provider when one responded during this turn. */
   modelLabel?: string;
   executedActions?: AiChatExecutedAction[];
   diagnostic?: AiChatErrorDiagnostic;

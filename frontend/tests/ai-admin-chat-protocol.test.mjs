@@ -5,6 +5,8 @@ import { loadTypeScriptModule } from './load-typescript-module.mjs';
 const {
   formatAdminMatchScanSummary,
   isAdminMutationIntent,
+  isDirectTelegramDigestCommand,
+  isTelegramDigestPublicationIntent,
   isExplicitDraftApprovalIntent,
   isDraftOnlyMatchCollectionIntent,
   isMatchCollectionIntent,
@@ -128,7 +130,10 @@ test('draft approval is allowed only after an explicit positive approval request
   );
   assert.equal(result.actionsToExecute[0].tool, 'approve_all_drafts');
   assert.equal(result.invalidActionCount, 0);
-  assert.equal(isExplicitDraftApprovalIntent('Опубликуй черновики'), true);
+  assert.equal(isExplicitDraftApprovalIntent('Опубликуй все черновики'), true);
+  assert.equal(isExplicitDraftApprovalIntent('Опубликуй черновик Реал'), false);
+  assert.equal(isExplicitDraftApprovalIntent('Опубликуй черновики'), false);
+  assert.equal(isExplicitDraftApprovalIntent('Опубликуй все черновики кроме Реала'), false);
   assert.equal(isExplicitDraftApprovalIntent('Не надо публиковать черновики'), false);
   assert.equal(isExplicitDraftApprovalIntent('Покажи черновики, не одобряй их'), false);
   assert.equal(isExplicitDraftApprovalIntent('Можно ли опубликовать черновики?'), false);
@@ -171,6 +176,11 @@ test('mutating actions are suppressed for informational questions while requeste
   );
   assert.equal(research.actionsToExecute[0].tool, 'search_open_sources');
   assert.equal(research.invalidActionCount, 0);
+  const noResearch = resolveAdminAgentActions(
+    { actions: [{ tool: 'search_open_sources', args: { query: 'РПЛ новости' } }] },
+    'Не ищи новости РПЛ',
+  );
+  assert.deepEqual(noResearch.actionsToExecute, []);
 });
 
 test('a scan tool call is not executed for a non-collection question', () => {
@@ -296,4 +306,81 @@ test('questions and negations stay out of collection and mutation intents', () =
   assert.equal(isMatchCollectionIntent('Создай прогноз на матч A — B'), false);
   assert.equal(isMatchCollectionIntent('Собери прогнозы, но не нужно публиковать'), true);
   assert.equal(isDraftOnlyMatchCollectionIntent('Собери прогнозы, но не нужно публиковать'), true);
+});
+
+test('the example digest command is a direct, single-purpose Telegram action, not a forecast scan', () => {
+  const prompt = 'Опубликуй красивую сводку дня и статистики в наш Telegram-канал';
+  assert.equal(isDirectTelegramDigestCommand(prompt), true);
+  assert.equal(isTelegramDigestPublicationIntent(prompt), true);
+  assert.equal(isMatchCollectionIntent('Опубликуй сводку матчей в Telegram'), false);
+  for (const text of [
+    'Не публикуй сводку дня в телеграм',
+    'Покажи сводку дня в телеграм',
+    'Можно ли опубликовать сводку в телеграм?',
+    'Опубликуй сводку дня в телеграм и удали матч A',
+    'Опубликуй сводку дня в телеграм без статистики',
+  ]) assert.equal(isDirectTelegramDigestCommand(text), false, text);
+});
+
+test('digest requests cannot trigger unrelated model mutations, duplicate sends or generated statistics', () => {
+  const result = resolveAdminAgentActions({ actions: [
+    { tool: 'manage_user_account', args: { action: 'CREDIT_BALANCE', email: 'a@example.com', amountRub: 999 } },
+    { tool: 'telegram_channel_post', args: { action: 'CUSTOM_POST', customHtmlText: '100% побед' } },
+    { tool: 'telegram_channel_post', args: { action: 'DAILY_DIGEST' } },
+    { tool: 'update_storefront_pricing', args: { defaultSinglePriceRub: 10 } },
+  ] }, 'Опубликуй красивую сводку дня и статистики в наш Telegram-канал');
+  assert.deepEqual(result.actionsToExecute, [{ tool: 'telegram_channel_post', args: { action: 'DAILY_DIGEST' } }]);
+  assert.equal(result.invalidActionCount, 3);
+});
+
+test('destructive action and amount must correspond to the exact user request', () => {
+  const resolve = (prompt, tool, args) => resolveAdminAgentActions({ actions: [{ tool, args }] }, prompt).actionsToExecute;
+  assert.equal(resolve('Создай промокод VIP20 на 20% на 150 активаций', 'manage_promo_code', { action: 'CREATE', code: 'VIP20', discountPercent: 20, maxUses: 150 }).length, 1);
+  assert.equal(resolve('Создай промокод VIP20 на 20% на 150 активаций', 'manage_promo_code', { action: 'DELETE', code: 'VIP20' }).length, 0);
+  assert.equal(resolve('Создай промокод VIP20 на 20%', 'manage_promo_code', { action: 'CREATE', code: 'VIP20', discountPercent: 50 }).length, 0);
+  assert.equal(resolve('Создай промокод VIP20 на 20%', 'manage_promo_code', { action: 'CREATE', code: 'VIP20', discountPercent: 20, maxUses: 20 }).length, 0);
+  assert.equal(resolve('Создай промокод VIP2025 на 20%', 'manage_promo_code', { action: 'CREATE', code: 'VIP20', discountPercent: 20 }).length, 0);
+  assert.equal(resolve('Поставь цену 790 и создай промокод VIP20 на 20% с лимитом 150 активаций', 'update_storefront_pricing', { defaultSinglePriceRub: 150 }).length, 0);
+  assert.equal(resolve('Поставь цену 790', 'update_storefront_pricing', { defaultSinglePriceRub: 790 }).length, 1);
+  assert.equal(resolve('Поставь цену 790', 'update_storefront_pricing', { defaultSinglePriceRub: 999 }).length, 0);
+  assert.equal(resolve('Включи полный автопилот', 'configure_autopilot', { mode: 'FULL_AUTOPILOT' }).length, 1);
+  assert.equal(resolve('Включи полный автопилот', 'configure_autopilot', { mode: 'FULL_AUTOPILOT', insureAiPicks: false }).length, 0);
+  assert.equal(resolve('Удали прогноз Реал', 'update_or_delete_prediction', { action: 'DELETE', predictionIdOrTeamQuery: '' }).length, 0);
+  assert.equal(resolve('Удали прогноз Реал', 'update_or_delete_prediction', { action: 'DELETE', predictionIdOrTeamQuery: 'Реал' }).length, 1);
+  assert.equal(resolve('Удали прогноз Реал', 'update_or_delete_prediction', { action: 'DELETE', predictionIdOrTeamQuery: 'Барса' }).length, 0);
+  assert.equal(resolve('Не ставь цену 790', 'update_storefront_pricing', { defaultSinglePriceRub: 790 }).length, 0);
+  assert.equal(resolve('Можешь опубликовать сводку в телеграм?', 'telegram_channel_post', { action: 'DAILY_DIGEST' }).length, 0);
+});
+
+test('a request merely to delete demos cannot also scan and publish new forecasts', () => {
+  const parsed = { actions: [{ tool: 'replace_demo_matches', args: {} }] };
+  assert.deepEqual(resolveAdminAgentActions(parsed, 'Удали демо').actionsToExecute, []);
+  assert.deepEqual(resolveAdminAgentActions(parsed, 'Замени демо на реальные матчи').actionsToExecute, [{ tool: 'replace_demo_matches', args: {} }]);
+});
+
+test('mixed commands cannot substitute another amount, target or reversed switch', () => {
+  const resolve = (prompt, tool, args) => resolveAdminAgentActions({ actions: [{ tool, args }] }, prompt).actionsToExecute;
+  const quick = 'Поставь стандартную цену прогноза 790 ₽ и включи полный автопилот 24/7';
+  assert.equal(resolve(quick, 'update_storefront_pricing', { defaultSinglePriceRub: 790 }).length, 1);
+  assert.equal(resolve(quick, 'configure_autopilot', { mode: 'FULL_AUTOPILOT' }).length, 1);
+  assert.equal(resolve('Поставь цену прогноза Реал 790 ₽', 'update_storefront_pricing', { defaultSinglePriceRub: 790 }).length, 0);
+  assert.equal(resolve('Поставь цену 500 ₽ и начисли клиенту a@example.com 790 ₽', 'update_storefront_pricing', { defaultSinglePriceRub: 790 }).length, 0);
+  assert.equal(resolve('Поставь цену 500 ₽ и начисли клиенту a@example.com 790 ₽', 'manage_user_account', { action: 'CREDIT_BALANCE', email: 'a@example.com', amountRub: 500 }).length, 0);
+  assert.equal(resolve('Поставь цену 500 ₽ и начисли клиенту a@example.com 790 ₽', 'manage_user_account', { action: 'CREDIT_BALANCE', email: 'a@example.com', amountRub: 790 }).length, 1);
+  assert.equal(resolve('Создай промокод VIP20 на 20% на 150 активаций', 'manage_promo_code', { action: 'CREATE', code: 'VIP20', discountPercent: 20 }).length, 0);
+  assert.equal(resolve('Создай промокод VIP20 на 20% и поставь скидку на 2 матча 15%', 'manage_promo_code', { action: 'CREATE', code: 'VIP20', discountPercent: 15 }).length, 0);
+  assert.equal(resolve('Создай промокод VIP20 на 20% и поставь скидку на 2 матча 15%', 'update_storefront_pricing', { bundle2DiscountPct: 20 }).length, 0);
+  assert.equal(resolve('Создай промокод VIP20 на 20% и поставь скидку на 2 матча 15%', 'update_storefront_pricing', { bundle2DiscountPct: 15 }).length, 1);
+  assert.equal(resolve('Включи полный автопилот и отключи страховку', 'configure_autopilot', { mode: 'FULL_AUTOPILOT', insureAiPicks: true }).length, 0);
+  assert.equal(resolve('Включи полный автопилот и отключи страховку', 'configure_autopilot', { mode: 'FULL_AUTOPILOT', insureAiPicks: false }).length, 1);
+  assert.equal(resolve('Не отключи автопилот', 'configure_autopilot', { mode: 'OFF' }).length, 0);
+  assert.equal(resolve('Удали прогноз Динамо', 'update_or_delete_prediction', { action: 'DELETE', predictionIdOrTeamQuery: 'на' }).length, 0);
+});
+
+test('the scan count comes from the owner rather than the model', () => {
+  const action = { actions: [{ tool: 'scan_and_publish_matches', args: { count: 8, publishImmediately: true } }] };
+  assert.equal(resolveAdminAgentActions(action, 'Собери 2 матча').actionsToExecute[0].args.count, 2);
+  assert.equal(resolveAdminAgentActions(action, 'Собери два прогноза').actionsToExecute[0].args.count, 2);
+  assert.equal(resolveAdminAgentActions(action, 'Собери матчи').actionsToExecute[0].args.count, 3);
+  assert.deepEqual(resolveAdminAgentActions(action, 'Собери 20 матчей').actionsToExecute, []);
 });

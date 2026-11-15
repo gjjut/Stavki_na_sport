@@ -51,14 +51,14 @@ async function makePurchaseFixture(suffix) {
 
 const checkoutFor = ({ buyer, prediction }) => initiateOrderCheckout({
   userId: buyer.id, kind: 'SINGLE_PREDICTION', predictionId: prediction.id,
-  paymentMethod: 'yookassa', originUrl: 'https://example.test',
+  paymentMethod: 'yookassa', expectedAmountRub: 500, expectedPaymentMode: 'YOOKASSA_LIVE', originUrl: 'https://example.test',
 });
 const paymentResponse = (id) => ({
   ok: true, status: 200,
   json: async () => ({ id, status: 'pending', confirmation: { confirmation_url: 'https://example.test/confirm' } }),
 });
 
-test('a deleted event cannot be inserted into an order from a stale pre-payment snapshot', async () => {
+test('a local reservation blocks deletion even while the provider request is in flight', async () => {
   const fixture = await makePurchaseFixture('race-delete-first');
   let startRequest;
   let releaseRequest;
@@ -73,14 +73,14 @@ test('a deleted event cannot be inserted into an order from a stale pre-payment 
   const checkout = checkoutFor(fixture);
   await started;
   try {
-    await mutateState((state) => deleteUnownedPrediction(state, fixture.prediction.id));
+    await assert.rejects(mutateState((state) => deleteUnownedPrediction(state, fixture.prediction.id)), /нельзя удалить/);
   } finally {
     releaseRequest();
   }
-  await assert.rejects(checkout, /уже недоступно/);
+  const result = await checkout;
   const state = await readState();
-  assert.equal(state.predictions.some((p) => p.id === fixture.prediction.id), false);
-  assert.equal(state.transactions.some((order) => order.predictionIds.includes(fixture.prediction.id)), false);
+  assert.equal(state.predictions.some((p) => p.id === fixture.prediction.id), true);
+  assert.equal(state.transactions.find((order) => order.id === result.order.id).status, 'PENDING');
   assert.equal(state.users.find((u) => u.id === fixture.buyer.id).purchasedPredictionIds.includes(fixture.prediction.id), false);
 });
 
@@ -112,10 +112,10 @@ test('an already recorded pending checkout prevents event deletion', async () =>
   assert.equal(unchanged.accessTier, 'PAID_SINGLE');
 });
 
-test('checkout cannot publish a payment link when insurance or price changes in flight', async () => {
-  for (const [name, editMeta] of [
-    ['race-insurance', { insuredOnLoss: false }],
-    ['race-price', { singlePriceRub: 600 }],
+test('insurance is protected and the agreed price stays fixed while the provider request is in flight', async () => {
+  for (const [name, editMeta, expectedStatus] of [
+    ['race-insurance', { insuredOnLoss: false }, 400],
+    ['race-price', { singlePriceRub: 600 }, 200],
   ]) {
     const fixture = await makePurchaseFixture(name);
     let startRequest;
@@ -134,13 +134,15 @@ test('checkout cannot publish a payment link when insurance or price changes in 
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ predictionId: fixture.prediction.id, editMeta }),
       }));
-      assert.equal(change.status, 200);
+      assert.equal(change.status, expectedStatus);
     } finally {
       releaseRequest();
     }
-    await assert.rejects(checkout, /Цена или страховка.*изменилась/);
+    const order = (await checkout).order;
     const state = await readState();
-    assert.equal(state.transactions.some((order) => order.predictionIds.includes(fixture.prediction.id)), false);
+    assert.equal(order.amountRub, 500);
+    assert.equal(state.predictions.find((p) => p.id === fixture.prediction.id).insuredOnLoss, true);
+    assert.equal(state.transactions.find((o) => o.id === order.id).amountRub, 500);
   }
 });
 
@@ -174,7 +176,7 @@ test('a gift recorded after a purchase survives an admin balance refund', async 
   });
   const checkout = await initiateOrderCheckout({
     userId: fixture.buyer.id, kind: 'SINGLE_PREDICTION', predictionId: fixture.prediction.id,
-    paymentMethod: 'internal_balance', originUrl: 'https://example.test',
+    paymentMethod: 'internal_balance', expectedAmountRub: 500, expectedPaymentMode: 'TEST_INSTANT', originUrl: 'https://example.test',
   });
   const gift = await userRoute.PATCH(new NextRequest('http://localhost/api/v1/admin/users', {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },

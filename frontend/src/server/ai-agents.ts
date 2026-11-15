@@ -357,7 +357,7 @@ function makeEvaluation(
       (opinion) =>
         `${opinion.agent}: ${opinion.verdict}, вероятность исхода ${opinion.probabilityPct ?? 'нет данных'}%, уверенность ${opinion.confidencePct}%, риск ${opinion.riskScore}/100 — ${opinion.reason}`,
     ),
-    `Риск-менеджер: риск ${riskScore}/100; разброс оценок ${Math.round(spread)} п.п.; консенсусная вероятность ${estimatedWinProbabilityPct}%; средняя уверенность агентов ${confidencePct}%; перевес к подразумеваемой вероятности ${valueEdgePct} п.п.`,
+    `Серверный алгоритм риск-менеджера: риск ${riskScore}/100; разброс оценок ${Math.round(spread)} п.п.; расчётная вероятность ${estimatedWinProbabilityPct}%; средняя уверенность ролей ${confidencePct}%; перевес к подразумеваемой вероятности ${valueEdgePct} п.п.`,
     rejectionReason
       ? `РЕШЕНИЕ: ОТКЛОНЁН — ${rejectionReason}`
       : 'РЕШЕНИЕ: прошёл количественные пороги и агентский консенсус; допущен к финальному отбору.',
@@ -498,6 +498,7 @@ export function buildAgentAnalysis(params: {
   candidate: AgentCandidateInput;
   evaluation: AgentEvaluation;
   leaderSummary: string;
+  modelDescription?: string;
 }): { teaser: string; full: string; report: string; stakeUnits: number } {
   const { candidate, evaluation } = params;
   const strongestReasons = evaluation.opinions
@@ -514,12 +515,14 @@ export function buildAgentAnalysis(params: {
   const teaser = `Аналитическая система сравнила котировки и доступные проверяемые сведения о матче «${candidate.homeTeam} — ${candidate.awayTeam}». Публикуются только варианты, прошедшие несколько специализированных проверок и контроль риска.`;
   const full = [
     `ИТОГ МНОГОЭТАПНОЙ AI-ПРОВЕРКИ: выбран рынок «${candidate.market}» по зафиксированной котировке ${candidate.odds.toFixed(2)}. Консенсусная модельная вероятность исхода — ${evaluation.estimatedWinProbabilityPct}%, расчётный перевес к подразумеваемой вероятности линии — ${evaluation.valueEdgePct} п.п. Это оценка, не гарантия результата.`,
-    `МЕТОД: три специализированные роли одной настроенной AI-модели; по этому кандидату ответили ${answeredRoleCount}/3 роли. Это не три независимые модели.`,
+    `МЕТОД: три специализированные роли одной настроенной AI-модели; по этому кандидату ответили ${answeredRoleCount}/3 роли. Это не три независимые модели. ${params.modelDescription || 'Идентификатор модели в этой записи не указан.'} Текст разбора собран серверным шаблоном из ответов ролей и алгоритмических расчётов.`,
     `ОЦЕНКИ СПЕЦИАЛИЗИРОВАННЫХ РОЛЕЙ: ${strongestReasons.length ? strongestReasons.join(' | ') : 'роли не обнаружили достаточных подтверждённых фактов для уверенного позитивного вывода.'}`,
     `ФИНАЛЬНЫЙ ОТБОР: ${params.leaderSummary}`,
     `РИСК-МЕНЕДЖЕР: общий индекс риска ${evaluation.riskScore}/100; доступные факторы: ${riskText}. Рекомендуемый консервативный флэт — ${evaluation.riskScore < 35 ? '1.0' : '0.5'}% банка; не увеличивайте сумму из-за одной оценки модели.`,
   ].join('\n\n');
   const report = [
+    params.modelDescription || 'Идентификатор модели в этой записи не указан.',
+    'Сводный отчёт и пороги вычислены сервером по ответам ролей; это не дословный ответ модели.',
     evaluation.report,
     `Финальный отбор: ${params.leaderSummary}`,
   ].join('\n\n');

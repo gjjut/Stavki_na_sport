@@ -4,15 +4,14 @@ import {
   approveAiDraftToStorefront,
   broadcastDailyDigestToTelegram,
   buildCandidateLlmBaseUrls,
-  isNonChatModelId,
   postLlmChatCompletion,
-  prioritizeModelsFreeFirst,
   replaceDemoWithRealMatches,
   runAiScanAndGenerateCycle,
   runAutoSettlementCycle,
 } from './ai-autopilot';
 import {
   gatherMatchOpenSourceIntel,
+  plusVibeSearchConnection,
   searchOpenSourcesForAdmin,
 } from './ai-research';
 import {
@@ -21,16 +20,21 @@ import {
   hasVerifiedSettledResult,
   mutateState,
   readState,
+  StorageUnavailableError,
 } from './database';
 import { sendTelegramChannelAnnouncement } from './integrations';
 import { assertInsuranceChangeAllowed, deleteUnownedPrediction, grantPredictionAccess } from './admin-prediction-policy';
+import { applyAutopilotConfigPatch } from './autopilot-config-policy';
+import { isActiveStorefrontPrediction, isLegacyStarterDemoPrediction } from './prediction-data-policy';
 import {
   extractRawAdminAgentActions,
   formatAdminMatchScanSummary,
   isAdminMutationIntent,
+  isDirectTelegramDigestCommand,
   isDraftOnlyMatchCollectionIntent,
   isMatchCollectionIntent,
   parseStructuredAgentJson,
+  requestedMatchCount,
   resolveAdminAgentActions,
   SUPPORTED_ADMIN_AGENT_TOOLS,
 } from './ai-admin-chat-protocol';
@@ -39,7 +43,6 @@ import type {
   AgentLlmStructuredOutput,
 } from './ai-admin-chat-protocol';
 import type {
-  AiAutopilotMode,
   AiChatErrorDiagnostic,
   AiChatExecutedAction,
   AiChatMessage,
@@ -63,7 +66,7 @@ async function buildPlatformContextSnapshot() {
     .reduce((acc, t) => acc + t.amountRub, 0);
 
   const activePredictions = state.predictions
-    .filter((p) => p.resultStatus === 'PENDING')
+    .filter((p) => isActiveStorefrontPrediction(p))
     .slice(0, 8)
     .map((p) => ({
       id: p.id,
@@ -77,7 +80,7 @@ async function buildPlatformContextSnapshot() {
     }));
 
   const recentSettled = state.predictions
-    .filter(hasVerifiedSettledResult)
+    .filter((p) => !isLegacyStarterDemoPrediction(p) && hasVerifiedSettledResult(p))
     .slice(0, 6)
     .map((p) => ({
       id: p.id,
@@ -118,12 +121,9 @@ async function buildPlatformContextSnapshot() {
       pendingPartnerPayoutsCount: state.payouts.filter(
         (p) => p.status === 'PENDING',
       ).length,
-      recentUsers: state.users.slice(0, 10).map((u) => ({
-        email: u.email,
-        balanceRub: u.balanceRub,
-        purchasedCount: u.purchasedPredictionIds.length,
-        telegramLinked: Boolean(u.telegramChatId),
-      })),
+      // Do not send customer emails or balances to the external model by default.
+      // An explicit administrator prompt may still contain identifiers, so it must be handled carefully.
+      recentUsersCount: Math.min(state.users.length, 10),
     },
     promoCodes: state.promoCodes.map((c) => ({
       code: c.code,
@@ -191,10 +191,7 @@ async function executeAdminAgentTool(
       const query = String(args.query || '').trim();
       if (!query) throw new Error('Пустой поисковый запрос');
       const snap = await readState();
-      const pvKey = snap.aiAutopilot.llmApiKey?.trim().startsWith('sk-pv-')
-        ? snap.aiAutopilot.llmApiKey.trim()
-        : undefined;
-      const res = await searchOpenSourcesForAdmin(query, pvKey);
+      const res = await searchOpenSourcesForAdmin(query, plusVibeSearchConnection(snap.aiAutopilot));
       return {
         record: {
           tool,
@@ -211,9 +208,6 @@ async function executeAdminAgentTool(
       const sport = (String(args.sport || 'FOOTBALL').toUpperCase() as SportType) || 'FOOTBALL';
       const leagueName = String(args.leagueName || 'Турнир').trim();
       const snap = await readState();
-      const pvKey = snap.aiAutopilot.llmApiKey?.trim().startsWith('sk-pv-')
-        ? snap.aiAutopilot.llmApiKey.trim()
-        : undefined;
       const intel = await gatherMatchOpenSourceIntel({
         sport,
         leagueName,
@@ -222,7 +216,7 @@ async function executeAdminAgentTool(
         homeOdds: Number(args.homeOdds || 1.9),
         drawOdds: args.drawOdds ? Number(args.drawOdds) : null,
         awayOdds: Number(args.awayOdds || 2.0),
-        plusVibeApiKey: pvKey,
+        plusVibeSearch: plusVibeSearchConnection(snap.aiAutopilot),
       });
       return {
         record: {
@@ -250,7 +244,7 @@ async function executeAdminAgentTool(
         scannedCount: res.scannedCount,
         createdCount: res.createdCount,
         publishImmediately: forcePublish,
-      });
+      }) + (res.warning ? ` ${res.warning}` : '');
       return {
         record: {
           tool,
@@ -268,7 +262,7 @@ async function executeAdminAgentTool(
         record: {
           tool,
           ok: res.createdCount > 0,
-          summary: `Удалено начальных демо-карточек: ${res.removedDemoCount}. Сканировано событий: ${res.scannedCount}; ${res.createdCount > 0 ? `опубликовано реальных прогнозов: ${res.createdCount}` : 'реальных прогнозов не опубликовано — сканирование не нашло кандидатов, прошедших проверку'} (${res.feedSource}).`,
+          summary: `Удалено начальных демо-карточек: ${res.removedDemoCount}. Сканировано событий: ${res.scannedCount}; опубликовано прогнозов: ${res.createdCount} (${res.feedSource}).${res.warning ? ` ${res.warning}` : ''}`,
         },
         toolData: res,
       };
@@ -316,8 +310,8 @@ async function executeAdminAgentTool(
       return {
         record: {
           tool,
-          ok: true,
-          summary: `Выполнена автосверка результатов завершенных игр (рассчитано матчей: ${res.settledCount}, возвратов страховки: ${res.compensatedBuyers})`,
+          ok: !res.warning,
+          summary: `Сверка результатов: рассчитано матчей ${res.settledCount}, начислений на баланс ${res.compensatedBuyers}.${res.warning ? ` ${res.warning}` : ''}`,
         },
         toolData: res,
       };
@@ -327,16 +321,23 @@ async function executeAdminAgentTool(
       const q = String(args.predictionIdOrTeamQuery || '')
         .trim()
         .toLowerCase();
-      const subAction = String(args.action || 'SET_PRICE').toUpperCase();
+      const subAction = String(args.action || '').toUpperCase();
+      if (!q) throw new Error('Укажите ID или название конкретного матча.');
+      if (!['DELETE', 'MAKE_FREE', 'MAKE_FEATURED', 'SET_PRICE'].includes(subAction)) {
+        throw new Error('Неизвестное действие с прогнозом.');
+      }
+      if (subAction === 'SET_PRICE' && (!Number.isFinite(Number(args.priceRub)) || Number(args.priceRub) < 50)) {
+        throw new Error('Укажите корректную цену прогноза от 50 ₽.');
+      }
 
       const msg = await mutateState((state) => {
-        const idx = state.predictions.findIndex(
-          (p) =>
-            p.id.toLowerCase() === q ||
-            `${p.homeTeam} ${p.awayTeam}`.toLowerCase().includes(q),
+        const exact = state.predictions.filter((p) => p.id.toLowerCase() === q);
+        const matches = exact.length ? exact : state.predictions.filter(
+          (p) => `${p.homeTeam} ${p.awayTeam}`.toLowerCase().includes(q),
         );
-        if (idx === -1) throw new Error(`Матч по запросу «${q}» не найден`);
-        const target = state.predictions[idx];
+        if (matches.length === 0) throw new Error(`Матч по запросу «${q}» не найден`);
+        if (matches.length > 1) throw new Error('Найдено несколько матчей. Укажите точный ID нужного прогноза.');
+        const target = matches[0];
 
         if (subAction === 'DELETE') {
           deleteUnownedPrediction(state, target.id);
@@ -354,7 +355,7 @@ async function executeAdminAgentTool(
           target.isFeatured = true;
           return `Матч «${target.homeTeam} — ${target.awayTeam}» закреплен главным событием дня на витрине`;
         }
-        const nextPrice = Math.max(50, Math.round(Number(args.priceRub || 790)));
+        const nextPrice = Math.round(Number(args.priceRub));
         target.accessTier = 'PAID_SINGLE';
         target.singlePriceRub = nextPrice;
         return `Цена на матч «${target.homeTeam} — ${target.awayTeam}» изменена на ${nextPrice} ₽`;
@@ -366,73 +367,19 @@ async function executeAdminAgentTool(
     if (tool === 'configure_autopilot') {
       const summaryParts: string[] = [];
       await mutateState((state) => {
-        if (args.mode) {
-          const m = String(args.mode).toUpperCase() as AiAutopilotMode;
-          if (['OFF', 'MODERATION', 'FULL_AUTOPILOT'].includes(m)) {
-            state.aiAutopilot.mode = m;
-            summaryParts.push(`режим: ${m}`);
-          }
-        }
-        if (args.morningHourMsk !== undefined) {
-          state.aiAutopilot.morningHourMsk = Math.min(
-            23,
-            Math.max(0, Math.round(Number(args.morningHourMsk))),
-          );
-          summaryParts.push(`утро: ${state.aiAutopilot.morningHourMsk}:00 МСК`);
-        }
-        if (args.eveningHourMsk !== undefined) {
-          state.aiAutopilot.eveningHourMsk = Math.min(
-            23,
-            Math.max(0, Math.round(Number(args.eveningHourMsk))),
-          );
-          summaryParts.push(`вечер: ${state.aiAutopilot.eveningHourMsk}:00 МСК`);
-        }
-        if (args.maxPicksPerRun !== undefined) {
-          state.aiAutopilot.maxPicksPerRun = Math.min(
-            8,
-            Math.max(1, Math.round(Number(args.maxPicksPerRun))),
-          );
-          summaryParts.push(`матчей за слот: ${state.aiAutopilot.maxPicksPerRun}`);
-        }
-        if (args.defaultAiPriceRub !== undefined) {
-          state.aiAutopilot.defaultAiPriceRub = Math.max(
-            50,
-            Math.round(Number(args.defaultAiPriceRub)),
-          );
-          summaryParts.push(`цена ИИ: ${state.aiAutopilot.defaultAiPriceRub} ₽`);
-        }
-        if (args.freeEveryNthPick !== undefined) {
-          state.aiAutopilot.freeEveryNthPick = Math.max(
-            0,
-            Math.round(Number(args.freeEveryNthPick)),
-          );
-          summaryParts.push(`бесплатный каждый N-й: ${state.aiAutopilot.freeEveryNthPick}`);
-        }
-        if (args.insureAiPicks !== undefined) {
-          state.aiAutopilot.insureAiPicks = Boolean(args.insureAiPicks);
-          summaryParts.push(
-            `страховка: ${state.aiAutopilot.insureAiPicks ? 'вкл' : 'выкл'}`,
-          );
-        }
-        if (args.openSourceResearchEnabled !== undefined) {
-          state.aiAutopilot.openSourceResearchEnabled = Boolean(
-            args.openSourceResearchEnabled,
-          );
-          summaryParts.push(
-            `поиск открытых источников: ${
-              state.aiAutopilot.openSourceResearchEnabled ? 'вкл' : 'выкл'
-            }`,
-          );
-        }
+        // The chat cannot bypass the same validation used by the admin form.
+        const next = applyAutopilotConfigPatch(state.aiAutopilot, args).config;
+        state.aiAutopilot = next;
+        if (args.mode !== undefined) summaryParts.push(`режим: ${next.mode}`);
+        if (args.morningHourMsk !== undefined) summaryParts.push(`утро: ${next.morningHourMsk}:00 МСК`);
+        if (args.eveningHourMsk !== undefined) summaryParts.push(`вечер: ${next.eveningHourMsk}:00 МСК`);
+        if (args.maxPicksPerRun !== undefined) summaryParts.push(`матчей за слот: ${next.maxPicksPerRun}`);
+        if (args.defaultAiPriceRub !== undefined) summaryParts.push(`цена: ${next.defaultAiPriceRub} ₽`);
+        if (args.freeEveryNthPick !== undefined) summaryParts.push(`бесплатный каждый N-й: ${next.freeEveryNthPick}`);
+        if (args.insureAiPicks !== undefined) summaryParts.push(`страховка: ${next.insureAiPicks ? 'вкл' : 'выкл'}`);
+        if (args.openSourceResearchEnabled !== undefined) summaryParts.push(`поиск источников: ${next.openSourceResearchEnabled ? 'вкл' : 'выкл'}`);
       });
-
-      return {
-        record: {
-          tool,
-          ok: true,
-          summary: `Настройки ИИ-Автопилота обновлены (${summaryParts.join(', ') || 'без изменений'})`,
-        },
-      };
+      return { record: { tool, ok: true, summary: `Настройки автопилота обновлены (${summaryParts.join(', ')})` } };
     }
 
     if (tool === 'update_storefront_pricing') {
@@ -446,6 +393,7 @@ async function executeAdminAgentTool(
           const pr = Math.max(50, Math.round(Number(args.defaultSinglePriceRub)));
           state.settings.defaultSinglePriceRub = pr;
           state.aiAutopilot.defaultAiPriceRub = pr;
+          state.aiAutopilot.runRevision = randomUUID();
           changed.push(`базовая цена: ${pr} ₽`);
         }
         if (args.bundle2DiscountPct !== undefined) {
@@ -474,30 +422,29 @@ async function executeAdminAgentTool(
     }
 
     if (tool === 'manage_promo_code') {
-      const code = String(args.code || '')
-        .trim()
-        .toUpperCase()
-        .replace(/[^A-Z0-9_-]/g, '');
-      if (!code) throw new Error('Укажите код промокода латиницей');
-      const sub = String(args.action || 'CREATE').toUpperCase();
+      const code = String(args.code || '').trim().toUpperCase();
+      if (!/^[A-Z0-9_-]{2,32}$/.test(code)) throw new Error('Укажите код промокода латиницей, без пробелов и посторонних символов.');
+      const sub = String(args.action || '').toUpperCase();
+      if (!['CREATE', 'DELETE'].includes(sub)) throw new Error('Неизвестное действие с промокодом.');
+      const pct = Number(args.discountPercent);
+      const maxUses = args.maxUses === undefined ? 200 : Number(args.maxUses);
+      if (sub === 'CREATE' && (!Number.isInteger(pct) || pct < 5 || pct > 80 || !Number.isSafeInteger(maxUses) || maxUses < 1)) {
+        throw new Error('Укажите скидку от 5 до 80% и положительный целый лимит активаций.');
+      }
 
       const msg = await mutateState((state) => {
         if (sub === 'DELETE') {
+          if (!state.promoCodes.some((c) => c.code.toUpperCase() === code)) throw new Error(`Промокод ${code} не найден.`);
           state.promoCodes = state.promoCodes.filter(
             (c) => c.code.toUpperCase() !== code,
           );
           return `Промокод ${code} удален`;
         }
-        const pct = Math.min(80, Math.max(5, Math.round(Number(args.discountPercent || 20))));
-        const maxUses = Math.max(1, Math.round(Number(args.maxUses || 200)));
         const existing = state.promoCodes.find(
           (c) => c.code.toUpperCase() === code,
         );
         if (existing) {
-          existing.discountPercent = pct;
-          existing.maxUses = maxUses;
-          existing.active = true;
-          return `Промокод ${code} обновлен: скидка −${pct}% (лимит ${maxUses})`;
+          throw new Error(`Промокод ${code} уже существует; существующий код не изменён.`);
         }
         state.promoCodes.unshift({
           id: `promo_${randomUUID().slice(0, 8)}`,
@@ -524,18 +471,23 @@ async function executeAdminAgentTool(
         const u = state.users.find((row) => row.email.toLowerCase() === email);
         if (!u) throw new Error(`Клиент с E-mail ${email} не найден`);
         if (sub === 'GRANT_PREDICTION') {
-          const q = String(args.teamQuery || '').toLowerCase();
-          const p = state.predictions.find(
-            (pred) =>
-              pred.resultStatus === 'PENDING' &&
-              (!q || `${pred.homeTeam} ${pred.awayTeam}`.toLowerCase().includes(q)),
+          const q = String(args.teamQuery || '').trim().toLowerCase();
+          if (!q) throw new Error('Укажите конкретный матч для подарка.');
+          const candidates = state.predictions.filter((pred) =>
+            pred.resultStatus === 'PENDING' &&
+            (pred.id.toLowerCase() === q || `${pred.homeTeam} ${pred.awayTeam}`.toLowerCase().includes(q)),
           );
-          if (!p) throw new Error('Подходящий активный матч не найден');
+          if (candidates.length === 0) throw new Error('Подходящий активный матч не найден');
+          if (candidates.length > 1) throw new Error('Найдено несколько матчей. Укажите точный ID прогноза.');
+          const p = candidates[0];
           grantPredictionAccess(u, p.id);
           return `Клиенту ${u.email} открыт бесплатный доступ к матчу «${p.homeTeam} — ${p.awayTeam}»`;
         }
-        const delta = Math.round(Number(args.amountRub || 0));
-        u.balanceRub = Math.max(0, u.balanceRub + delta);
+        if (sub !== 'CREDIT_BALANCE' || !Number.isFinite(Number(args.amountRub)) || Number(args.amountRub) <= 0) {
+          throw new Error('Укажите положительную сумму начисления.');
+        }
+        const delta = Math.round(Number(args.amountRub));
+        u.balanceRub += delta;
         return `Баланс клиента ${u.email} изменен (${delta >= 0 ? '+' : ''}${delta} ₽ → текущий: ${u.balanceRub} ₽)`;
       });
 
@@ -546,12 +498,14 @@ async function executeAdminAgentTool(
       const sub = String(args.action || 'DAILY_DIGEST').toUpperCase();
       if (sub === 'DAILY_DIGEST') {
         const res = await broadcastDailyDigestToTelegram();
-        if (!res.sent) throw new Error(res.error || 'Telegram-канал не настроен');
+        if (!res.sent) {
+          return { record: { tool, ok: false, summary: res.error, ...(res.outcome === 'unknown' ? { outcome: 'unknown' as const } : {}) } };
+        }
         return {
           record: {
             tool,
             ok: true,
-            summary: 'В Telegram-канал опубликована сводка матчей и открытой статистики',
+            summary: `В Telegram-канал опубликована сводка матчей и открытой статистики.${res.warning ? ` ${res.warning}` : ''}`,
           },
         };
       }
@@ -569,7 +523,9 @@ async function executeAdminAgentTool(
             }
           : undefined,
       );
-      if (!sent.sent) throw new Error(sent.error || 'Не удалось отправить пост');
+      if (!sent.sent) {
+        return { record: { tool, ok: false, summary: sent.error, ...(sent.outcome === 'unknown' ? { outcome: 'unknown' as const } : {}) } };
+      }
       return {
         record: {
           tool,
@@ -587,11 +543,18 @@ async function executeAdminAgentTool(
       },
     };
   } catch (err) {
+    // Multi-step operations may have committed some work before a later error.
+    const outcomeUnknown = err instanceof StorageUnavailableError ||
+      ['scan_and_publish_matches', 'replace_demo_matches', 'approve_all_drafts', 'run_settlement'].includes(tool);
+    const message = err instanceof Error ? err.message : 'Ошибка выполнения действия';
     return {
       record: {
         tool,
         ok: false,
-        summary: err instanceof Error ? err.message : 'Ошибка выполнения действия',
+        ...(outcomeUnknown ? { outcome: 'unknown' as const } : {}),
+        summary: outcomeUnknown
+          ? `${message} Итог может быть частичным или неизвестным; проверьте витрину, черновики и журнал перед повтором.`
+          : message,
       },
     };
   }
@@ -628,12 +591,15 @@ function getStructuredReply(parsed: AgentLlmStructuredOutput): string {
 function formatFailedActionReply(actions: AiChatExecutedAction[]): string {
   const failures = actions.filter((action) => !action.ok);
   const successes = actions.filter((action) => action.ok);
+  const hasUnknown = failures.some((action) => action.outcome === 'unknown');
   const lines = [
-    successes.length > 0
-      ? 'Выполнена только часть запрошенных действий:'
-      : 'Команда не выполнена:',
+    hasUnknown
+      ? 'Итог некоторых действий не подтверждён:'
+      : successes.length > 0
+        ? 'Выполнена только часть запрошенных действий:'
+        : 'Команда не выполнена:',
     ...successes.map((action) => `✓ ${action.summary}`),
-    ...failures.map((action) => `✗ ${action.summary}`),
+    ...failures.map((action) => `${action.outcome === 'unknown' ? '?' : '✗'} ${action.summary}`),
     'Проверьте фактический статус выше; текстовое обещание модели само по себе не означает выполнение.',
   ];
   return lines.join('\n');
@@ -646,285 +612,84 @@ interface LlmCallOutcome {
   diagnostic?: AiChatErrorDiagnostic;
 }
 
-const GATEWAY_UA =
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-
 async function callConfiguredLlmWithDiagnostics(
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
 ): Promise<LlmCallOutcome> {
-  const state = await readState();
-  const cfg = state.aiAutopilot;
+  const cfg = (await readState()).aiAutopilot;
   const key = (cfg.llmApiKey || '').trim();
-
-  // 1. Ключ еще не введен или не сохранен
   if (cfg.llmProvider === 'BUILTIN_QUANT' || key.length <= 8) {
     return {
-      ok: false,
-      content: null,
+      ok: false, content: null,
       diagnostic: {
         code: 'KEY_NOT_SAVED',
-        title:
-          'API-ключ нейросети еще не сохранен на сервере (работает локальный встроенный модуль)',
-        technicalDetails: `Текущий провайдер в настройках: ${cfg.llmProvider}, длина сохраненного ключа: ${key.length} симв.`,
+        title: cfg.llmProvider === 'BUILTIN_QUANT'
+          ? 'Выбран локальный режим: внешняя нейросеть не используется'
+          : 'API-ключ нейросети не сохранён',
+        technicalDetails: `Провайдер в настройках: ${cfg.llmProvider}.`,
         solutions: [
-          'Нажмите кнопку «Подключить / Проверить ключ API» прямо в верхней плашке этого чата.',
-          'Выберите шлюз (например, OrcaRouter.ai или DeepSeek), вставьте ваш секретный токен вида sk-... (со страницы https://www.orcarouter.ai/console/token — кнопка «Копировать» рядом с ключом).',
-          'Нажмите «Проверить и сохранить» — ключ и рабочая модель сразу сохранятся в базу, и нейросеть начнет отвечать в свободном диалоге!',
+          'Откройте «Подключить / Проверить ключ API» вверху чата.',
+          'Выберите провайдера, укажите его адрес, ключ и точный ID модели, затем нажмите «Проверить и сохранить».',
         ],
       },
     };
   }
-
-  // 2. Вместо секретного токена sk-... вставлено его название (например «google_306743 - initial token»)
   if (/\s/.test(key) || key.toLowerCase().includes('initial token')) {
     return {
-      ok: false,
-      content: null,
+      ok: false, content: null,
       diagnostic: {
-        code: 'KEY_IS_NAME_NOT_SECRET',
-        title: 'Вместо секретного токена вставлено его название',
-        technicalDetails: `В поле ключа указан текст с пробелами («${key.slice(0, 26)}...»), а API-шлюз принимает только секретный код без пробелов (обычно начинается на sk-...).`,
-        solutions: [
-          'Откройте https://www.orcarouter.ai/console/token в браузере.',
-          'В строке вашего ключа нажмите иконку «Копировать» (два листочка) — скопируется длинный секретный ключ вида sk-...',
-          'Вставьте его в плашку настройки ключа прямо над этим чатом и нажмите «Проверить и сохранить».',
-        ],
+        code: 'KEY_IS_NAME_NOT_SECRET', title: 'Некорректный формат сохранённого API-ключа',
+        technicalDetails: 'В ключе есть пробелы или указано название вместо секретного токена.',
+        solutions: ['Скопируйте сам секретный ключ у провайдера и сохраните его заново.'],
       },
     };
   }
-
-  const isPlusVibe =
-    key.startsWith('sk-pv-') ||
-    cfg.llmProvider === 'PLUSVIBE' ||
-    cfg.llmBaseUrl.toLowerCase().includes('plusvibeapi.ru');
-
-  const effectiveProvider = isPlusVibe ? 'PLUSVIBE' : cfg.llmProvider;
-  const bases = buildCandidateLlmBaseUrls(cfg.llmBaseUrl, effectiveProvider, key);
-  const rawModel = cfg.llmModel.trim();
-  const configuredModel =
-    isPlusVibe &&
-    (!rawModel ||
-      rawModel.toLowerCase() === 'orcarouter/auto' ||
-      rawModel.toLowerCase().includes('free') ||
-      rawModel === 'deepseek-v4.1-flash')
-      ? 'deepseek-v4.1-flash-1017'
-      : rawModel || 'deepseek-v4.1-flash';
-
-  let lastStatus = 0;
-  let lastUrl = bases[0] || cfg.llmBaseUrl;
-  let lastRawError = '';
-  let discoveredModelsOnToken: string[] = [];
-  const perModelErrors: string[] = [];
-
-  for (const base of bases) {
-    lastUrl = `${base}/chat/completions`;
-
-    const primaryOut = await postLlmChatCompletion({
-      baseUrl: base,
-      apiKey: key,
-      model: configuredModel,
-      temperature: 0.25,
-      timeoutMs: 24_000,
-      messages,
-    });
-
-    if (primaryOut.ok && primaryOut.content) {
-      return {
-        ok: true,
-        content: primaryOut.content,
-        modelLabel: `${effectiveProvider} · ${
-          primaryOut.returnedModel || configuredModel
-        }`,
-      };
-    }
-
-    lastStatus = primaryOut.status;
-    lastRawError = primaryOut.rawError;
-    perModelErrors.push(
-      `${configuredModel} → HTTP ${primaryOut.status}: ${primaryOut.rawError
-        .replace(/\s+/g, ' ')
-        .slice(0, 110)}`,
-    );
-
-    // Если сам ключ неверный (HTTP 401) или нулевой рублевый баланс (HTTP 402) — перебирать модели не нужно
-    if (primaryOut.status === 401 || (isPlusVibe && primaryOut.status === 402)) {
-      break;
-    }
-
-    // При любой другой ошибке модели — автоматически загружаем /models и проверяем приоритетные модели шлюза!
-    try {
-      const mRes = await fetch(`${base}/models`, {
-        headers: {
-          Accept: 'application/json',
-          Authorization: `Bearer ${key}`,
-          'User-Agent': GATEWAY_UA,
-        },
-        signal: AbortSignal.timeout(7500),
-        cache: 'no-store',
-      });
-      if (mRes.ok) {
-        const mJson = (await mRes.json()) as {
-          data?: Array<{ id?: string; type?: string }>;
-        };
-        const rawIds = (mJson.data || [])
-          .filter((m) => !isNonChatModelId(m.id || '', m.type))
-          .map((m) => (m.id || '').trim())
-          .filter(Boolean);
-        discoveredModelsOnToken = prioritizeModelsFreeFirst(rawIds, {
-          isPlusVibe,
-        });
-
-        const candidates = discoveredModelsOnToken
-          .filter(
-            (m) =>
-              m !== configuredModel &&
-              m.toLowerCase() !== 'orcarouter/auto',
-          )
-          .slice(0, 7);
-
-        for (const altModel of candidates) {
-          const retryOut = await postLlmChatCompletion({
-            baseUrl: base,
-            apiKey: key,
-            model: altModel,
-            temperature: 0.25,
-            timeoutMs: 22_000,
-            messages,
-          });
-
-          if (retryOut.ok && retryOut.content) {
-            await mutateState((s) => {
-              s.aiAutopilot.llmProvider = effectiveProvider;
-              s.aiAutopilot.llmBaseUrl = base;
-              s.aiAutopilot.llmModel = altModel;
-            });
-            return {
-              ok: true,
-              content: retryOut.content,
-              modelLabel: `${effectiveProvider} · ${
-                retryOut.returnedModel || altModel
-              } (автоподбор)`,
-            };
-          }
-
-          perModelErrors.push(
-            `${altModel} → HTTP ${retryOut.status}: ${retryOut.rawError
-              .replace(/\s+/g, ' ')
-              .slice(0, 100)}`,
-          );
-        }
-      }
-    } catch {
-      // переходим к формированию детального отчета
-    }
-  }
-
-  // Формируем понятную человеческую диагностику по точному коду ответа!
-  const isHtmlCloudflare =
-    lastRawError.includes('<!DOCTYPE html') ||
-    lastRawError.includes('<html') ||
-    lastRawError.toLowerCase().includes('cloudflare');
-
-  const cleanSnippet = isHtmlCloudflare
-    ? 'Шлюз вернул HTML-страницу защиты Cloudflare вместо JSON-ответа API.'
-    : lastRawError.replace(/\s+/g, ' ').trim().slice(0, 260) || 'Нет тела ответа';
-
-  const isModelAccessDenied403 =
-    lastStatus === 403 &&
-    (lastRawError.includes('model_access_denied') ||
-      lastRawError.includes('does not have access to model'));
-
-  const perModelReport =
-    perModelErrors.length > 0
-      ? ` Проверенные модели (${perModelErrors.length} шт.): ${perModelErrors.join(' | ')}`
-      : '';
-
-  if (isModelAccessDenied403) {
+  const base = buildCandidateLlmBaseUrls(cfg.llmBaseUrl, cfg.llmProvider, key)[0];
+  const model = cfg.llmModel.trim();
+  if (!base || !model) {
     return {
-      ok: false,
-      content: null,
+      ok: false, content: null,
       diagnostic: {
-        code: 'MODEL_ACCESS_DENIED_403',
-        title:
-          'Ключ верный, но в настройках ключа на OrcaRouter ограничен доступ к моделям (HTTP 403 model_access_denied)',
-        technicalDetails: `URL: ${lastUrl} ·${perModelReport}`,
-        solutions: [
-          'Откройте настройки вашего API-ключа на https://www.orcarouter.ai/console/token и нажмите «Редактировать / Управление доступом» рядом с ключом.',
-          'В списке разрешенных моделей ключа включите бесплатные модели с пометкой -free (или снимите галочку ограничения по конкретным моделям) и сохраните ключ в консоли OrcaRouter.',
-          'После этого нажмите «Проверить связь и СОХРАНИТЬ» вверху этого чата — рабочая бесплатная модель подхватится автоматически!',
-        ],
+        code: 'INVALID_LLM_CONFIG', title: 'Проверьте провайдера, адрес API и ID модели',
+        technicalDetails: 'Адрес должен использовать HTTPS и не содержать ключ или параметры в URL; ключ PlusVibe предназначен для соответствующего провайдера.',
+        solutions: ['Укажите подходящий провайдер, адрес, ключ и точный ID модели в настройках подключения.'],
       },
     };
   }
-
-  if (lastStatus === 401 || lastStatus === 403) {
-    return {
-      ok: false,
-      content: null,
-      diagnostic: {
-        code: `AUTH_HTTP_${lastStatus}`,
-        title: isHtmlCloudflare
-          ? `Шлюз ${lastUrl} заблокировал запрос защитой Cloudflare (HTTP ${lastStatus})`
-          : `Шлюз отклонил API-ключ (HTTP ${lastStatus} — Неверный или заблокированный токен)`,
-        technicalDetails: `URL: ${lastUrl} · Модель: ${configuredModel} · Ответ сервера: ${cleanSnippet}`,
-        solutions: isHtmlCloudflare
-          ? [
-              'Убедитесь, что адрес API Base URL указан строго с www: https://www.orcarouter.ai/v1 (или подключите прямой ключ DeepSeek / OpenRouter).',
-            ]
-          : [
-              'Проверьте, что скопирован полный ключ вида sk-orca-... со страницы https://www.orcarouter.ai/console/token без лишних пробелов.',
-              'Убедитесь, что сам ключ включен (Active) в личном кабинете шлюза.',
-            ],
-      },
-    };
+  const result = await postLlmChatCompletion({
+    baseUrl: base, apiKey: key, model, temperature: 0.25,
+    timeoutMs: 24_000, allowRetry: false, messages,
+  });
+  if (result.ok && result.content) {
+    const returnedModel = result.returnedModel && !result.returnedModel.includes(key)
+      ? result.returnedModel : null;
+    const requestedModel = model.includes(key) ? '[скрыто]' : model;
+    const label = returnedModel
+      ? `ID по ответу провайдера: ${returnedModel}`
+      : `Запрошена: ${requestedModel}; ID в ответе не указан`;
+    return { ok: true, content: result.content, modelLabel: `${cfg.llmProvider} · ${label}` };
   }
-
-  if (lastStatus === 402 || lastStatus === 429) {
-    return {
-      ok: false,
-      content: null,
-      diagnostic: {
-        code: `QUOTA_HTTP_${lastStatus}`,
-        title: `Исчерпан баланс токена или лимит бесплатных запросов в минуту (HTTP ${lastStatus})`,
-        technicalDetails: `URL: ${lastUrl} ·${perModelReport || ` Ответ шлюза: ${cleanSnippet}`}`,
-        solutions: [
-          'Если используется бесплатная модель (-free) и вернулся код 429 — подождите 15–30 секунд (лимит бесплатных запросов в минуту) и отправьте сообщение снова.',
-          'Либо выберите в выпадающем списке моделей над чатом другую бесплатную модель (-free) из доступных на вашем ключе.',
-        ],
-      },
-    };
-  }
-
-  if ([400, 404, 500, 502, 503].includes(lastStatus)) {
-    const modelsHint =
-      discoveredModelsOnToken.length > 0
-        ? `Модели на вашем токене (${discoveredModelsOnToken.length} шт.): ${discoveredModelsOnToken.join(', ')}.`
-        : '';
-    return {
-      ok: false,
-      content: null,
-      diagnostic: {
-        code: `MODEL_OR_CHANNEL_HTTP_${lastStatus}`,
-        title: `Модели на токене временно не ответили (HTTP ${lastStatus})`,
-        technicalDetails: `URL: ${lastUrl} · ${modelsHint}${perModelReport || ` Ответ: ${cleanSnippet}`}`,
-        solutions: [
-          'Убедитесь, что Base URL указан строго с www: https://www.orcarouter.ai/v1 (исправлено автоматически!).',
-          'Нажмите «Проверить связь и СОХРАНИТЬ» вверху чата — система по очереди опросит все бесплатные модели (-free) вашего ключа и сохранит живую.',
-        ],
-      },
-    };
-  }
-
+  const status = result.status;
+  const snippet = result.rawError.toLowerCase().includes('<html')
+    ? 'Шлюз вернул HTML вместо ответа API.'
+    : result.rawError.replace(/\s+/g, ' ').trim().slice(0, 200) || 'Нет данных об ошибке.';
+  const title = status === 401 || status === 403
+    ? `Провайдер отклонил ключ или доступ к модели (HTTP ${status})`
+    : status === 402
+      ? 'Провайдер сообщил о платёжном ограничении (HTTP 402)'
+      : status === 429
+        ? 'Провайдер ограничил частоту запросов (HTTP 429)'
+        : status
+          ? `Выбранная модель не ответила (HTTP ${status})`
+          : 'Не удалось связаться с сервером нейросети';
   return {
-    ok: false,
-    content: null,
+    ok: false, content: null,
     diagnostic: {
-      code: 'NETWORK_OR_TIMEOUT',
-      title: 'Не удалось достучаться до сервера нейросети (таймаут или ошибка сети)',
-      technicalDetails: `Проверенный адрес: ${lastUrl} · Модель: ${configuredModel} · Детали: ${cleanSnippet}`,
+      code: status ? `LLM_HTTP_${status}` : 'NETWORK_OR_TIMEOUT',
+      title,
+      technicalDetails: `API: ${base} · Модель: ${model} · ${snippet}`,
       solutions: [
-        'Проверьте правильность адреса API Base URL (для OrcaRouter: https://www.orcarouter.ai/v1, для DeepSeek: https://api.deepseek.com/v1, для OpenRouter: https://openrouter.ai/api/v1).',
-        'Нажмите кнопку «Подключить / Проверить ключ API» вверху чата для мгновенного теста связи с вашего сервера.',
+        'Проверьте соединение сервера, ключ и точный ID модели у выбранного провайдера.',
+        'Кнопка проверки запускает один тестовый запрос выбранной модели; другие модели автоматически не подбираются.',
       ],
     },
   };
@@ -942,26 +707,34 @@ async function runDeterministicFallbackAssistant(
 
   // Если спросили «что ты за модель? / кто ты? / привет»
   if (
-    lower.includes('модел') ||
-    lower.includes('кто ты') ||
-    lower === 'привет' ||
-    lower.startsWith('привет ')
+    !isAdminMutationIntent(userText) &&
+    (lower.includes('модел') ||
+      lower.includes('кто ты') ||
+      lower === 'привет' ||
+      lower.startsWith('привет '))
   ) {
     return {
       executedActions,
       reply:
         diagnostic?.code === 'KEY_NOT_SAVED'
-          ? 'Привет! Сейчас внешняя нейросеть еще не подключена (ключ API не сохранен в базе), поэтому вам отвечает встроенный локальный модуль управления VALUEX.\n\nСмотрите блок диагностики выше: нажмите «Подключить / Проверить ключ API» прямо в шапке чата, вставьте ваш токен `sk-...` и нажмите «Проверить и сохранить» — тогда я сразу переключусь на полноценную нейросеть (Gemini / GPT / DeepSeek)!'
-          : 'Привет! Я попытался обратиться к вашей внешней модели нейросети, но шлюз API вернул ошибку связи — поэтому временно ответил встроенный модуль сайта. В желто-красном блоке прямо над этим текстом указана точная причина ошибки от сервера и как исправить её за 1 минуту.',
+          ? 'Привет! В выбранной конфигурации внешняя нейросеть сейчас не используется; отвечает встроенный алгоритм управления VALUEX.\n\nОткройте «Подключить / Проверить ключ API», выберите провайдера и точный ID модели. Результат каждого последующего запроса будет показан отдельно; проверка соединения не гарантирует доступность модели.'
+          : 'Привет! Запрос к внешней модели не дал ответа, поэтому отвечает встроенный модуль сайта. В блоке диагностики указаны доступные сведения об ошибке и шаги для проверки.',
     };
+  }
+
+  if (isDirectTelegramDigestCommand(userText)) {
+    const res = await executeAdminAgentTool({ tool: 'telegram_channel_post', args: { action: 'DAILY_DIGEST' } });
+    executedActions.push(res.record);
+    return { executedActions, reply: res.record.summary };
   }
 
   // Любой запрос про новости / травмы / составы («проверь новости», «найди новости», «что по травмам»)
   if (
-    lower.includes('новост') ||
-    lower.includes('травм') ||
-    lower.includes('состав') ||
-    (lower.includes('проверь') && lower.includes('источник'))
+    !/(?:^|[\s,;:])не(?:\s+(?:надо|нужно))?\s+(?:ищи|ищите|искать|найди|проверяй|проверяйте|проверять|изучай|анализируй|запрашивай)/.test(lower) &&
+    (lower.includes('новост') ||
+      lower.includes('травм') ||
+      lower.includes('состав') ||
+      (lower.includes('проверь') && lower.includes('источник')))
   ) {
     const cleanQ = userText
       .replace(
@@ -991,8 +764,8 @@ async function runDeterministicFallbackAssistant(
   }
 
   if (isMatchCollectionIntent(userText)) {
-    const numMatch = lower.match(/\b([1-8])\b/);
-    const count = numMatch ? Number(numMatch[1]) : 3;
+    const count = requestedMatchCount(userText);
+    if (count === null) return { executedActions, reply: 'Укажите от 1 до 8 прогнозов за один запуск. Сбор и публикация не выполнялись.' };
     const res = await executeAdminAgentTool({
       tool: 'scan_and_publish_matches',
       args: {
@@ -1020,67 +793,49 @@ async function runDeterministicFallbackAssistant(
     };
   }
 
-  if (
-    lower.includes('telegram') ||
-    lower.includes('телеграм')
-  ) {
-    if (lower.includes('сводк') || lower.includes('отчет') || lower.includes('дайджест')) {
-      const res = await executeAdminAgentTool({
-        tool: 'telegram_channel_post',
-        args: { action: 'DAILY_DIGEST' },
-      });
-      executedActions.push(res.record);
-      return {
-        executedActions,
-        reply: res.record.ok
-          ? `Готово! ${res.record.summary}.`
-          : `Не удалось отправить в Telegram: ${res.record.summary} (проверьте токен бота и ID канала во вкладке «ЮKassa, Telegram и Реквизиты»).`,
-      };
-    }
-  }
-
-  if (lower.includes('цен') || (lower.includes('включи') && lower.includes('автопилот'))) {
-    const priceMatch = lower.match(/(\d{2,5})\s*(?:₽|руб)/);
-    if (priceMatch) {
-      const pRes = await executeAdminAgentTool({
-        tool: 'update_storefront_pricing',
-        args: { defaultSinglePriceRub: Number(priceMatch[1]) },
-      });
-      executedActions.push(pRes.record);
-    }
+  if (isAdminMutationIntent(userText) && (lower.includes('цен') || lower.includes('автопилот'))) {
+    const priceMatch = lower.match(/цен[ауые]?[^0-9]{0,20}(\d{2,7})/) || lower.match(/(\d{2,7})\s*(?:₽|руб)/);
+    const proposed: AgentActionRequest[] = [];
+    if (priceMatch) proposed.push({ tool: 'update_storefront_pricing', args: { defaultSinglePriceRub: Number(priceMatch[1]) } });
     if (lower.includes('включи') && lower.includes('автопилот')) {
-      const aRes = await executeAdminAgentTool({
-        tool: 'configure_autopilot',
-        args: { mode: 'FULL_AUTOPILOT' },
-      });
-      executedActions.push(aRes.record);
+      proposed.push({ tool: 'configure_autopilot', args: { mode: 'FULL_AUTOPILOT' } });
+    }
+    const resolution = resolveAdminAgentActions({ actions: proposed }, userText);
+    for (const action of resolution.actionsToExecute) {
+      const result = await executeAdminAgentTool(action);
+      executedActions.push(result.record);
     }
     if (executedActions.length > 0) {
-      return {
-        executedActions,
-        reply: `Настройки применены:\n• ${executedActions.map((a) => a.summary).join('\n• ')}`,
-      };
+      return { executedActions, reply: executedActions.map((action) => action.summary).join('\n') };
     }
   }
 
-  if (lower.includes('промокод')) {
-    const codeMatch = userText.match(/\b([A-Za-z0-9]{4,16})\b/);
+  if (isAdminMutationIntent(userText) && lower.includes('промокод')) {
+    const codeMatch = userText.match(/\b([A-Za-z0-9_-]{4,32})\b/);
     const pctMatch = userText.match(/(\d{1,2})\s*%/);
+    const limitMatch = lower.match(/(\d+)\s*(?:активац|использован|раз)/);
     if (codeMatch && pctMatch) {
-      const res = await executeAdminAgentTool({
+      const proposed = {
         tool: 'manage_promo_code',
         args: {
-          action: 'CREATE',
-          code: codeMatch[1].toUpperCase(),
-          discountPercent: Number(pctMatch[1]),
+          action: 'CREATE', code: codeMatch[1].toUpperCase(), discountPercent: Number(pctMatch[1]),
+          ...(limitMatch ? { maxUses: Number(limitMatch[1]) } : {}),
         },
-      });
-      executedActions.push(res.record);
-      return {
-        executedActions,
-        reply: `Готово! ${res.record.summary}.`,
       };
+      const [action] = resolveAdminAgentActions({ actions: [proposed] }, userText).actionsToExecute;
+      if (action) {
+        const res = await executeAdminAgentTool(action);
+        executedActions.push(res.record);
+        return { executedActions, reply: res.record.summary };
+      }
     }
+  }
+
+  if (isAdminMutationIntent(userText)) {
+    return {
+      executedActions,
+      reply: 'Не удалось однозначно распознать поручение без внешней модели. Никаких изменений или публикаций не выполнялось. Уточните команду или воспользуйтесь соответствующим разделом админки.',
+    };
   }
 
   const snap = await buildPlatformContextSnapshot();
@@ -1092,9 +847,9 @@ async function runDeterministicFallbackAssistant(
       `• Возвратов ЮKassa на ручной сверке: **${snap.financeAndUsers.externalRefundReviewCount}**`,
       `• Активных прогнозов на витрине: **${snap.activePredictionsOnStorefront.length} шт.** · Черновиков ИИ: **${snap.autopilot.draftsInQueueCount} шт.**`,
       `• Режим ИИ-Автопилота: **${snap.autopilot.mode}** · Базовая цена: **${snap.brandAndSettings.defaultSinglePriceRub} ₽**`,
-      `• Статистика сайта: **${snap.verifiedStats.wins} побед / ${snap.verifiedStats.losses} минусов** (${snap.verifiedStats.allTimeWinRatePct.toFixed(1)}%, прирост +${snap.verifiedStats.allTimeNetProfitPct.toFixed(1)}%)`,
+      `• Статистика сайта: **${snap.verifiedStats.wins} побед / ${snap.verifiedStats.losses} минусов** (${snap.verifiedStats.allTimeWinRatePct.toFixed(1)}%, результат ${snap.verifiedStats.allTimeNetProfitPct >= 0 ? '+' : ''}${snap.verifiedStats.allTimeNetProfitPct.toFixed(1)} ед.)`,
       ``,
-      `💡 *Примечание:* сейчас активен встроенный модуль. Когда во вкладке «ИИ-Автопилот 24/7» подключен ваш ключ OrcaRouter / Gemini / DeepSeek, я веду полноценный свободный диалог и выполняю любые сложные поручения по сайту и разбору матчей!`,
+      `💡 *Примечание:* этот ответ составлен алгоритмом сайта. При подключении внешней модели её текст и поддерживаемые команды дополнительно проверяются сервером. Наличие ключа не гарантирует доступность модели или выполнение любого поручения; фактический результат показан отдельно.`,
     ].join('\n'),
   };
 }
@@ -1106,6 +861,7 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
   userMessage: AiChatMessage;
   assistantMessage: AiChatMessage;
   messages: AiChatMessage[];
+  historyStatus: 'saved' | 'unconfirmed';
 }> {
   const cleanPrompt = userPrompt.trim();
   if (!cleanPrompt) {
@@ -1130,7 +886,7 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
     '2) research_specific_match: {"sport":"FOOTBALL|HOCKEY|TENNIS|ESPORTS|BASKETBALL|MMA","leagueName":"...","homeTeam":"...","awayTeam":"...","homeOdds":1.85,"drawOdds":3.5,"awayOdds":4.1} — собрать досье на конкретный матч из доступных источников.',
     '3) scan_and_publish_matches: {"count":3,"publishImmediately":true} — сканировать линию Фонбет/Леон; новости проверяются, если эта настройка включена. Выпускаются только кандидаты, прошедшие кодовые фильтры и AI-комитет; это не обещание выигрыша. При publishImmediately:false прошедшие кандидаты попадут в черновики.',
     '4) replace_demo_matches: {} — удалить стартовые демо-карточки и запустить проверенный сценарий сбора реальных матчей.',
-    '5) approve_all_drafts: {} — выпустить накопленные черновики на витрину.',
+    '5) approve_all_drafts: {} — выпустить всю очередь черновиков только по явно выраженной просьбе одобрить все черновики.',
     '6) run_settlement: {} — запустить автоматическую сверку результатов завершенных игр.',
     '7) update_or_delete_prediction: {"predictionIdOrTeamQuery":"...","action":"SET_PRICE|MAKE_FREE|MAKE_FEATURED|DELETE","priceRub":690} — изменить цену, сделать бесплатным, главным или удалить матч.',
     '8) configure_autopilot: {"mode":"FULL_AUTOPILOT|MODERATION|OFF","morningHourMsk":9,"eveningHourMsk":18,"maxPicksPerRun":3,"defaultAiPriceRub":790,"freeEveryNthPick":4,"insureAiPicks":true,"openSourceResearchEnabled":true} — изменить настройки автопилота.',
@@ -1186,8 +942,14 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
     { role: 'user', content: cleanPrompt },
   ];
 
-  const firstOutcome = await callConfiguredLlmWithDiagnostics(llmMessages);
+  // The standard single-purpose digest command uses the verified site data directly;
+  // it must not depend on an LLM generating a tool call or invented statistics.
+  const firstOutcome: LlmCallOutcome = isDirectTelegramDigestCommand(cleanPrompt)
+    ? { ok: false, content: null }
+    : await callConfiguredLlmWithDiagnostics(llmMessages);
   let finalReply = '';
+  // This tracks the actual displayed text, not merely whether a model was called.
+  let replySource: 'MODEL' | 'SERVER' = 'SERVER';
   let activeModelLabel: string | undefined = firstOutcome.modelLabel;
   let activeDiagnostic: AiChatErrorDiagnostic | undefined =
     firstOutcome.diagnostic;
@@ -1217,6 +979,7 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
         activeDiagnostic = createActionFormatDiagnostic(false, 0);
       } else {
         finalReply = firstRaw;
+        replySource = 'MODEL';
       }
     } else {
       const actionResolution = resolveAdminAgentActions(parsed, cleanPrompt);
@@ -1286,7 +1049,6 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
             },
           ]);
           const secondPassRaw = secondOutcome.content;
-          if (secondOutcome.modelLabel) activeModelLabel = secondOutcome.modelLabel;
           if (!secondOutcome.ok && secondOutcome.diagnostic) {
             activeDiagnostic = secondOutcome.diagnostic;
           }
@@ -1308,15 +1070,23 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
               );
             }
             finalReply = getStructuredReply(parsedSecond);
+            if (finalReply) {
+              replySource = 'MODEL';
+              activeModelLabel = secondOutcome.modelLabel || activeModelLabel;
+            }
           }
         }
 
         if (!finalReply) {
-          finalReply =
-            getStructuredReply(parsed) ||
-            (executedActions.length > 0
+          const modelReply = getStructuredReply(parsed);
+          if (modelReply) {
+            finalReply = modelReply;
+            replySource = 'MODEL';
+          } else {
+            finalReply = executedActions.length > 0
               ? executedActions.map((action) => action.summary).join('\n')
-              : 'Модель не вернула команду для выполнения. На сайте ничего не изменено.');
+              : 'Модель не вернула команду для выполнения. На сайте ничего не изменено.';
+          }
         }
       }
     }
@@ -1327,31 +1097,49 @@ export async function processAdminAiChatTurn(userPrompt: string): Promise<{
   );
   if (executedActions.some((action) => !action.ok)) {
     finalReply = formatFailedActionReply(executedActions);
-  } else if (scanActions.length > 0) {
-    finalReply = scanActions.map((action) => action.summary).join('\n');
+    replySource = 'SERVER';
+  } else if (scanActions.length > 0 || executedActions.some((action) => action.tool === 'telegram_channel_post')) {
+    // Never rely on a model's pre-execution promise to describe a real publication.
+    finalReply = executedActions.map((action) => action.summary).join('\n');
+    replySource = 'SERVER';
   }
 
   const assistantMsg: AiChatMessage = {
     id: `chat_${randomUUID().slice(0, 10)}`,
     role: 'assistant',
     content: finalReply,
-    modelLabel: activeModelLabel || 'Локальный модуль сайта',
+    replySource,
+    modelLabel: activeModelLabel,
     executedActions: executedActions.length > 0 ? executedActions : undefined,
     diagnostic: activeDiagnostic,
     createdAt: new Date().toISOString(),
   };
 
-  const allMessages = await mutateState((state) => {
-    state.aiChatMessages.push(userMsg, assistantMsg);
-    if (state.aiChatMessages.length > 60) {
-      state.aiChatMessages = state.aiChatMessages.slice(-60);
-    }
-    return state.aiChatMessages;
-  });
-
-  return {
-    userMessage: userMsg,
-    assistantMessage: assistantMsg,
-    messages: allMessages,
-  };
+  try {
+    const allMessages = await mutateState((state) => {
+      state.aiChatMessages.push(userMsg, assistantMsg);
+      if (state.aiChatMessages.length > 60) {
+        state.aiChatMessages = state.aiChatMessages.slice(-60);
+      }
+      return state.aiChatMessages;
+    });
+    return { userMessage: userMsg, assistantMessage: assistantMsg, messages: allMessages, historyStatus: 'saved' };
+  } catch {
+    // An action may already have completed before the history write or its
+    // acknowledgement failed. Return its actual result rather than a false
+    // request failure, and do not claim the history definitely was not saved.
+    if (assistantMsg.replySource === 'MODEL') assistantMsg.replySource = 'MIXED';
+    const telegram = executedActions.some((action) => action.tool === 'telegram_channel_post');
+    assistantMsg.content += `\n\nВнимание: сохранение истории чата не подтверждено; этот ответ может пропасть после обновления страницы.${
+      executedActions.length > 0
+        ? ` Перед повтором проверьте результат действий${telegram ? ' и Telegram-канал' : ' на сайте'}.`
+        : ''
+    }`;
+    return {
+      userMessage: userMsg,
+      assistantMessage: assistantMsg,
+      messages: [...stateBefore.aiChatMessages, userMsg, assistantMsg].slice(-60),
+      historyStatus: 'unconfirmed',
+    };
+  }
 }

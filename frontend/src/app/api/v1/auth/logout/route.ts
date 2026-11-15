@@ -1,13 +1,8 @@
-import { NextResponse } from 'next/server';
-import { SESSION_COOKIE_NAME } from '@/server/auth';
+import { NextRequest, NextResponse } from 'next/server';
+import { setSessionCookies } from '@/server/session-cookies';
 
-export async function POST() {
+export async function POST(req: NextRequest) {
   const res = NextResponse.json({ ok: true });
-  res.cookies.set(SESSION_COOKIE_NAME, '', {
-    httpOnly: true,
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 0,
-  });
+  setSessionCookies(res, req, '', true);
   return res;
 }

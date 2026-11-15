@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { resolveTeamLogoResponse } from '@/server/team-logos';
+import { checkRateLimit, extractClientIp } from '@/server/rate-limit';
 import type { SportType } from '@/server/types';
 
 export const dynamic = 'force-dynamic';
@@ -14,8 +15,13 @@ const VALID_SPORTS = new Set<SportType>([
 ]);
 
 export async function GET(req: NextRequest) {
+  // A page can contain many logos; this is an abuse limit, not an auth control.
+  const limit = checkRateLimit({ key: `team-logo:${extractClientIp(req.headers)}`, limit: 200, windowMs: 60_000 });
+  if (!limit.allowed) {
+    return new NextResponse(null, { status: 429, headers: { 'Retry-After': String(limit.retryAfterSec), 'Cache-Control': 'no-store' } });
+  }
   const { searchParams } = new URL(req.url);
-  const team = (searchParams.get('team') || 'Team').trim();
+  const team = (searchParams.get('team') || 'Team').trim().slice(0, 90);
   const rawSport = (searchParams.get('sport') || '').toUpperCase() as SportType;
   const sport = VALID_SPORTS.has(rawSport) ? rawSport : undefined;
   const directUrl = searchParams.get('url');

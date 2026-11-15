@@ -12,84 +12,58 @@ import {
 import {
   mutateState,
   readState,
+  StorageUnavailableError,
   toAdminAutopilotDto,
 } from '@/server/database';
 import { requireAdminAccount } from '@/server/guards';
-import type { AiAutopilotConfig } from '@/server/types';
+import { assertLlmKeyMatchesProvider, assertLlmKeyScope, normalizeLlmBaseUrl, validateLlmProvider } from '@/server/llm-config-policy';
+import { applyAutopilotConfigPatch } from '@/server/autopilot-config-policy';
+
+function operationError(err: unknown, fallback: string) {
+  if (err instanceof StorageUnavailableError) return NextResponse.json({ error: err.message }, { status: 503 });
+  const code = err instanceof Error ? err.message : '';
+  if (code === 'UNAUTHORIZED') return NextResponse.json({ error: 'Войдите как администратор.' }, { status: 401 });
+  if (code === 'BLOCKED' || code === 'FORBIDDEN') return NextResponse.json({ error: 'Доступ только для администратора.' }, { status: 403 });
+  return NextResponse.json({ error: code || fallback }, { status: 400 });
+}
 
 export async function PATCH(req: NextRequest) {
   try {
     await requireAdminAccount();
-    const body = (await req.json()) as {
-      config: Partial<AiAutopilotConfig> & { cronSecret?: unknown };
-    };
+    const body = (await req.json()) as { config?: unknown };
 
-    const incomingConfig = { ...body.config };
-    delete incomingConfig.llmApiKeyConfigured;
-    delete incomingConfig.cronSecret;
-    const submittedApiKey =
-      typeof incomingConfig.llmApiKey === 'string'
-        ? incomingConfig.llmApiKey.trim()
-        : '';
-    if (submittedApiKey && (submittedApiKey.length <= 8 || /\s/.test(submittedApiKey))) {
-      throw new Error('API-ключ выглядит некорректно; он не сохранён.');
-    }
-
-    const nextConfig = await mutateState((state) => {
+    const result = await mutateState((state) => {
       const prevMode = state.aiAutopilot.mode;
-      const incoming = { ...incomingConfig };
-      if (
-        typeof incoming.llmBaseUrl === 'string' &&
-        incoming.llmBaseUrl.includes('/console')
-      ) {
-        try {
-          const parsed = new URL(incoming.llmBaseUrl.trim());
-          incoming.llmBaseUrl = `${parsed.origin}/v1`;
-        } catch {
-          // оставляем как есть
-        }
-      }
-      state.aiAutopilot = {
-        ...state.aiAutopilot,
-        ...incoming,
-        llmApiKey: submittedApiKey || state.aiAutopilot.llmApiKey,
-      };
-      const agentConfidence = Number(state.aiAutopilot.minAgentConfidencePct ?? 60);
-      state.aiAutopilot.minAgentConfidencePct = Number.isFinite(agentConfidence)
-        ? Math.max(0, Math.min(100, agentConfidence))
-        : 60;
-      // Консенсус не отключается конфигурацией: при сбое/разногласии автопубликации нет.
-      state.aiAutopilot.requireAgentConsensus = true;
-      if (body.config.mode && body.config.mode !== prevMode) {
+      const applied = applyAutopilotConfigPatch(state.aiAutopilot, body?.config);
+      state.aiAutopilot = applied.config;
+      const mode = state.aiAutopilot.mode;
+      if (mode !== prevMode) {
         state.aiLogs.unshift({
           id: `ailog_${randomUUID().slice(0, 8)}`,
           createdAt: new Date().toISOString(),
-          level: body.config.mode === 'FULL_AUTOPILOT' ? 'SUCCESS' : 'INFO',
+          level: mode === 'FULL_AUTOPILOT' ? 'SUCCESS' : 'INFO',
           stage: 'PUBLISHER',
           message:
-            body.config.mode === 'FULL_AUTOPILOT'
-              ? `Включен режим «ПОЛНЫЙ АВТОПИЛОТ 24/7» (слоты ${String(
+            mode === 'FULL_AUTOPILOT'
+              ? `Включен полный режим: слоты ${String(
                   state.aiAutopilot.morningHourMsk,
                 ).padStart(2, '0')}:00 и ${String(
                   state.aiAutopilot.eveningHourMsk,
-                ).padStart(2, '0')}:00 МСК + автосверка счетов и выплата страховок).`
-              : body.config.mode === 'MODERATION'
+                ).padStart(2, '0')}:00 МСК. Выпуск зависит от линии, модели и планировщика.`
+              : mode === 'MODERATION'
                 ? 'Включен режим «Премодерация черновиков».'
-                : 'Модуль ИИ-Автопилота переведен в режим паузы (OFF).',
+                : 'Автопилот переведен в режим паузы (OFF).',
         });
       }
-      return state.aiAutopilot;
+      return applied;
     });
 
     return NextResponse.json({
-      aiAutopilot: toAdminAutopilotDto(nextConfig),
-      keySavedNow: Boolean(submittedApiKey),
+      aiAutopilot: toAdminAutopilotDto(result.config),
+      keySavedNow: result.keySavedNow,
     });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Ошибка сохранения автопилота' },
-      { status: 400 },
-    );
+    return operationError(err, 'Ошибка сохранения автопилота');
   }
 }
 
@@ -115,62 +89,49 @@ export async function POST(req: NextRequest) {
       | { action: 'CLEAR_LOGS' };
 
     if (body.action === 'TEST_LLM') {
-      const stateBeforeTest = await readState();
-      const submittedKey = body.llmApiKey?.trim() || '';
-      const savedKey = stateBeforeTest.aiAutopilot.llmApiKey.trim();
-      const keyForTest = submittedKey || savedKey;
-      const result = await testLlmConnectionAndModels({
-        llmProvider: body.llmProvider,
-        llmBaseUrl: body.llmBaseUrl,
-        llmApiKey: keyForTest,
-        llmModel: body.llmModel,
-      });
-
-      // API reachability and persistence are separate facts: a failed probe does not discard a valid key.
-      let keySavedNow = false;
-      if (submittedKey.length > 8 && !/\s/.test(submittedKey)) {
-        const isPlusVibe =
-          submittedKey.startsWith('sk-pv-') ||
-          result.detectedProvider === 'PLUSVIBE' ||
-          body.llmProvider === 'PLUSVIBE';
-
-        const bestFallback =
-          body.llmModel?.trim() &&
-          body.llmModel.trim().toLowerCase() !== 'orcarouter/auto' &&
-          !(isPlusVibe && body.llmModel.trim().toLowerCase().includes('free'))
-            ? body.llmModel.trim()
-            : isPlusVibe
-              ? result.availableModels[0] || 'deepseek-v4.1-flash-1017'
-              : result.availableModels.find((m) =>
-                  m.toLowerCase().includes('free'),
-                ) ||
-                result.availableModels.find(
-                  (m) => m.toLowerCase() !== 'orcarouter/auto',
-                ) ||
-                'deepseek-v4.1-flash';
-
-        await mutateState((state) => {
-          state.aiAutopilot.llmProvider = isPlusVibe
-            ? 'PLUSVIBE'
-            : body.llmProvider === 'BUILTIN_QUANT'
-              ? 'OLLAMA'
-              : (body.llmProvider as AiAutopilotConfig['llmProvider']);
-          state.aiAutopilot.llmBaseUrl =
-            result.resolvedBaseUrl || body.llmBaseUrl.trim();
-          state.aiAutopilot.llmApiKey = submittedKey;
-          state.aiAutopilot.llmModel = result.ok
-            ? result.testedModel || bestFallback
-            : bestFallback;
-        });
-        keySavedNow = true;
+      if (typeof body.llmProvider !== 'string' || typeof body.llmBaseUrl !== 'string' ||
+          typeof body.llmApiKey !== 'string' || typeof body.llmModel !== 'string') {
+        throw new Error('Заполните провайдера, адрес и модель.');
       }
+      validateLlmProvider(body.llmProvider);
+      if (body.llmProvider === 'BUILTIN_QUANT') throw new Error('Для проверки выберите внешнего провайдера.');
+      const provider = body.llmProvider;
+      const base = normalizeLlmBaseUrl(body.llmBaseUrl, provider);
+      const model = body.llmModel.trim();
+      if (!model) throw new Error('Укажите точный ID модели.');
+      const submittedKey = body.llmApiKey.trim();
+      if (submittedKey && (submittedKey.length <= 8 || /\s/.test(submittedKey))) {
+        throw new Error('API-ключ выглядит некорректно; он не сохранён.');
+      }
+      const stateBeforeTest = await readState();
+      const savedKey = stateBeforeTest.aiAutopilot.llmApiKey.trim();
+      assertLlmKeyScope(stateBeforeTest.aiAutopilot, { llmProvider: provider, llmBaseUrl: base }, submittedKey);
+      const keyForTest = submittedKey || savedKey;
+      if (!keyForTest) throw new Error('Введите API-ключ для выбранного провайдера.');
+      assertLlmKeyMatchesProvider(keyForTest, provider);
 
-      const keyConfigured = keySavedNow || savedKey.length > 8;
+      const result = await testLlmConnectionAndModels({
+        llmProvider: provider, llmBaseUrl: base, llmApiKey: keyForTest, llmModel: model,
+      });
+      // The button says “test and save”: persist the selected configuration even
+      // when reusing an existing key or when the single probe fails.
+      await mutateState((state) => {
+        assertLlmKeyScope(state.aiAutopilot, { llmProvider: provider, llmBaseUrl: base }, submittedKey);
+        if (!submittedKey && state.aiAutopilot.llmApiKey.trim() !== savedKey) {
+          throw new Error('Ключ изменился во время проверки. Проверьте настройки и запустите проверку заново.');
+        }
+        state.aiAutopilot.llmProvider = provider;
+        state.aiAutopilot.llmBaseUrl = base;
+        state.aiAutopilot.llmApiKey = submittedKey || state.aiAutopilot.llmApiKey;
+        state.aiAutopilot.llmModel = model;
+        state.aiAutopilot.runRevision = randomUUID();
+      });
       return NextResponse.json({
         ...result,
-        keySaved: keyConfigured,
-        keySavedNow,
-        keyConfigured,
+        keySaved: true,
+        keySavedNow: Boolean(submittedKey),
+        keyConfigured: true,
+        configSaved: true,
       });
     }
 
@@ -188,11 +149,11 @@ export async function POST(req: NextRequest) {
       const res = await broadcastDailyDigestToTelegram();
       if (!res.sent) {
         return NextResponse.json(
-          { error: res.error || 'Укажите токен бота и ID канала во вкладке «ЮKassa, Telegram и Реквизиты»' },
-          { status: 400 },
+          { error: res.error, outcome: res.outcome },
+          { status: res.outcome === 'unknown' ? 502 : 400 },
         );
       }
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true, warning: res.warning });
     }
 
     if (body.action === 'RUN_SCAN_NOW') {
@@ -253,9 +214,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ error: 'Неизвестное действие' }, { status: 400 });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Ошибка выполнения операции ИИ' },
-      { status: 400 },
-    );
+    return operationError(err, 'Ошибка выполнения операции ИИ');
   }
 }

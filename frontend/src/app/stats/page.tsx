@@ -14,6 +14,7 @@ import { SiteShell } from '@/components/layout/SiteShell';
 import { EquityCurveChart } from '@/components/stats/EquityCurveChart';
 import { HashVerifyModal } from '@/components/predictions/HashVerifyModal';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
+import { PublicLoadError } from '@/components/layout/PublicLoadError';
 import type { PublicPredictionDto, SportType } from '@/server/types';
 
 const BANKROLL_PRESETS = [10_000, 30_000, 50_000, 100_000];
@@ -28,7 +29,7 @@ const SPORT_NAMES: Record<SportType, string> = {
 };
 
 export default function StatsPage() {
-  const { data, reload } = usePublicPlatform();
+  const { data, error, reload } = usePublicPlatform();
   const [period, setPeriod] = useState<'WEEK' | 'MONTH' | 'ALL_TIME'>(
     'ALL_TIME',
   );
@@ -58,6 +59,7 @@ export default function StatsPage() {
       brand={data?.brand ?? null}
       onViewerChange={() => reload()}
     >
+      <PublicLoadError message={error} onRetry={() => void reload()} />
       <div className="hero-surface py-8 text-white sm:py-10">
         <div className="mx-auto flex max-w-7xl flex-col justify-between gap-4 px-4 sm:px-6 lg:flex-row lg:items-end lg:px-8">
           <div>
@@ -175,10 +177,10 @@ export default function StatsPage() {
                 <span>Калькулятор в рублях</span>
               </div>
               <h2 className="mt-2.5 text-lg font-extrabold text-slate-950">
-                Сколько бы вы заработали со своим банком?
+                Как выглядит условный результат?
               </h2>
               <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                Выберите комфортную для вас общую сумму на ставки — калькулятор покажет безопасную ставку на 1 матч и чистую прибыль в рублях.
+                Это модельный расчёт по прошлым результатам, без учёта цены прогнозов и индивидуальных условий. Он не гарантирует будущую прибыль; ставки связаны с риском потери денег.
               </p>
 
               <div className="mt-4 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
@@ -229,11 +231,10 @@ export default function StatsPage() {
               </div>
               <div>
                 <div className="text-[10px] font-semibold uppercase text-slate-400">
-                  Прибыль
+                  Условный результат
                 </div>
                 <div className="mt-0.5 font-mono text-xs font-black text-emerald-600 sm:text-sm">
-                  {simulatedProfitRub >= 0 ? '+' : ''}
-                  {simulatedProfitRub.toLocaleString('ru-RU')} ₽
+                  {hasVerifiedSettledResults ? `${simulatedProfitRub >= 0 ? '+' : ''}${simulatedProfitRub.toLocaleString('ru-RU')} ₽` : '—'}
                 </div>
               </div>
               <div>
@@ -241,7 +242,7 @@ export default function StatsPage() {
                   Итог счета
                 </div>
                 <div className="mt-0.5 font-mono text-xs font-black text-blue-600 sm:text-sm">
-                  {simulatedFinalBankRub.toLocaleString('ru-RU')} ₽
+                  {hasVerifiedSettledResults ? `${simulatedFinalBankRub.toLocaleString('ru-RU')} ₽` : '—'}
                 </div>
               </div>
             </div>

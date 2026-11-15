@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { hashPassword, verifyPassword } from '@/server/auth';
+import { hashPassword, signSessionToken, verifyPassword } from '@/server/auth';
 import {
   mutateState,
   readState,
@@ -8,7 +8,11 @@ import {
   toSafeSessionUser,
 } from '@/server/database';
 import { requireAuthenticatedUser } from '@/server/guards';
+import { toCustomerOrder } from '@/server/order-dto';
+import { newTelegramLinkCode } from '@/server/security-policy';
+import { setSessionCookies } from '@/server/session-cookies';
 import {
+  escapeTelegramHtml,
   fetchTelegramBotUsername,
   pollTelegramUpdatesForLinkCode,
   sendTelegramDirectMessage,
@@ -40,10 +44,10 @@ export async function GET() {
 
     const safeUser = toSafeSessionUser(user);
     const purchasedPredictions = state.predictions
-      .filter((p) => user.purchasedPredictionIds.includes(p.id))
+      .filter((p) => user.purchasedPredictionIds.includes(p.id) || user.grantedPredictionIds?.includes(p.id))
       .map((p) => toPublicPredictionDto(p, user));
 
-    const myOrders = state.transactions.filter((t) => t.userId === user.id);
+    const myOrders = state.transactions.filter((t) => t.userId === user.id).map(toCustomerOrder);
     const myAffiliateLinks = state.affiliateLinks.filter((l) => l.userId === user.id);
     const myPayouts = state.payouts.filter((p) => p.userId === user.id);
 
@@ -108,16 +112,23 @@ export async function PATCH(req: NextRequest) {
         if (!body.currentPassword || !verifyPassword(body.currentPassword, u.passwordHash)) {
           throw new Error('Текущий пароль указан неверно');
         }
-        if (body.newPassword.length < 6) {
-          throw new Error('Новый пароль должен содержать минимум 6 символов');
+        if (body.newPassword.length < 10 || body.newPassword.length > 256) {
+          throw new Error('Новый пароль должен содержать от 10 до 256 символов');
         }
         u.passwordHash = hashPassword(body.newPassword);
+        u.passwordResetCode = null;
+        u.passwordResetExpiresAt = null;
+        u.passwordResetAttempts = 0;
       }
 
-      return toSafeSessionUser(u);
+      return { user: toSafeSessionUser(u), passwordHash: u.passwordHash };
     });
 
-    return NextResponse.json({ user: updated });
+    const res = NextResponse.json({ user: updated.user });
+    if (body.newPassword) {
+      setSessionCookies(res, req, signSessionToken({ id: sessionUser.id, passwordHash: updated.passwordHash }));
+    }
+    return res;
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ошибка обновления профиля' },
@@ -130,7 +141,7 @@ export async function POST(req: NextRequest) {
   try {
     const sessionUser = await requireAuthenticatedUser();
     const body = (await req.json()) as
-      | { action: 'VERIFY_TELEGRAM_LINK'; manualChatId?: string }
+      | { action: 'VERIFY_TELEGRAM_LINK' }
       | { action: 'UNLINK_TELEGRAM' }
       | { action: 'TEST_TELEGRAM_DM' };
 
@@ -139,6 +150,11 @@ export async function POST(req: NextRequest) {
         const u = state.users.find((row) => row.id === sessionUser.id);
         if (!u) throw new Error('Пользователь не найден');
         u.telegramChatId = null;
+        u.telegramBindingVerified = false;
+        u.telegramLinkCode = newTelegramLinkCode();
+        u.passwordResetCode = null;
+        u.passwordResetExpiresAt = null;
+        u.passwordResetAttempts = 0;
         return toSafeSessionUser(u);
       });
       return NextResponse.json({ user: updated });
@@ -163,16 +179,16 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === 'TEST_TELEGRAM_DM') {
-      if (!safeSession.telegramChatId) {
+      if (!safeSession.telegramChatId || !safeSession.telegramBindingVerified) {
         return NextResponse.json(
-          { error: 'Сначала подключите ваш Telegram' },
+          { error: 'Сначала подтвердите подключение Telegram заново' },
           { status: 400 },
         );
       }
       const res = await sendTelegramDirectMessage(
         state.settings,
         safeSession.telegramChatId,
-        `🔔 <b>Проверка уведомлений ${state.settings.brandName}</b>\n\nСвязь с вашим кабинетом активна! Сюда будут мгновенно приходить купленные прогнозы и возвраты по страховке.`,
+        `🔔 <b>Проверка уведомлений ${escapeTelegramHtml(state.settings.brandName)}</b>\n\nСвязь с вашим кабинетом активна. Сюда могут приходить уведомления о купленных прогнозах и начислениях на баланс.`,
       );
       if (!res.sent) {
         return NextResponse.json(
@@ -184,24 +200,17 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === 'VERIFY_TELEGRAM_LINK') {
-      // Если вебхук уже успел привязать аккаунт
+      // Existing pre-security bindings are retained but not trusted for messages or resets.
       if (safeSession.telegramChatId) {
+        if (!safeSession.telegramBindingVerified) {
+          return NextResponse.json({ error: 'Для безопасности отключите старую привязку и подключите Telegram заново.' }, { status: 400 });
+        }
         return NextResponse.json({ user: safeSession, linked: true });
       }
 
-      let foundChatId = (body.manualChatId || '').trim();
-      let foundUsername: string | null = null;
-
-      if (!foundChatId) {
-        const polled = await pollTelegramUpdatesForLinkCode(
-          botToken,
-          safeSession.telegramLinkCode,
-        );
-        if (polled) {
-          foundChatId = polled.chatId;
-          foundUsername = polled.username;
-        }
-      }
+      const polled = await pollTelegramUpdatesForLinkCode(botToken, safeSession.telegramLinkCode);
+      const foundChatId = polled?.chatId || '';
+      const foundUsername = polled?.username ?? null;
 
       if (!foundChatId) {
         return NextResponse.json(
@@ -215,7 +224,12 @@ export async function POST(req: NextRequest) {
       const updated = await mutateState((s) => {
         const u = s.users.find((row) => row.id === sessionUser.id);
         if (!u) throw new Error('Пользователь не найден');
+        if (u.telegramChatId || u.telegramLinkCode !== safeSession.telegramLinkCode) {
+          throw new Error('Код уже использован или привязка изменилась. Обновите кабинет.');
+        }
         u.telegramChatId = foundChatId;
+        u.telegramBindingVerified = true;
+        u.telegramLinkCode = newTelegramLinkCode();
         if (foundUsername) u.telegramUsername = foundUsername;
         return toSafeSessionUser(u);
       });
@@ -223,7 +237,7 @@ export async function POST(req: NextRequest) {
       await sendTelegramDirectMessage(
         state.settings,
         foundChatId,
-        `✅ <b>Уведомления подключены к вашему кабинету (${updated.email})!</b>\n\nТеперь купленные прогнозы и возвраты 100% по страховке приходят прямо сюда.`,
+        `✅ <b>Уведомления подключены к вашему кабинету (${escapeTelegramHtml(updated.email)})!</b>\n\nСообщения о покупках и начислениях будут приходить в этот чат.`,
       );
 
       return NextResponse.json({ user: updated, linked: true });

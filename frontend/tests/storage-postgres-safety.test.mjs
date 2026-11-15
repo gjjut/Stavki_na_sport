@@ -33,6 +33,8 @@ const fake = {
   conflictPayload: null,
   loseCommitAck: false,
   failRollback: false,
+  ddlErrors: [],
+  ddlCalls: 0,
 };
 const clone = (value) => structuredClone(value);
 class FakePool {
@@ -42,7 +44,12 @@ class FakePool {
   emitIdleError() { this.handlers.error(new Error('offline')); }
   async query(sql, params = []) {
     if (!fake.online || this.ended) throw new Error('test-password must not leak');
-    if (sql.includes('CREATE TABLE')) return { rows: [] };
+    if (sql.includes('CREATE TABLE')) {
+      fake.ddlCalls++;
+      const code = fake.ddlErrors.shift();
+      if (code) throw Object.assign(new Error('fixture DDL error'), { code });
+      return { rows: [] };
+    }
     if (sql.includes('SELECT payload')) return { rows: fake.payload ? [{ payload: clone(fake.payload) }] : [] };
     if (sql.includes('INSERT INTO valuex_app_storage')) {
       if (fake.conflictPayload) {
@@ -99,8 +106,12 @@ guards.requireAdminAccount = async () => ({ id: 'fixture-admin', role: 'ADMIN' }
 const autopilot = require('../src/server/ai-autopilot.ts');
 autopilot.ensureInProcessAutopilotDaemon = () => {};
 const health = require('../src/app/api/health/route.ts');
+const publicRoute = require('../src/app/api/v1/public/route.ts');
+const login = require('../src/app/api/v1/auth/login/route.ts');
+const register = require('../src/app/api/v1/auth/register/route.ts');
 const webhook = require('../src/app/api/v1/webhooks/yookassa/route.ts');
 const checkout = require('../src/app/api/v1/billing/checkout/route.ts');
+const { LEGAL_DOCUMENT_VERSION } = require('../src/lib/legal-version.ts');
 const verifyReturn = require('../src/app/api/v1/billing/verify-return/route.ts');
 const overview = require('../src/app/api/v1/admin/overview/route.ts');
 const predictions = require('../src/app/api/v1/admin/predictions/route.ts');
@@ -153,8 +164,11 @@ test('configured PostgreSQL fails closed, reports 503, and resumes without touch
   assert.equal(healthBody.storageDegraded, true);
   assert.equal(healthBody.adminAccountConfigured, undefined);
   const requests = [
+    publicRoute.GET(request('/api/v1/public', 'GET')),
+    login.POST(request('/api/v1/auth/login', 'POST', { email: 'fixture@example.test', password: 'test-password' })),
+    register.POST(request('/api/v1/auth/register', 'POST', { email: 'new@example.test', displayName: 'New', password: 'test-password', rulesAccepted: true, personalDataConsent: true, legalVersion: LEGAL_DOCUMENT_VERSION })),
     webhook.POST(request('/api/v1/webhooks/yookassa', 'POST', { event: 'payment.succeeded', object: { id: 'fake-payment' } })),
-    checkout.POST(request('/api/v1/billing/checkout', 'POST', { kind: 'BALANCE_TOPUP', paymentMethod: 'yookassa', topupAmountRub: 100 })),
+    checkout.POST(request('/api/v1/billing/checkout', 'POST', { kind: 'BALANCE_TOPUP', paymentMethod: 'yookassa', topupAmountRub: 100, expectedAmountRub: 100, expectedPaymentMode: 'TEST_INSTANT', offerAccepted: true, legalVersion: LEGAL_DOCUMENT_VERSION })),
     verifyReturn.POST(request('/api/v1/billing/verify-return', 'POST', { orderId: 'fake-order' })),
     overview.GET(),
     predictions.DELETE(request('/api/v1/admin/predictions?id=fixture', 'DELETE')),
@@ -212,4 +226,25 @@ test('configured PostgreSQL fails closed, reports 503, and resumes without touch
   fake.conflictPayload = { settings: { brandName: 'Other initializer' }, users: [], predictions: [], transactions: [] };
   assert.equal((await readState()).settings.brandName, 'Other initializer');
   assertLocalUntouched();
+
+  // Reinitialization retries catalog races exactly once, but never retries an
+  // authentication or connection failure. All failures remain fail-closed.
+  for (const code of ['23505', '42P07', '42710']) {
+    fake.instances.at(-1).emitIdleError();
+    now += 10_001;
+    fake.ddlErrors = [code];
+    const beforeCalls = fake.ddlCalls;
+    assert.equal((await readState()).settings.brandName, 'Other initializer');
+    assert.equal(fake.ddlCalls - beforeCalls, 2, `retry ${code} once`);
+  }
+  for (const errors of [['28P01'], ['ECONNRESET'], ['23505', '23505']]) {
+    fake.instances.at(-1).emitIdleError();
+    now += 10_001;
+    fake.ddlErrors = [...errors];
+    const beforeCalls = fake.ddlCalls;
+    await assert.rejects(readState(), StorageUnavailableError);
+    assert.equal(fake.ddlCalls - beforeCalls, errors.length, `${errors.join(', ')} must not retry further`);
+    assert.equal(fake.instances.at(-1).ended, true);
+    assertLocalUntouched();
+  }
 });

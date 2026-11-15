@@ -1,7 +1,7 @@
 import type { OrderTransaction, PredictionRecord } from '@/server/types';
 
 export function isPaidPredictionSale(order: OrderTransaction): boolean {
-  return order.status === 'SUCCEEDED' &&
+  return order.status === 'SUCCEEDED' && order.paymentModeAtCreation !== 'TEST_INSTANT' &&
     !(Array.isArray(order.externalRefundNotices) && order.externalRefundNotices.length > 0) &&
     (order.kind === 'SINGLE_PREDICTION' || order.kind === 'BUNDLE_PREDICTIONS');
 }

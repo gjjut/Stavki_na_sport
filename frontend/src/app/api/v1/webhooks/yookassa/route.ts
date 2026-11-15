@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fulfillOrderPayment, mutateState, readState, StorageUnavailableError } from '@/server/database';
+import { attachVerifiedYooKassaPayment, fulfillOrderPayment, mutateState, readState, StorageUnavailableError } from '@/server/database';
 import { verifyYooKassaLivePayment, verifyYooKassaLiveRefund } from '@/server/integrations';
 import { assertYooKassaPaymentMatchesOrder } from '@/server/payment-policy';
 
@@ -10,16 +10,29 @@ export async function POST(req: NextRequest) {
       object?: { id?: unknown; payment_id?: unknown };
     };
     if ((body?.event !== 'payment.succeeded' && body?.event !== 'payment.canceled' &&
-         body?.event !== 'refund.succeeded') || typeof body.object?.id !== 'string' || !body.object.id.trim()) {
+         body?.event !== 'refund.succeeded') || typeof body.object?.id !== 'string' || !body.object.id.trim() || body.object.id.length > 128) {
       return NextResponse.json({ error: 'Некорректное тело уведомления' }, { status: 400 });
     }
 
     const objectId = body.object.id;
+    const refundPaymentId = body.object.payment_id;
     const dedupKey = `${body.event}:${objectId}`;
     const state = await readState();
-    // Test-mode checkouts are completed locally. A public webhook must never simulate a payment.
-    if (state.settings.paymentMode !== 'YOOKASSA_LIVE') {
-      return NextResponse.json({ error: 'Уведомления ЮKassa недоступны в тестовом режиме.' }, { status: 503 });
+    const candidate = state.transactions.find((order) => order.paymentMethod === 'yookassa' &&
+      order.externalPaymentId === (body.event === 'refund.succeeded' ? refundPaymentId : objectId));
+    const hasUnidentifiedLiveOrder = state.transactions.some((order) =>
+      order.paymentMethod === 'yookassa' && order.paymentModeAtCreation === 'YOOKASSA_LIVE' &&
+      order.status === 'PENDING' && !order.externalPaymentId &&
+      (order.providerCreationState === 'CREATING' || order.providerCreationState === 'UNKNOWN'),
+    );
+    // A known or reserved live order remains verifiable after a mode change.
+    // Test orders and unidentified legacy orders never become live payments.
+    if (state.settings.paymentMode !== 'YOOKASSA_LIVE' &&
+        candidate?.paymentModeAtCreation !== 'YOOKASSA_LIVE' && !hasUnidentifiedLiveOrder) {
+      return NextResponse.json({ error: 'Уведомления ЮKassa недоступны для тестового или неизвестного заказа.' }, { status: 503 });
+    }
+    if (candidate?.paymentModeAtCreation === 'TEST_INSTANT') {
+      return NextResponse.json({ error: 'Тестовый заказ нельзя подтвердить через ЮKassa.' }, { status: 400 });
     }
     if (state.processedWebhooks.includes(dedupKey)) {
       return NextResponse.json({ received: true, duplicate: true });
@@ -34,11 +47,19 @@ export async function POST(req: NextRequest) {
       if (refund.status !== 'succeeded') {
         return NextResponse.json({ received: true, ignored: true });
       }
+      if (!state.transactions.some((item) => item.paymentMethod === 'yookassa' && item.externalPaymentId === refund.paymentId) && hasUnidentifiedLiveOrder) {
+        // The create response may have been lost. A verified refund alone has
+        // no order metadata, so also verify the underlying payment before binding.
+        const payment = await verifyYooKassaLivePayment(state.settings, refund.paymentId);
+        if (typeof payment.metadata.orderId !== 'string') throw new Error('У платежа нет номера заказа для сверки.');
+        await attachVerifiedYooKassaPayment(payment.metadata.orderId, payment);
+      }
       await mutateState((draft) => {
         const order = draft.transactions.find((item) =>
           item.externalPaymentId === refund.paymentId && item.paymentMethod === 'yookassa',
         );
         if (!order) throw new Error('Заказ для возврата ЮKassa не найден; требуется ручная сверка.');
+        if (order.paymentModeAtCreation === 'TEST_INSTANT') throw new Error('Тестовый заказ не является платежом ЮKassa.');
         if (!Array.isArray(order.externalRefundNotices)) order.externalRefundNotices = [];
         if (!order.externalRefundNotices.some((notice) => notice.id === refund.id)) {
           order.externalRefundNotices.push({
@@ -53,10 +74,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ received: true, reconciliationRequired: true });
     }
 
-    const order = state.transactions.find((item) => item.externalPaymentId === objectId && item.paymentMethod === 'yookassa');
-    if (!order) throw new Error('Заказ для платежа ЮKassa не найден.');
+    if (!candidate && !hasUnidentifiedLiveOrder) throw new Error('Заказ для платежа ЮKassa не найден.');
     const verified = await verifyYooKassaLivePayment(state.settings, objectId);
-    assertYooKassaPaymentMatchesOrder(order, verified);
+    const verifiedOrderId = candidate?.id ?? verified.metadata.orderId;
+    if (typeof verifiedOrderId !== 'string') throw new Error('У платежа нет номера заказа для сверки.');
+    const order = await attachVerifiedYooKassaPayment(verifiedOrderId, verified);
 
     if (body.event === 'payment.succeeded') {
       if (verified.status !== 'succeeded' || !verified.paid) {
@@ -71,7 +93,7 @@ export async function POST(req: NextRequest) {
         const current = draft.transactions.find((item) => item.id === order.id);
         if (!current) throw new Error('Заказ не найден.');
         assertYooKassaPaymentMatchesOrder(current, verified);
-        if (current.status === 'PENDING') current.status = 'CANCELED';
+        if (current.status === 'PENDING' && !current.externalRefundNotices?.length) current.status = 'CANCELED';
       });
     }
 

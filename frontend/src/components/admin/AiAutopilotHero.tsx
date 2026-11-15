@@ -27,6 +27,7 @@ interface AiAutopilotHeroProps {
   aiStats: AiPerformanceStats;
   draftsCount: number;
   busyAction: string | null;
+  modeBusy: boolean;
   diagnostics: AiDiagnosticsReport | null;
   isFullAutopilot: boolean;
   onSaveMode: (mode: AiAutopilotMode) => void;
@@ -43,6 +44,7 @@ export const AiAutopilotHero: React.FC<AiAutopilotHeroProps> = ({
   aiStats,
   draftsCount,
   busyAction,
+  modeBusy,
   diagnostics,
   isFullAutopilot,
   onSaveMode,
@@ -58,27 +60,23 @@ export const AiAutopilotHero: React.FC<AiAutopilotHeroProps> = ({
       <div className="lg:col-span-7">
         <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-bold text-blue-300">
           <Bot className="h-4 w-4 text-blue-400" />
-          <span>Прямая линия РФ (Фонбет / Леон · 0 ₽/мес) + ИИ-Аналитик</span>
+          <span>Линия Фонбет / Леон + внешняя модель</span>
         </div>
 
         <h2 className="mt-3 text-2xl font-black tracking-tight sm:text-3xl">
           {isFullAutopilot
-            ? 'Полный автопилот 24/7 активен'
+            ? 'Режим полного автопилота включён'
             : draftConfig.mode === 'MODERATION'
               ? 'Режим премодерации черновиков'
               : 'ИИ-Автопилот на паузе'}
         </h2>
 
         <p className="mt-2 max-w-2xl text-xs leading-relaxed text-slate-300 sm:text-sm">
-          С вашего российского IP сервер бесплатно собирает прематч-линию РФ (русские команды, РПЛ, КХЛ, еврокубки, ATP, CS2, UFC), фильтрует валуйные котировки, генерирует разбор и сам публикует события в{' '}
-          <strong className="text-white">
-            {String(draftConfig.morningHourMsk).padStart(2, '0')}:00
-          </strong>{' '}
+          В полном режиме планируются выпуски в{' '}
+          <strong className="text-white">{String(draftConfig.morningHourMsk).padStart(2, '0')}:00</strong>{' '}
           и{' '}
-          <strong className="text-white">
-            {String(draftConfig.eveningHourMsk).padStart(2, '0')}:00 МСК
-          </strong>
-          , а после матчей сверяет счет и начисляет страховки на баланс.
+          <strong className="text-white">{String(draftConfig.eveningHourMsk).padStart(2, '0')}:00 МСК</strong>.
+          Запуск зависит от работающего сервера и планировщика. Публикация возможна только при доступной линии и ответе модели; результаты сверяются по подтверждённым источникам. Отсутствие подходящих событий не заменяется демо.
         </p>
         <p className="mt-2 max-w-2xl text-[10px] leading-relaxed text-amber-200/90">
           Метод: алгоритм предварительно выбирает матч и рынок; его edge/confidence — эвристики, не доказанные вероятности. Одна настроенная AI-модель оценивает кандидата в трёх ролях (не три независимые модели); рынок и коэффициент фиксируются из линии и моделью не переписываются. Выпуск требует подтверждённой линии Фонбет/Леон, минимум двух PASS без VETO и прохождения порогов риска/уверенности/edge. Это не гарантия выигрыша.
@@ -118,7 +116,7 @@ export const AiAutopilotHero: React.FC<AiAutopilotHeroProps> = ({
 
           <button
             type="button"
-            disabled={busyAction !== null}
+            disabled={modeBusy}
             aria-pressed={draftConfig.mode === 'OFF'}
             onClick={() => onSaveMode('OFF')}
             className={`rounded-xl px-4 py-3 text-xs font-bold transition ${
@@ -130,6 +128,9 @@ export const AiAutopilotHero: React.FC<AiAutopilotHeroProps> = ({
             Пауза
           </button>
         </div>
+        <p className="mt-2 max-w-2xl text-[11px] leading-relaxed text-slate-400">
+          «Пауза» останавливает плановые выпуски и оставшуюся часть текущего сбора, даже если нажать её повторно. Уже созданные события не отменяются. Ручные кнопки доступны и на паузе. Сверка результатов работает отдельно: чтобы отключить её, снимите соответствующий переключатель в настройках.
+        </p>
       </div>
 
       {/* Статистика записей AI-контура с сохранённым отчётом и ID линии */}
@@ -198,14 +199,9 @@ export const AiAutopilotHero: React.FC<AiAutopilotHeroProps> = ({
         ) : (
           <Play className="h-3.5 w-3.5" />
         )}
-        <span>
-          {isFullAutopilot
-            ? 'Собрать линию РФ и опубликовать сейчас'
-            : 'Собрать линию РФ в черновики'}
-        </span>
+        <span>Собрать линию РФ в черновики</span>
       </button>
 
-      {!isFullAutopilot && (
         <button
           type="button"
           disabled={busyAction !== null}
@@ -219,7 +215,6 @@ export const AiAutopilotHero: React.FC<AiAutopilotHeroProps> = ({
           )}
           <span>Выпустить сразу на витрину</span>
         </button>
-      )}
 
       <button
         type="button"
@@ -246,7 +241,7 @@ export const AiAutopilotHero: React.FC<AiAutopilotHeroProps> = ({
         ) : (
           <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
         )}
-        <span>Сверить счета и выплатить страховки</span>
+        <span>Сверить результаты и начислить страховку на баланс</span>
       </button>
 
       <button
@@ -260,7 +255,7 @@ export const AiAutopilotHero: React.FC<AiAutopilotHeroProps> = ({
         ) : (
           <Sparkles className="h-3.5 w-3.5 text-amber-300" />
         )}
-        <span>Заменить стартовые демо реальными матчами</span>
+        <span>Очистить старые демо и запустить выпуск</span>
       </button>
 
       <button

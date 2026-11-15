@@ -6,20 +6,25 @@ import { useRouter } from 'next/navigation';
 import { Loader2, Lock } from 'lucide-react';
 import { SiteShell } from '@/components/layout/SiteShell';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
+import { PublicLoadError } from '@/components/layout/PublicLoadError';
+import { isBrowserSessionConfirmed } from '@/lib/client-session';
+import { openTelegramExternalLink } from '@/lib/embedded-browser';
 import type { SafeSessionUser } from '@/server/types';
 
 export default function LoginPage() {
   const router = useRouter();
-  const { data, reload } = usePublicPlatform();
+  const { data, error: publicError, reload } = usePublicPlatform();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessionUnconfirmed, setSessionUnconfirmed] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setSessionUnconfirmed(false);
     try {
       const res = await fetch('/api/v1/auth/login', {
         method: 'POST',
@@ -32,6 +37,10 @@ export default function LoginPage() {
       };
       if (!res.ok || !json.user) {
         throw new Error(json.error || 'Не удалось войти');
+      }
+      if (!(await isBrowserSessionConfirmed(json.user.id))) {
+        setSessionUnconfirmed(true);
+        throw new Error('Вход не удалось подтвердить: браузер мог заблокировать cookies или связь прервалась. Откройте сайт в браузере и войдите там.');
       }
       router.push(json.user.role === 'ADMIN' ? '/admin' : '/cabinet');
       router.refresh();
@@ -48,6 +57,7 @@ export default function LoginPage() {
       viewer={data?.viewer ?? null}
       onViewerChange={() => reload()}
     >
+      <PublicLoadError message={publicError} onRetry={() => void reload()} />
       <div className="mx-auto flex max-w-md flex-col justify-center px-4 py-10 sm:py-16">
         <div className="w-full overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
           <div className="hero-surface px-6 py-5 text-white sm:px-7">
@@ -62,17 +72,20 @@ export default function LoginPage() {
 
           <div className="p-6 sm:p-7">
             <p className="text-xs leading-relaxed text-slate-500">
-              Все открытые вами прогнозы, возвраты по страховке 100% и баланс кошелька доступны после входа.
+              Открытые прогнозы, начисления по программе «страховка» и баланс доступны после входа.
             </p>
 
             <form onSubmit={handleSubmit} className="mt-5 space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-700">
+                <label htmlFor="login-email" className="block text-xs font-bold text-slate-700">
                   Электронная почта
                 </label>
                 <input
                   type="email"
                   required
+                  id="login-email"
+                  autoComplete="email"
+                  maxLength={254}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="name@example.ru"
@@ -82,7 +95,7 @@ export default function LoginPage() {
 
               <div>
                 <div className="flex items-center justify-between">
-                  <label className="block text-xs font-bold text-slate-700">
+                  <label htmlFor="login-password" className="block text-xs font-bold text-slate-700">
                     Пароль
                   </label>
                   <Link
@@ -95,6 +108,9 @@ export default function LoginPage() {
                 <input
                   type="password"
                   required
+                  id="login-password"
+                  autoComplete="current-password"
+                  maxLength={256}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
@@ -103,8 +119,15 @@ export default function LoginPage() {
               </div>
 
               {error && (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-medium text-rose-600">
+                <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-medium text-rose-600">
                   {error}
+                  {sessionUnconfirmed && (
+                    <a href="/login" target="_blank" rel="noopener noreferrer"
+                      onClick={(event) => { if (openTelegramExternalLink('/login')) event.preventDefault(); }}
+                      className="mt-2 block font-bold underline">
+                      Открыть сайт для входа
+                    </a>
+                  )}
                 </div>
               )}
 

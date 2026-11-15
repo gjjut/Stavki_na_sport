@@ -13,13 +13,15 @@ import {
   type CheckoutModalTarget,
 } from '@/components/billing/YooKassaCheckoutModal';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
-import { SEO_LEAGUE_PAGES, type SeoLeaguePageConfig } from '@/lib/seo-leagues';
+import { PublicLoadError } from '@/components/layout/PublicLoadError';
+import { matchesSeoLeague, SEO_LEAGUE_PAGES, type SeoLeaguePageConfig } from '@/lib/seo-leagues';
+import { MAX_BUNDLE_ITEMS, toggleBundleSelection } from '@/lib/checkout-policy';
 import type { PublicPredictionDto } from '@/server/types';
 
 export const LeagueLandingClient: React.FC<{
   leagueConfig: SeoLeaguePageConfig;
 }> = ({ leagueConfig }) => {
-  const { data, loading, reload } = usePublicPlatform();
+  const { data, loading, error, reload } = usePublicPlatform();
   const [selectedBundleIds, setSelectedBundleIds] = useState<string[]>([]);
   const [checkoutTarget, setCheckoutTarget] = useState<CheckoutModalTarget | null>(null);
   const [hashItem, setHashItem] = useState<PublicPredictionDto | null>(null);
@@ -29,20 +31,12 @@ export const LeagueLandingClient: React.FC<{
   const bundle3Pct = data?.brand.bundle3DiscountPct ?? 25;
 
   const allPredictions = data?.predictions ?? [];
-  const matchingActive = allPredictions.filter((p) => {
-    if (p.resultStatus !== 'PENDING') return false;
-    if (p.sport !== leagueConfig.sportFilter) return false;
-    const low = p.leagueName.toLowerCase();
-    return (
-      leagueConfig.leagueKeywords.some((kw) => low.includes(kw)) ||
-      p.sport === leagueConfig.sportFilter
-    );
-  });
+  const matchingActive = allPredictions.filter((p) =>
+    p.resultStatus === 'PENDING' && matchesSeoLeague(leagueConfig, p),
+  );
 
   const matchingSettled = allPredictions
-    .filter(
-      (p) => p.resultStatus !== 'PENDING' && p.sport === leagueConfig.sportFilter,
-    )
+    .filter((p) => p.resultStatus !== 'PENDING' && matchesSeoLeague(leagueConfig, p))
     .slice(0, 6);
 
   const openSingleCheckout = (prediction: PublicPredictionDto) => {
@@ -58,11 +52,8 @@ export const LeagueLandingClient: React.FC<{
 
   const toggleBundle = (prediction: PublicPredictionDto) => {
     if (!prediction.isLocked || prediction.salesClosed) return;
-    setSelectedBundleIds((prev) =>
-      prev.includes(prediction.id)
-        ? prev.filter((id) => id !== prediction.id)
-        : [...prev, prediction.id],
-    );
+    const eligible = matchingActive.filter((p) => p.isLocked && !p.salesClosed).map((p) => p.id);
+    setSelectedBundleIds((prev) => toggleBundleSelection(prev, prediction.id, eligible));
   };
 
   const selectedBundleItems = matchingActive.filter(
@@ -98,6 +89,7 @@ export const LeagueLandingClient: React.FC<{
       brand={data?.brand ?? null}
       onViewerChange={() => reload()}
     >
+      <PublicLoadError message={error} onRetry={() => void reload()} />
       <section className="hero-surface py-10 text-white sm:py-12">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <Link
@@ -140,7 +132,7 @@ export const LeagueLandingClient: React.FC<{
           </h2>
           <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700">
             <ShieldCheck className="h-4 w-4" />
-            <span>Страховка 100% на баланс · Скидка −15% по коду START15</span>
+            <span>Начисление на баланс — только для отмеченных прогнозов</span>
           </div>
         </div>
 
@@ -161,6 +153,7 @@ export const LeagueLandingClient: React.FC<{
                 onVerifyHash={setHashItem}
                 inBundle={selectedBundleIds.includes(p.id)}
                 onToggleBundle={toggleBundle}
+                bundleLimitReached={selectedBundleItems.length >= MAX_BUNDLE_ITEMS}
               />
             ))}
           </div>
@@ -233,9 +226,9 @@ export const LeagueLandingClient: React.FC<{
       <YooKassaCheckoutModal
         target={checkoutTarget}
         viewer={data?.viewer ?? null}
+        paymentMode={data?.brand.paymentMode}
         onClose={() => setCheckoutTarget(null)}
         onSuccess={async () => {
-          setCheckoutTarget(null);
           setSelectedBundleIds([]);
           await reload();
         }}

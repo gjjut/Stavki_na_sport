@@ -5,13 +5,14 @@ import {
   toPublicPredictionDto,
 } from '@/server/database';
 import { getOptionalViewer } from '@/server/guards';
+import { canAccessLegacyStarterDemoPrediction, isLegacyStarterDemoPrediction } from '@/server/prediction-data-policy';
 
 export async function POST(req: NextRequest) {
   try {
     const { predictionId } = (await req.json()) as { predictionId: string };
     const [state, viewer] = await Promise.all([readState(), getOptionalViewer()]);
     const record = state.predictions.find((p) => p.id === predictionId);
-    if (!record) {
+    if (!record || (isLegacyStarterDemoPrediction(record) && !canAccessLegacyStarterDemoPrediction(record, viewer))) {
       return NextResponse.json({ error: 'Прогноз не найден' }, { status: 404 });
     }
 

@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { Check, CheckCircle2, Copy, Loader2, XCircle } from 'lucide-react';
 import { SiteShell } from '@/components/layout/SiteShell';
 import { usePublicPlatform } from '@/hooks/usePublicPlatform';
+import { PublicLoadError } from '@/components/layout/PublicLoadError';
 import { trackMetrikaGoal } from '@/lib/metrika';
 import type { OrderTransaction } from '@/server/types';
 
@@ -102,6 +103,9 @@ function PaymentReturnInner() {
           Не удалось подтвердить заказ
         </h1>
         <p className="mt-2 text-xs text-slate-500">{error}</p>
+        {savedCreds && <CredentialsOnUnconfirmedPayment credentials={savedCreds} />}
+        {error?.includes('Войдите') && <p className="mt-3 text-xs text-slate-600">Если оплата открылась в другом браузере, войдите в тот же аккаунт и найдите заказ в кабинете. Не оплачивайте повторно без проверки статуса.</p>}
+        {error?.includes('Войдите') && <Link href="/login" className="mt-4 block text-xs font-bold text-blue-700 underline">Войти в аккаунт</Link>}
         <Link
           href="/cabinet"
           className="mt-6 inline-block rounded-xl bg-slate-900 px-6 py-3 text-xs font-bold text-white"
@@ -188,9 +192,10 @@ function PaymentReturnInner() {
           </h1>
           <p className="mt-2 text-xs text-slate-500">
             {order.status === 'PENDING'
-              ? 'Если оплата прошла, проверьте статус заказа в кабинете немного позже.'
+              ? 'Заказ ещё ожидает подтверждения. Если вы уже оплатили, не оплачивайте повторно: обновите эту страницу позже или обратитесь в поддержку.'
               : 'Подробности заказа можно посмотреть в кабинете.'}
           </p>
+          {savedCreds && <CredentialsOnUnconfirmedPayment credentials={savedCreds} />}
           <Link
             href="/cabinet"
             className="mt-6 inline-block w-full rounded-xl bg-slate-900 py-3 text-xs font-bold text-white"
@@ -203,14 +208,25 @@ function PaymentReturnInner() {
   );
 }
 
+function CredentialsOnUnconfirmedPayment({ credentials }: { credentials: { email: string; generatedPassword: string } }) {
+  return (
+    <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 p-3 text-left text-xs leading-relaxed text-slate-800">
+      Кабинет уже создан, даже если оплата ещё не подтверждена. Сохраните данные для входа:
+      <div className="mt-1 break-all">E-mail: <strong>{credentials.email}</strong></div>
+      <div className="break-all">Пароль: <strong>{credentials.generatedPassword}</strong></div>
+    </div>
+  );
+}
+
 export default function PaymentReturnPage() {
-  const { data, reload } = usePublicPlatform();
+  const { data, error: publicError, reload } = usePublicPlatform();
   return (
     <SiteShell
       brand={data?.brand ?? null}
       viewer={data?.viewer ?? null}
       onViewerChange={() => reload()}
     >
+      <PublicLoadError message={publicError} onRetry={() => void reload()} />
       <div className="flex items-center justify-center px-4 py-12 sm:py-16">
         <Suspense fallback={null}>
           <PaymentReturnInner />

@@ -2,8 +2,8 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import Script from 'next/script';
 import { usePathname, useRouter } from 'next/navigation';
+import { AnalyticsConsent, openAnalyticsSettings } from './AnalyticsConsent';
 import {
   BarChart3,
   CreditCard,
@@ -28,6 +28,8 @@ export interface PublicBrandInfo {
   freeTelegramUrl: string;
   legalSellerName: string;
   legalInn: string;
+  legalAddress?: string;
+  legalRegistrationNumber?: string;
   supportEmail: string;
   paymentMode: 'TEST_INSTANT' | 'YOOKASSA_LIVE';
   defaultSinglePriceRub: number;
@@ -48,9 +50,11 @@ const DEFAULT_BRAND: PublicBrandInfo = {
   brandName: 'VALUEX',
   supportTelegram: 'https://t.me/valuex_support',
   freeTelegramUrl: 'https://t.me/valuex_open',
-  legalSellerName: 'Аналитический сервис спортивных прогнозов',
-  legalInn: 'ИНН 000000000000',
-  supportEmail: 'support@valuex.pro',
+  legalSellerName: '',
+  legalInn: '',
+  legalAddress: '',
+  legalRegistrationNumber: '',
+  supportEmail: '',
   paymentMode: 'TEST_INSTANT',
   defaultSinglePriceRub: 790,
   bundle2DiscountPct: 15,
@@ -109,31 +113,9 @@ export const SiteShell: React.FC<SiteShellProps> = ({
     (brand.yandexMetrikaId || '').replace(/\D/g, ''),
   );
 
-  useEffect(() => {
-    if (metrikaNumericId > 0 && typeof window !== 'undefined') {
-      window.__valuexMetrikaId = metrikaNumericId;
-    }
-  }, [metrikaNumericId]);
-
   return (
     <div className="flex min-h-screen flex-col bg-[#F4F6FA] text-slate-900">
-      {metrikaNumericId > 0 && (
-        <Script
-          id={`ym-counter-${metrikaNumericId}`}
-          strategy="afterInteractive"
-          dangerouslySetInnerHTML={{
-            __html: `
-              window.__valuexMetrikaId = ${metrikaNumericId};
-              (function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
-              m[i].l=1*new Date();
-              for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}
-              k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})
-              (window, document, "script", "https://mc.yandex.ru/metrika/tag.js", "ym");
-              ym(${metrikaNumericId}, "init", { clickmap:true, trackLinks:true, accurateTrackBounce:true, webvisor:true });
-            `,
-          }}
-        />
-      )}
+      <AnalyticsConsent counterId={metrikaNumericId} />
 
       {/* КОНТРАСТНАЯ ТЕМНАЯ ШАПКА */}
       <header className="sticky top-0 z-40 border-b border-white/10 bg-[#0B0F19]/95 text-white backdrop-blur-md">
@@ -438,7 +420,7 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                 <span>СБП (Система быстрых платежей)</span>
               </span>
               <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-800">
-                <span>Кассовый чек 54-ФЗ (ЮKassa)</span>
+                <span>{brand.paymentMode === 'TEST_INSTANT' ? 'Тестовый режим оплаты' : 'Разовая оплата через ЮKassa'}</span>
               </span>
             </div>
 
@@ -448,7 +430,7 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                 <span>Без подписок и автосписаний</span>
               </span>
               <span className="hidden text-slate-300 sm:inline">•</span>
-              <span>Возврат 100% на баланс по страховке</span>
+              <Link href="/legal/offer" className="hover:text-blue-700">Условия начисления по страховке</Link>
             </div>
           </div>
 
@@ -467,7 +449,7 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                 </span>
               </div>
               <p className="mt-2.5 max-w-md leading-relaxed text-slate-500">
-                Информационный сервис аналитики спортивных матчей. Мы помогаем выбрать обоснованный исход для самостоятельной ставки у вашего букмекера. Сайт не является букмекерской конторой и не принимает ставки на спорт.
+                Информационный сервис аналитики спортивных матчей. Сайт не является букмекерской конторой, не принимает ставки и не гарантирует выигрыш.
               </p>
               {showLegalDetails && (
                 <p className="mt-2 text-[11px] font-medium text-slate-400">
@@ -543,17 +525,18 @@ export const SiteShell: React.FC<SiteShellProps> = ({
                   </Link>
                 </li>
                 <li>
-                  <Link href="/legal/privacy" className="hover:text-blue-600">
-                    Политика конфиденциальности (152-ФЗ)
-                  </Link>
+                  <Link href="/legal/privacy" className="hover:text-blue-600">Политика обработки данных</Link>
                 </li>
-                <li className="text-slate-400">{brand.supportEmail}</li>
+                <li><Link href="/legal/rules" className="hover:text-blue-600">Правила сайта</Link></li>
+                <li><Link href="/legal/consent" className="hover:text-blue-600">Согласие на обработку данных</Link></li>
+                {Number.isSafeInteger(metrikaNumericId) && metrikaNumericId > 0 && <li><button type="button" onClick={openAnalyticsSettings} className="text-left hover:text-blue-600">Настройки аналитических cookies</button></li>}
+                {brand.supportEmail && <li className="break-all text-slate-500"><a href={`mailto:${brand.supportEmail}`} className="hover:text-blue-600">{brand.supportEmail}</a></li>}
               </ul>
             </div>
           </div>
 
           <div className="mt-8 border-t border-slate-100 pt-6 text-[11px] text-slate-400">
-            © {new Date().getFullYear()} {brand.brandName}. Все разборы носят информационно-аналитический характер. Относитесь к ставкам ответственно и выделяйте только комфортную сумму.
+            © {new Date().getFullYear()} {brand.brandName} · 18+. Материалы носят информационный характер. Азартные игры связаны с риском потери денег; результат не гарантирован. Начисление на баланс по условиям акции не возмещает проигранную ставку.
           </div>
         </div>
       </footer>

@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { explainMarketInPlainRussian } from '../lib/plain-russian';
+import { LEGAL_DOCUMENT_VERSION } from '../lib/legal-version';
+import { MAX_BUNDLE_ITEMS } from '../lib/checkout-policy';
 import { hashPassword, verifyPassword } from './auth';
+import { newTelegramLinkCode, secureTelegramLinkCode } from './security-policy';
 import {
   toAdminAutopilotDto,
   toAdminSettingsDto,
@@ -14,11 +17,16 @@ import {
   hasVerifiedSettledResult as hasVerifiedSettledResultWithMarket,
 } from './final-score-verification';
 import { evaluateMarketByScore } from './market-settlement';
-import { withoutLegacyStarterDemoPredictions } from './prediction-data-policy';
+import { initialLlmConfigFromEnv } from './llm-config-policy';
+import { canAccessLegacyStarterDemoPrediction, isLegacyStarterDemoPrediction } from './prediction-data-policy';
 import { assertPredictionsExistForOrder, assertPredictionSaleTermsUnchanged, validatePredictionForPublication } from './admin-prediction-policy';
-import { assertYooKassaPaymentMatchesOrder, type VerifiedYooKassaPayment } from './payment-policy';
+import { assertAutopilotConfigUnchanged, assertNewAutopilotFixture, AutopilotCommitConflict } from './autopilot-commit-policy';
+import { assertNoOverlappingPendingOrder, assertYooKassaPaymentMatchesOrder, type VerifiedYooKassaPayment } from './payment-policy';
+import { insuranceShareForPrediction } from './insurance-policy';
 import {
+  assertYooKassaLiveConfigured,
   createYooKassaLivePayment,
+  escapeTelegramHtml,
   sendTelegramChannelAnnouncement,
   sendTelegramDirectMessage,
   verifyYooKassaLivePayment,
@@ -106,14 +114,6 @@ function slugifyMatch(home: string, away: string, suffix: string): string {
   return `${raw || 'match'}-${suffix}`;
 }
 
-function makeUserTelegramLinkCode(userId: string): string {
-  const hash = createHash('sha256')
-    .update(`tglink:${userId}`, 'utf8')
-    .digest('hex')
-    .slice(0, 10);
-  return `vx_${hash}`;
-}
-
 function createInitialState(): PersistentState {
   const now = Date.now();
   const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -125,8 +125,10 @@ function createInitialState(): PersistentState {
     supportTelegram: 'https://t.me/valuex_support',
     freeTelegramUrl: 'https://t.me/valuex_analytics',
     legalSellerName: 'Самозанятый / ИП (укажите реквизиты в Админ-панели)',
-    legalInn: 'ИНН 000000000000',
-    supportEmail: 'support@valuex.pro',
+    legalInn: '',
+    legalAddress: '',
+    legalRegistrationNumber: '',
+    supportEmail: '',
     paymentMode: 'TEST_INSTANT',
     yookassaShopId: process.env.YOOKASSA_SHOP_ID || '',
     yookassaSecretKey: process.env.YOOKASSA_SECRET_KEY || '',
@@ -154,7 +156,8 @@ function createInitialState(): PersistentState {
         referenceBankrollRub: 100_000,
         telegramUsername: '@valuex_admin',
         telegramChatId: null,
-        telegramLinkCode: makeUserTelegramLinkCode('usr_admin_root'),
+        telegramBindingVerified: false,
+        telegramLinkCode: newTelegramLinkCode(),
         purchasedPredictionIds: [],
         grantedPredictionIds: [],
         referralCode: 'valuex_official',
@@ -180,34 +183,9 @@ function createInitialState(): PersistentState {
     },
   ];
 
-  const envPlusVibeKey = (process.env.PLUSVIBE_API_KEY || '').trim();
-  const envOllamaKey = (process.env.OLLAMA_API_KEY || '').trim();
-  const envGenericKey = (process.env.AI_LLM_API_KEY || '').trim();
-  const genericIsPlusVibe = envGenericKey.startsWith('sk-pv-');
-
   const aiAutopilot: AiAutopilotConfig = {
     mode: 'MODERATION',
-    llmProvider:
-      envPlusVibeKey || genericIsPlusVibe
-        ? 'PLUSVIBE'
-        : envOllamaKey
-          ? 'OLLAMA'
-          : envGenericKey
-            ? 'DEEPSEEK'
-            : 'BUILTIN_QUANT',
-    llmBaseUrl:
-      envPlusVibeKey || genericIsPlusVibe
-        ? process.env.PLUSVIBE_BASE_URL || 'https://plusvibeapi.ru/v1'
-        : envOllamaKey
-          ? process.env.OLLAMA_BASE_URL || 'https://ollama.com/v1'
-          : process.env.AI_LLM_BASE_URL || 'https://plusvibeapi.ru/v1',
-    llmApiKey: envPlusVibeKey || envOllamaKey || envGenericKey || '',
-    llmModel:
-      envPlusVibeKey || genericIsPlusVibe
-        ? process.env.PLUSVIBE_MODEL || 'deepseek-v4.1-flash-1017'
-        : envOllamaKey
-          ? process.env.OLLAMA_MODEL || 'deepseek-v4.1-flash'
-          : process.env.AI_LLM_MODEL || 'deepseek-v4.1-flash-1017',
+    ...initialLlmConfigFromEnv(process.env),
     sportsEnabled: ['FOOTBALL', 'HOCKEY', 'TENNIS', 'BASKETBALL', 'ESPORTS', 'MMA'],
     morningHourMsk: 9,
     eveningHourMsk: 18,
@@ -292,9 +270,9 @@ function normalizeLoadedState(
       fallback.settings.telegramChannelId,
   };
 
-  const predictions = withoutLegacyStarterDemoPredictions(
-    Array.isArray(raw.predictions) ? raw.predictions : fallback.predictions,
-  ).map((p, idx) => {
+  // Do not delete records implicitly on read or on an unrelated write. Legacy
+  // examples are excluded from public surfaces and can be cleaned up explicitly.
+  const predictions = (Array.isArray(raw.predictions) ? raw.predictions : fallback.predictions).map((p, idx) => {
     const legacyTier = p.accessTier as string;
     const normalizedTier: AccessTier = legacyTier === 'FREE' ? 'FREE' : 'PAID_SINGLE';
     const finalScoreVerifiedSources = Array.isArray(p.finalScoreVerifiedSources)
@@ -398,9 +376,18 @@ function normalizeLoadedState(
       referenceBankrollRub: u.referenceBankrollRub || 50_000,
       telegramUsername: u.telegramUsername ?? null,
       telegramChatId: u.telegramChatId ?? null,
-      telegramLinkCode: u.telegramLinkCode || makeUserTelegramLinkCode(u.id),
-      passwordResetCode: u.passwordResetCode ?? null,
-      passwordResetExpiresAt: u.passwordResetExpiresAt ?? null,
+      // Bindings created by the old unauthenticated webhook must be re-confirmed.
+      telegramBindingVerified: u.telegramBindingVerified === true,
+      telegramLinkCode: secureTelegramLinkCode(u.telegramLinkCode, u.id),
+      // Plaintext codes from older releases are not accepted and disappear on the next write.
+      passwordResetCode: typeof u.passwordResetCode === 'string' && /^hmac-sha256:[a-f0-9]{64}$/.test(u.passwordResetCode) ? u.passwordResetCode : null,
+      passwordResetExpiresAt: typeof u.passwordResetCode === 'string' && /^hmac-sha256:[a-f0-9]{64}$/.test(u.passwordResetCode) ? u.passwordResetExpiresAt ?? null : null,
+      passwordResetAttempts: u.passwordResetAttempts ?? 0,
+      passwordResetRequestedAt: u.passwordResetRequestedAt ?? null,
+      personalDataConsentAt: u.personalDataConsentAt ?? null,
+      personalDataConsentVersion: u.personalDataConsentVersion ?? null,
+      rulesAcceptedAt: u.rulesAcceptedAt ?? null,
+      rulesAcceptedVersion: u.rulesAcceptedVersion ?? null,
       purchasedPredictionIds: Array.isArray(u.purchasedPredictionIds)
         ? u.purchasedPredictionIds
         : [],
@@ -425,93 +412,30 @@ function normalizeLoadedState(
   delete rawAi.llmApiKeyConfigured;
   delete (rawAi as Partial<AiAutopilotConfig> & { cronSecret?: string }).cronSecret;
   const rawSavedKey = (rawAi.llmApiKey || '').trim();
-  const envPlusVibeKey = (process.env.PLUSVIBE_API_KEY || '').trim();
-  const envOllamaKey = (process.env.OLLAMA_API_KEY || '').trim();
-
-  const savedIsPlusVibeKey = rawSavedKey.startsWith('sk-pv-');
-  const shouldAutoActivateEnvPlusVibe =
-    Boolean(envPlusVibeKey) &&
-    (!rawSavedKey ||
-      rawAi.llmProvider === 'BUILTIN_QUANT' ||
-      rawAi.llmProvider === 'ORCAROUTER');
-
-  const shouldAutoActivateEnvOllama =
-    !shouldAutoActivateEnvPlusVibe &&
-    !savedIsPlusVibeKey &&
-    Boolean(envOllamaKey) &&
-    (!rawSavedKey ||
-      rawAi.llmProvider === 'BUILTIN_QUANT' ||
-      rawAi.llmProvider === 'ORCAROUTER');
-
-  const effectiveProvider: AiAutopilotConfig['llmProvider'] =
-    shouldAutoActivateEnvPlusVibe || savedIsPlusVibeKey
-      ? 'PLUSVIBE'
-      : shouldAutoActivateEnvOllama
-        ? 'OLLAMA'
-        : rawAi.llmProvider || fallback.aiAutopilot.llmProvider;
-
-  const rawBaseUrl = shouldAutoActivateEnvPlusVibe
-    ? process.env.PLUSVIBE_BASE_URL || 'https://plusvibeapi.ru/v1'
-    : shouldAutoActivateEnvOllama
-      ? process.env.OLLAMA_BASE_URL || 'https://ollama.com/v1'
-      : (rawAi.llmBaseUrl || '').trim();
-
-  const isPlusVibe =
-    effectiveProvider === 'PLUSVIBE' ||
-    savedIsPlusVibeKey ||
-    rawBaseUrl.toLowerCase().includes('plusvibeapi.ru');
-  const isOrca =
-    !isPlusVibe &&
-    (effectiveProvider === 'ORCAROUTER' ||
-      rawBaseUrl.toLowerCase().includes('orcarouter.ai'));
-  const isOllama =
-    !isPlusVibe &&
-    (effectiveProvider === 'OLLAMA' ||
-      rawBaseUrl.toLowerCase().includes('ollama.com'));
-
-  const healedBaseUrl = isPlusVibe
-    ? rawBaseUrl.toLowerCase().includes('gw.plusvibeapi.ru')
-      ? 'https://gw.plusvibeapi.ru/v1'
-      : 'https://plusvibeapi.ru/v1'
-    : isOrca
-      ? 'https://www.orcarouter.ai/v1'
-      : isOllama
-        ? 'https://ollama.com/v1'
-        : rawBaseUrl || fallback.aiAutopilot.llmBaseUrl;
-
-  const rawModel = shouldAutoActivateEnvPlusVibe
-    ? process.env.PLUSVIBE_MODEL || 'deepseek-v4.1-flash-1017'
-    : shouldAutoActivateEnvOllama
-      ? process.env.OLLAMA_MODEL || 'deepseek-v4.1-flash'
-      : (rawAi.llmModel || '').trim();
-
-  const healedModel =
-    isPlusVibe &&
-    (!rawModel ||
-      rawModel.toLowerCase() === 'orcarouter/auto' ||
-      rawModel.toLowerCase().includes('free') ||
-      rawModel === 'deepseek-v4.1-flash')
-      ? 'deepseek-v4.1-flash-1017'
-      : isOrca &&
-          (!rawModel ||
-            rawModel.toLowerCase() === 'orcarouter/auto' ||
-            rawModel === 'gemini-2.5-flash')
-        ? 'deepseek/deepseek-v4.1-flash-free'
-        : isOllama && !rawModel
-          ? 'deepseek-v4.1-flash'
-          : rawModel || fallback.aiAutopilot.llmModel;
+  // A configured provider, URL and model are owner choices, not fields to
+  // silently "heal" based on token prefixes or stale model recommendations.
+  // Environment defaults may initialize an otherwise unconfigured connection,
+  // but must never replace an explicitly saved key/provider pair.
+  const environmentConfig = fallback.aiAutopilot;
+  const shouldUseEnvironment = !rawSavedKey && Boolean(environmentConfig.llmApiKey.trim()) &&
+    (!rawAi.llmProvider || rawAi.llmProvider === 'BUILTIN_QUANT' || rawAi.llmProvider === environmentConfig.llmProvider);
+  const effectiveProvider = shouldUseEnvironment
+    ? environmentConfig.llmProvider
+    : rawAi.llmProvider || environmentConfig.llmProvider;
+  const configuredBaseUrl = shouldUseEnvironment
+    ? environmentConfig.llmBaseUrl
+    : (rawAi.llmBaseUrl || '').trim() || (effectiveProvider === environmentConfig.llmProvider ? environmentConfig.llmBaseUrl : '');
+  const configuredModel = shouldUseEnvironment
+    ? environmentConfig.llmModel
+    : (rawAi.llmModel || '').trim() || (effectiveProvider === environmentConfig.llmProvider ? environmentConfig.llmModel : '');
 
   const aiAutopilot: AiAutopilotConfig = {
     ...fallback.aiAutopilot,
     ...rawAi,
     llmProvider: effectiveProvider,
-    llmBaseUrl: healedBaseUrl,
-    llmApiKey: shouldAutoActivateEnvPlusVibe
-      ? envPlusVibeKey
-      : shouldAutoActivateEnvOllama
-        ? envOllamaKey
-        : rawAi.llmApiKey ?? fallback.aiAutopilot.llmApiKey,
-    llmModel: healedModel,
+    llmBaseUrl: configuredBaseUrl,
+    llmApiKey: shouldUseEnvironment ? environmentConfig.llmApiKey : rawSavedKey,
+    llmModel: configuredModel,
     sportsEnabled:
       Array.isArray(rawAi.sportsEnabled) && rawAi.sportsEnabled.length > 0
         ? rawAi.sportsEnabled
@@ -576,13 +500,23 @@ async function getPostgresPool(): Promise<Pool | null> {
         }
         void candidate.end().catch(() => undefined);
       });
-      await candidate.query(`
+      const createStorageTable = `
         CREATE TABLE IF NOT EXISTS valuex_app_storage (
           store_key VARCHAR(64) PRIMARY KEY,
           payload JSONB NOT NULL,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
-      `);
+      `;
+      try {
+        await candidate.query(createStorageTable);
+      } catch (err) {
+        // IF NOT EXISTS can still race in PostgreSQL's system catalog when
+        // several fresh processes initialize simultaneously. Retry only catalog
+        // conflict SQLSTATEs, not authentication, network, or arbitrary failures.
+        const code = (err as { code?: unknown } | null)?.code;
+        if (code !== '23505' && code !== '42P07' && code !== '42710') throw err;
+        await candidate.query(createStorageTable);
+      }
       pgPool = candidate;
       pgLastFailAt = 0;
       return candidate;
@@ -741,12 +675,18 @@ export async function mutateState<T>(
     ));
     if (res.rows.length === 0) {
       const seeded = createInitialState();
+      // Two fresh processes may both observe no row. Let the winning INSERT
+      // initialize it, then lock and reread that exact row before mutating.
       await postgresOperation(() => client.query(
         `INSERT INTO valuex_app_storage (store_key, payload, updated_at)
-         VALUES ('main', $1::jsonb, NOW())`,
+         VALUES ('main', $1::jsonb, NOW())
+         ON CONFLICT (store_key) DO NOTHING`,
         [JSON.stringify(seeded)],
       ));
-      res = { rows: [{ payload: seeded }] } as typeof res;
+      res = await postgresOperation(() => client.query<{ payload: PersistentState }>(
+        `SELECT payload FROM valuex_app_storage WHERE store_key = 'main' FOR UPDATE`,
+      ));
+      if (!res.rows.length) throw new StorageUnavailableError();
     }
 
     const draft = normalizeLoadedState(
@@ -785,7 +725,8 @@ export function toSafeSessionUser(user: UserAccount): SafeSessionUser {
     referenceBankrollRub: user.referenceBankrollRub,
     telegramUsername: user.telegramUsername,
     telegramChatId: user.telegramChatId ?? null,
-    telegramLinkCode: user.telegramLinkCode || makeUserTelegramLinkCode(user.id),
+    telegramBindingVerified: user.telegramBindingVerified === true,
+    telegramLinkCode: secureTelegramLinkCode(user.telegramLinkCode, user.id),
     purchasedPredictionIds: user.purchasedPredictionIds,
     referralCode: user.referralCode,
     revsharePercent: user.revsharePercent,
@@ -840,14 +781,13 @@ export function toPublicPredictionDto(
     record.revealAfterFinish &&
     effectiveStatus === 'FINISHED' &&
     publicResultStatus !== 'PENDING';
-  const isBought = Boolean(viewer?.purchasedPredictionIds.includes(record.id));
+  const isBought = Boolean(viewer?.purchasedPredictionIds.includes(record.id) || viewer?.grantedPredictionIds?.includes(record.id));
   const isAdmin = viewer?.role === 'ADMIN';
+  const isLegacyDemo = isLegacyStarterDemoPrediction(record);
 
-  const unlocked =
-    isFree ||
-    isSettledPublic ||
-    isAdmin ||
-    (viewer?.status === 'ACTIVE' && isBought);
+  const unlocked = isLegacyDemo
+    ? canAccessLegacyStarterDemoPrediction(record, viewer)
+    : isFree || isSettledPublic || isAdmin || (viewer?.status === 'ACTIVE' && isBought);
 
   return {
     id: record.id,
@@ -875,7 +815,9 @@ export function toPublicPredictionDto(
     analysisTeaser: record.analysisTeaser,
     isFeatured: Boolean(record.isFeatured),
     insuredOnLoss: Boolean(record.insuredOnLoss),
+    isLegacyDemo,
     salesClosed:
+      isLegacyDemo ||
       effectiveStatus !== 'UPCOMING' ||
       record.matchLifecycleStatus === 'POSTPONED' ||
       record.matchLifecycleStatus === 'CANCELLED' ||
@@ -928,7 +870,7 @@ export function computePlatformAnalytics(predictions: PredictionRecord[]): {
   recentWinsFeed: RecentWinFeedItem[];
 } {
   const settledChrono = predictions
-    .filter((p) => hasVerifiedSettledResult(p) && p.profitUnits !== null)
+    .filter((p) => !isLegacyStarterDemoPrediction(p) && hasVerifiedSettledResult(p) && p.profitUnits !== null)
     .sort(
       (a, b) =>
         new Date(a.settledAt || a.matchStartsAt).getTime() -
@@ -1132,8 +1074,14 @@ export function calculateCartPricing(params: {
   let promoValidCode: string | null = null;
   if (params.promoCode?.trim()) {
     const clean = params.promoCode.trim().toUpperCase();
+    // Pending orders reserve a use until the payment is confirmed or cancelled.
+    // Check again while inserting the order so concurrent checkouts cannot
+    // exceed the configured cap.
+    const reserved = params.state.transactions.filter((order) =>
+      order.status === 'PENDING' && order.promoCode?.toUpperCase() === clean,
+    ).length;
     const found = params.state.promoCodes.find(
-      (c) => c.code.toUpperCase() === clean && c.active && c.usedCount < c.maxUses,
+      (c) => c.code.toUpperCase() === clean && c.active && c.usedCount + reserved < c.maxUses,
     );
     if (found) {
       promoDiscountPct = found.discountPercent;
@@ -1172,11 +1120,15 @@ export async function registerUserAccount(params: {
   displayName: string;
   city?: string;
   refCode?: string | null;
+  legalAcceptance?: { personalData: boolean; rules: boolean };
 }): Promise<UserAccount> {
-  const cleanEmail = params.email.trim().toLowerCase();
-  if (!cleanEmail.includes('@')) throw new Error('Введите корректный E-mail');
-  if (params.password.length < 6) {
-    throw new Error('Пароль должен содержать минимум 6 символов');
+  const cleanEmail = typeof params.email === 'string' ? params.email.trim().toLowerCase() : '';
+  if (cleanEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) throw new Error('Введите корректный E-mail');
+  if (typeof params.password !== 'string' || params.password.length < 10 || params.password.length > 256) {
+    throw new Error('Пароль должен содержать от 10 до 256 символов');
+  }
+  if (typeof params.displayName !== 'string' || params.displayName.length > 80 || (params.city && (typeof params.city !== 'string' || params.city.length > 80))) {
+    throw new Error('Имя и город должны содержать не более 80 символов');
   }
 
   return mutateState((state) => {
@@ -1224,7 +1176,12 @@ export async function registerUserAccount(params: {
       referenceBankrollRub: 50_000,
       telegramUsername: null,
       telegramChatId: null,
-      telegramLinkCode: makeUserTelegramLinkCode(newId),
+      telegramBindingVerified: false,
+      telegramLinkCode: newTelegramLinkCode(),
+      personalDataConsentAt: params.legalAcceptance?.personalData ? new Date().toISOString() : null,
+      personalDataConsentVersion: params.legalAcceptance?.personalData ? LEGAL_DOCUMENT_VERSION : null,
+      rulesAcceptedAt: params.legalAcceptance?.rules ? new Date().toISOString() : null,
+      rulesAcceptedVersion: params.legalAcceptance?.rules ? LEGAL_DOCUMENT_VERSION : null,
       purchasedPredictionIds: [],
       grantedPredictionIds: [],
       referralCode,
@@ -1282,6 +1239,20 @@ export async function recordReferralClick(refCode: string): Promise<void> {
   });
 }
 
+function assertPredictionAvailableForSale(prediction: PredictionRecord): void {
+  if (isLegacyStarterDemoPrediction(prediction)) throw new Error('Архивная демонстрационная запись недоступна для покупки.');
+  if (prediction.accessTier !== 'PAID_SINGLE') throw new Error('Бесплатный прогноз не требует покупки');
+  if (
+    resolveEffectiveMatchStatus(prediction) !== 'UPCOMING' ||
+    prediction.matchLifecycleStatus === 'POSTPONED' ||
+    prediction.matchLifecycleStatus === 'CANCELLED' ||
+    !Number.isFinite(Date.parse(prediction.matchStartsAt)) ||
+    Date.now() >= Date.parse(prediction.matchStartsAt)
+  ) {
+    throw new Error(`Продажа закрыта: матч «${prediction.homeTeam} — ${prediction.awayTeam}» уже начался, перенесён или отменён либо наступило время старта по расписанию`);
+  }
+}
+
 export async function initiateOrderCheckout(params: {
   userId: string;
   kind: 'SINGLE_PREDICTION' | 'BUNDLE_PREDICTIONS' | 'BALANCE_TOPUP';
@@ -1290,12 +1261,35 @@ export async function initiateOrderCheckout(params: {
   promoCode?: string | null;
   topupAmountRub?: number;
   paymentMethod: 'yookassa' | 'internal_balance';
+  /** Amount and mode explicitly shown to the buyer before their confirmation. */
+  expectedAmountRub: number;
+  expectedPaymentMode: 'TEST_INSTANT' | 'YOOKASSA_LIVE';
   originUrl: string;
+  offerAcceptedVersion?: string;
 }): Promise<{ order: OrderTransaction; paidImmediately: boolean }> {
+  if (!['SINGLE_PREDICTION', 'BUNDLE_PREDICTIONS', 'BALANCE_TOPUP'].includes(params.kind) ||
+      !['yookassa', 'internal_balance'].includes(params.paymentMethod) ||
+      !Number.isSafeInteger(params.expectedAmountRub) || params.expectedAmountRub < 50 ||
+      !['TEST_INSTANT', 'YOOKASSA_LIVE'].includes(params.expectedPaymentMode) ||
+      (params.predictionIds !== undefined && (!Array.isArray(params.predictionIds) ||
+        params.predictionIds.length > MAX_BUNDLE_ITEMS || params.predictionIds.some((id) => typeof id !== 'string' || id.length > 128))) ||
+      (params.predictionId !== undefined && (typeof params.predictionId !== 'string' || params.predictionId.length > 128)) ||
+      (params.promoCode != null && (typeof params.promoCode !== 'string' || params.promoCode.length > 24))) {
+    throw new Error('Некорректные параметры заказа');
+  }
+  if (params.kind === 'BALANCE_TOPUP' && params.paymentMethod !== 'yookassa') {
+    throw new Error('Пополнение баланса доступно только внешним платежом');
+  }
+  if (params.kind === 'BALANCE_TOPUP' && (typeof params.topupAmountRub !== 'number' || !Number.isFinite(params.topupAmountRub) || params.topupAmountRub < 100 || params.topupAmountRub > 10_000_000)) {
+    throw new Error('Сумма пополнения должна быть от 100 до 10 000 000 ₽');
+  }
   const stateSnap = await readState();
   const userSnap = stateSnap.users.find((u) => u.id === params.userId);
   if (!userSnap || userSnap.status === 'BLOCKED') {
     throw new Error('Авторизуйтесь для совершения покупки');
+  }
+  if (stateSnap.settings.paymentMode !== params.expectedPaymentMode) {
+    throw new Error('Режим оплаты изменился. Обновите страницу и заново проверьте условия заказа.');
   }
 
   let amountRub = 0;
@@ -1312,25 +1306,17 @@ export async function initiateOrderCheckout(params: {
           ? [params.predictionId]
           : [];
 
-    targetIds = Array.from(new Set(rawIds)).filter(
-      (id) => !userSnap.purchasedPredictionIds.includes(id),
-    );
-
-    if (!targetIds.length) {
-      throw new Error('Выбранные события уже куплены и открыты в вашем кабинете');
+    targetIds = Array.from(new Set(rawIds));
+    if (!targetIds.length) throw new Error('Выберите прогноз для покупки');
+    if (targetIds.some((id) => userSnap.purchasedPredictionIds.includes(id))) {
+      throw new Error('Часть выбранных прогнозов уже открыта в кабинете. Обновите корзину.');
     }
+    assertNoOverlappingPendingOrder(stateSnap.transactions, userSnap.id, targetIds, params.kind);
 
     const matchedPreds = targetIds.map((id) => {
       const p = stateSnap.predictions.find((row) => row.id === id);
       if (!p) throw new Error('Одно из выбранных событий не найдено');
-      if (
-        resolveEffectiveMatchStatus(p) !== 'UPCOMING' ||
-        p.matchLifecycleStatus === 'POSTPONED' ||
-        p.matchLifecycleStatus === 'CANCELLED' ||
-        Date.now() >= new Date(p.matchStartsAt).getTime()
-      ) {
-        throw new Error(`Продажа закрыта: матч «${p.homeTeam} — ${p.awayTeam}» уже начался, перенесён или отменён либо наступило время старта по расписанию`);
-      }
+      assertPredictionAvailableForSale(p);
       return p;
     });
 
@@ -1339,6 +1325,9 @@ export async function initiateOrderCheckout(params: {
       predictionIds: targetIds,
       promoCode: params.promoCode,
     });
+    if (params.promoCode?.trim() && !pricing.promoValidCode) {
+      throw new Error('Промокод больше не действует. Обновите страницу и проверьте цену до оплаты.');
+    }
     amountRub = pricing.finalAmountRub;
     discountRub = pricing.discountRub;
     promoValidCode = pricing.promoValidCode;
@@ -1351,14 +1340,20 @@ export async function initiateOrderCheckout(params: {
         .join(', ')})`;
     }
   } else {
+    assertNoOverlappingPendingOrder(stateSnap.transactions, userSnap.id, [], params.kind);
     amountRub = Math.max(100, Math.round(params.topupAmountRub || 1000));
     const bonusPreview = computeWalletTopupBonusRub(amountRub);
     title =
       bonusPreview > 0
         ? `Пополнение баланса на ${amountRub} ₽ (+бонус ${bonusPreview} ₽)`
-        : `Пополнение баланса кабинета (${userSnap.email})`;
+        : 'Пополнение баланса кабинета';
   }
 
+  // Never charge or create a provider payment for an amount the buyer did not see.
+  // This catches stale prices, changed bundle settings and already-purchased items.
+  if (params.expectedAmountRub !== amountRub) {
+    throw new Error('Цена или состав заказа изменились. Обновите страницу и заново проверьте сумму до оплаты.');
+  }
   if (params.paymentMethod === 'internal_balance' && userSnap.balanceRub < amountRub) {
     throw new Error(
       `Недостаточно средств на кошельке (${userSnap.balanceRub} ₽ из ${amountRub} ₽)`,
@@ -1367,41 +1362,58 @@ export async function initiateOrderCheckout(params: {
 
   const orderId = `ord_${randomUUID().slice(0, 12)}`;
   const idempotenceKey = randomUUID();
-  let externalPaymentId = `yk_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
-  let confirmationUrl: string | null = null;
+  const isLivePayment = params.paymentMethod === 'yookassa' && stateSnap.settings.paymentMode === 'YOOKASSA_LIVE';
 
-  if (
-    params.paymentMethod === 'yookassa' &&
-    stateSnap.settings.paymentMode === 'YOOKASSA_LIVE'
-  ) {
-    const returnUrl = `${params.originUrl}/payment/return?orderId=${encodeURIComponent(
-      orderId,
-    )}`;
-    const liveResult = await createYooKassaLivePayment({
-      settings: stateSnap.settings,
-      idempotenceKey,
-      amountRub,
-      title,
-      receiptEmail: userSnap.email,
-      returnUrl,
-      metadata: {
-        orderId,
-        userId: userSnap.id,
-        kind: params.kind,
-      },
-    });
-    externalPaymentId = liveResult.externalPaymentId;
-    confirmationUrl = liveResult.confirmationUrl;
+  if (isLivePayment) {
+    let configuredOrigin: string | null = null;
+    try {
+      configuredOrigin = process.env.NEXT_PUBLIC_SITE_URL ? new URL(process.env.NEXT_PUBLIC_SITE_URL).origin : null;
+    } catch {
+      throw new Error('Некорректный NEXT_PUBLIC_SITE_URL для платежей.');
+    }
+    if (!params.originUrl.startsWith('https://') ||
+        (process.env.NODE_ENV === 'production' && (!configuredOrigin || configuredOrigin !== params.originUrl))) {
+      throw new Error('Для реальных платежей настройте канонический HTTPS-адрес сайта в NEXT_PUBLIC_SITE_URL.');
+    }
+    // A predictable configuration failure must not strand a reservation.
+    assertYooKassaLiveConfigured(stateSnap.settings);
   }
 
+  // Persist the order, its idempotence key and promo reservation BEFORE any
+  // provider call. The lock also prevents overlapping concurrent checkouts.
   const createdOrder = await mutateState((state) => {
-    // Deletion can happen after the earlier readState() snapshot while checkout is in flight.
     assertPredictionsExistForOrder(state, targetIds);
     assertPredictionSaleTermsUnchanged(state.predictions, stateSnap.predictions, targetIds);
+    if (state.settings.paymentMode !== params.expectedPaymentMode) {
+      throw new Error('Режим оплаты изменился. Обновите страницу и заново проверьте условия заказа.');
+    }
+    const currentBuyer = state.users.find((user) => user.id === userSnap.id);
+    if (!currentBuyer || currentBuyer.status === 'BLOCKED') {
+      throw new Error('Авторизуйтесь для совершения покупки');
+    }
+    if (targetIds.some((id) => currentBuyer.purchasedPredictionIds.includes(id))) {
+      throw new Error('Часть выбранных прогнозов уже открыта в кабинете. Обновите корзину.');
+    }
+    assertNoOverlappingPendingOrder(state.transactions, currentBuyer.id, targetIds, params.kind);
+    for (const id of targetIds) {
+      const prediction = state.predictions.find((item) => item.id === id);
+      if (!prediction) throw new Error('Одно из выбранных событий уже недоступно. Обновите корзину.');
+      assertPredictionAvailableForSale(prediction);
+    }
+    if (targetIds.length) {
+      const currentPricing = calculateCartPricing({ state, predictionIds: targetIds, promoCode: params.promoCode });
+      if (params.promoCode?.trim() && !currentPricing.promoValidCode) {
+        throw new Error('Промокод больше не действует или зарезервирован другими заказами. Обновите корзину.');
+      }
+      if (currentPricing.finalAmountRub !== amountRub) {
+        throw new Error('Цена заказа изменилась. Обновите корзину и проверьте сумму до оплаты.');
+      }
+    }
     const order: OrderTransaction = {
       id: orderId,
       idempotenceKey,
-      externalPaymentId,
+      externalPaymentId: isLivePayment ? '' : `yk_${randomUUID().replace(/-/g, '').slice(0, 20)}`,
+      ...(isLivePayment ? { providerCreationState: 'CREATING' as const } : {}),
       userId: userSnap.id,
       userEmail: userSnap.email,
       kind:
@@ -1417,13 +1429,17 @@ export async function initiateOrderCheckout(params: {
       title,
       amountRub,
       paymentMethod: params.paymentMethod,
+      paymentModeAtCreation: stateSnap.settings.paymentMode,
       status: 'PENDING',
+      insuranceAllocationVersion: targetIds.length ? 'EQUAL_REMAINDER_V1' : null,
       receiptEmail: userSnap.email,
-      confirmationUrl,
-      affiliateUserId: userSnap.referredByUserId,
+      confirmationUrl: null,
+      affiliateUserId: null,
       affiliateCommissionRub: 0,
       createdAt: new Date().toISOString(),
       paidAt: null,
+      offerAcceptedAt: params.offerAcceptedVersion ? new Date().toISOString() : null,
+      offerAcceptedVersion: params.offerAcceptedVersion || null,
     };
     state.transactions.unshift(order);
     return order;
@@ -1433,11 +1449,76 @@ export async function initiateOrderCheckout(params: {
     params.paymentMethod === 'internal_balance' ||
     stateSnap.settings.paymentMode === 'TEST_INSTANT'
   ) {
-    const settledOrder = await fulfillOrderPayment(createdOrder.id);
-    return { order: settledOrder, paidImmediately: true };
+    try {
+      const settledOrder = await fulfillOrderPayment(createdOrder.id);
+      return { order: settledOrder, paidImmediately: true };
+    } catch (error) {
+      // A failed local debit/test checkout must not leave an unpayable pending
+      // order that blocks another attempt. Never undo a completed transaction.
+      await mutateState((state) => {
+        const order = state.transactions.find((item) => item.id === createdOrder.id);
+        if (order?.status === 'PENDING') order.status = 'CANCELED';
+      }).catch(() => undefined);
+      throw error;
+    }
   }
 
-  return { order: createdOrder, paidImmediately: false };
+  let liveResult;
+  try {
+    liveResult = await createYooKassaLivePayment({
+      settings: stateSnap.settings,
+      idempotenceKey: createdOrder.idempotenceKey,
+      amountRub: createdOrder.amountRub,
+      title: createdOrder.title,
+      receiptEmail: createdOrder.receiptEmail,
+      returnUrl: `${params.originUrl}/payment/return?orderId=${encodeURIComponent(createdOrder.id)}`,
+      metadata: { orderId: createdOrder.id, userId: createdOrder.userId, kind: params.kind },
+    });
+  } catch (error) {
+    // Never release an uncertain real payment or its promo reservation. Even a
+    // network error or provider 5xx may have created the payment. A webhook or
+    // administrator can identify it later from verified provider metadata.
+    await mutateState((state) => {
+      const order = state.transactions.find((item) => item.id === createdOrder.id);
+      if (order?.status === 'PENDING' && !order.externalPaymentId && order.providerCreationState === 'CREATING') {
+        order.providerCreationState = 'UNKNOWN';
+      }
+    }).catch(() => undefined);
+    const detail = error instanceof Error ? error.message : 'Нет подтверждения ЮKassa.';
+    throw new Error(`Заказ ${createdOrder.id}: ${detail} Проверьте заказ в кабинете или обратитесь в поддержку до повторной оплаты.`);
+  }
+
+  let recordedOrder: OrderTransaction;
+  try {
+    recordedOrder = await mutateState((state) => {
+      const order = state.transactions.find((item) => item.id === createdOrder.id);
+      if (!order || order.paymentModeAtCreation !== 'YOOKASSA_LIVE' || order.paymentMethod !== 'yookassa') {
+        throw new Error('Резерв заказа не найден.');
+      }
+      if ((order.externalPaymentId && order.externalPaymentId !== liveResult.externalPaymentId) ||
+          state.transactions.some((item) => item.id !== order.id && item.externalPaymentId === liveResult.externalPaymentId)) {
+        throw new Error('Идентификатор платежа не совпадает с записью заказа.');
+      }
+      order.externalPaymentId = liveResult.externalPaymentId;
+      // A webhook may have already settled or canceled this very order.
+      if (order.status === 'PENDING' && liveResult.status === 'pending') {
+        order.confirmationUrl = liveResult.confirmationUrl;
+        order.providerCreationState = 'READY';
+      } else {
+        order.providerCreationState = order.confirmationUrl ? 'READY' : 'IDENTIFIED';
+      }
+      return order;
+    });
+  } catch (error) {
+    const message = `Заказ ${createdOrder.id}: платёж мог быть создан, но не удалось сохранить его данные. Обратитесь в поддержку до повторной оплаты.`;
+    if (error instanceof StorageUnavailableError) throw new StorageUnavailableError(message);
+    throw new Error(message);
+  }
+  if (recordedOrder.status === 'SUCCEEDED') return { order: recordedOrder, paidImmediately: true };
+  if (recordedOrder.status !== 'PENDING' || !recordedOrder.confirmationUrl) {
+    throw new Error(`Заказ ${createdOrder.id}: статус платежа требует проверки. Проверьте его в кабинете или обратитесь в поддержку до повторной оплаты.`);
+  }
+  return { order: recordedOrder, paidImmediately: false };
 }
 
 export async function fulfillOrderPayment(
@@ -1451,11 +1532,16 @@ export async function fulfillOrderPayment(
     if (!tx) throw new Error('Заказ не найден');
     // Verify again under the state lock: the order may have changed during the network request.
     if (verifiedPayment) {
+      if (tx.paymentModeAtCreation === 'TEST_INSTANT') {
+        throw new Error('Тестовый заказ нельзя подтвердить как реальный платёж.');
+      }
       assertYooKassaPaymentMatchesOrder(tx, verifiedPayment);
       if (verifiedPayment.status !== 'succeeded' || !verifiedPayment.paid) {
         throw new Error('Оплата не подтверждена ЮKassa.');
       }
-    } else if (tx.paymentMethod === 'yookassa' && state.settings.paymentMode === 'YOOKASSA_LIVE') {
+    } else if (tx.paymentMethod === 'yookassa' && tx.paymentModeAtCreation !== 'TEST_INSTANT') {
+      // Unknown legacy orders fail closed as well; changing settings later must
+      // never turn a real pending payment into a simulated success.
       throw new Error('Для подтверждения платежа требуется проверка ЮKassa.');
     }
     if (tx.status === 'SUCCEEDED') {
@@ -1469,6 +1555,11 @@ export async function fulfillOrderPayment(
     }
     if (tx.status !== 'PENDING') {
       throw new Error('Заказ уже отменён или возвращён; требуется ручная сверка платежа.');
+    }
+    if (tx.externalRefundNotices?.length) {
+      // A refund can arrive before a delayed success notification. Do not grant
+      // access or credit a wallet for a payment already under refund review.
+      throw new Error('По платежу уже есть возврат ЮKassa; требуется ручная сверка до исполнения заказа.');
     }
 
     const buyer = state.users.find((u) => u.id === tx.userId);
@@ -1510,7 +1601,9 @@ export async function fulfillOrderPayment(
       buyer.balanceRub += tx.amountRub + bonusRub;
     }
 
-    if (tx.paymentMethod === 'yookassa' && buyer.referredByUserId) {
+    // Test mode is not money and must never create a withdrawable partner balance.
+    // Provider verification also prevents a later mode change from altering this rule.
+    if (tx.paymentMethod === 'yookassa' && verifiedPayment && buyer.referredByUserId) {
       const partner = state.users.find((u) => u.id === buyer.referredByUserId);
       if (partner) {
         const comm = Math.round((tx.amountRub * partner.revsharePercent) / 100);
@@ -1532,9 +1625,9 @@ export async function fulfillOrderPayment(
     return {
       tx,
       newlySettled: true,
-      buyerChatId: buyer.telegramChatId ?? null,
+      buyerChatId: buyer.telegramBindingVerified ? buyer.telegramChatId ?? null : null,
       adminChatIds: state.users
-        .filter((u) => u.role === 'ADMIN' && u.telegramChatId && u.id !== buyer.id)
+        .filter((u) => u.role === 'ADMIN' && u.telegramBindingVerified && u.telegramChatId && u.id !== buyer.id)
         .map((u) => u.telegramChatId!),
       unlockedPreds,
       settings: state.settings,
@@ -1543,12 +1636,15 @@ export async function fulfillOrderPayment(
 
   // Мгновенное уведомление владельцу (администратору) о новой продаже
   if (result.newlySettled && result.adminChatIds && result.adminChatIds.length > 0) {
+    const isSimulated = result.tx.paymentMethod === 'yookassa' && result.tx.paymentModeAtCreation === 'TEST_INSTANT';
     const adminAlert = [
-      `💸 <b>Новая оплата +${result.tx.amountRub.toLocaleString('ru-RU')} ₽!</b>`,
-      `👤 Покупатель: <b>${result.tx.userEmail}</b>`,
-      `📦 Заказ: ${result.tx.title}`,
+      isSimulated
+        ? `🧪 <b>Тестовый заказ на ${result.tx.amountRub.toLocaleString('ru-RU')} ₽: реальная оплата не поступала</b>`
+        : `💸 <b>Новая оплата +${result.tx.amountRub.toLocaleString('ru-RU')} ₽!</b>`,
+      `🧾 Номер заказа: <code>${escapeTelegramHtml(result.tx.id)}</code>`,
+      `📦 Заказ: ${escapeTelegramHtml(result.tx.kind === 'BALANCE_TOPUP' ? 'Пополнение баланса' : result.tx.title)}`,
       `💳 Способ: ${
-        result.tx.paymentMethod === 'yookassa' ? 'Карта РФ / СБП' : 'Внутренний баланс'
+        isSimulated ? 'Тестовый режим' : result.tx.paymentMethod === 'yookassa' ? 'ЮKassa' : 'Внутренний баланс'
       }`,
     ].join('\n');
     for (const admChat of result.adminChatIds) {
@@ -1566,7 +1662,8 @@ export async function fulfillOrderPayment(
     const bonusRub = computeWalletTopupBonusRub(result.tx.amountRub);
     const creditedTotal = result.tx.amountRub + bonusRub;
     const topupMsg = [
-      `💳 <b>Баланс успешно пополнен (${result.settings.brandName})!</b>`,
+      `💳 <b>Баланс пополнен (${escapeTelegramHtml(result.settings.brandName)})!</b>`,
+      result.tx.paymentModeAtCreation === 'TEST_INSTANT' ? 'Тестовый режим: реальные деньги не списывались.' : '',
       `Зачислено на счет: <b>+${creditedTotal.toLocaleString('ru-RU')} ₽</b>${
         bonusRub > 0 ? ` (включая подарок +${bonusRub.toLocaleString('ru-RU')} ₽)` : ''
       }`,
@@ -1591,16 +1688,16 @@ export async function fulfillOrderPayment(
         p.awayTeam,
       );
       const dmHtml = [
-        `🔓 <b>Ваш купленный прогноз открыт (${result.settings.brandName})</b>`,
+        `🔓 <b>Ваш купленный прогноз открыт (${escapeTelegramHtml(result.settings.brandName)})</b>`,
         ``,
-        `🏆 ${p.leagueName}`,
-        `⚔️ <b>${p.homeTeam} — ${p.awayTeam}</b>`,
-        `🎯 Ставка: <b>${p.selectionTitle}</b>`,
+        `🏆 ${escapeTelegramHtml(p.leagueName)}`,
+        `⚔️ <b>${escapeTelegramHtml(p.homeTeam)} — ${escapeTelegramHtml(p.awayTeam)}</b>`,
+        `🎯 Ставка: <b>${escapeTelegramHtml(p.selectionTitle)}</b>`,
         `📈 Коэффициент: <b>${p.fixedOdds.toFixed(2)}</b> (${p.stakeUnits.toFixed(1)}% от банка)`,
-        `📍 <b>Где искать в БК:</b> ${plain.whereToFindInBk}`,
-        `✅ <b>Когда выигрыш:</b> ${plain.whenYouWin}`,
+        `📍 <b>Где искать в БК:</b> ${escapeTelegramHtml(plain.whereToFindInBk)}`,
+        `✅ <b>Когда выигрыш:</b> ${escapeTelegramHtml(plain.whenYouWin)}`,
         p.insuredOnLoss
-          ? `🛡 <b>Страховка активна:</b> если не зайдет — 100% суммы вернется на ваш баланс!`
+          ? `🛡 <b>Страховка:</b> при проигрыше или возврате предусмотрено начисление на баланс сайта по условиям оферты. Ставку у букмекера оно не возмещает.`
           : '',
       ]
         .filter(Boolean)
@@ -1617,36 +1714,90 @@ export async function fulfillOrderPayment(
   return result.tx;
 }
 
-export async function verifyAndSyncOrderFromReturn(
+/**
+ * Bind only a provider-verified payment to an order reserved before creation.
+ * Never trust IDs, status, amounts or metadata supplied in a webhook body or UI.
+ */
+export async function attachVerifiedYooKassaPayment(
   orderId: string,
+  payment: VerifiedYooKassaPayment,
+): Promise<OrderTransaction> {
+  if (!payment.id || payment.id.length > 128) throw new Error('Некорректный идентификатор платежа ЮKassa.');
+  return mutateState((state) => {
+    const order = state.transactions.find((item) => item.id === orderId);
+    if (!order || order.paymentMethod !== 'yookassa' || order.paymentModeAtCreation === 'TEST_INSTANT' ||
+        (order.paymentModeAtCreation !== 'YOOKASSA_LIVE' && state.settings.paymentMode !== 'YOOKASSA_LIVE')) {
+      throw new Error('Реальный заказ для платежа ЮKassa не найден.');
+    }
+    if (!order.externalPaymentId) {
+      if (order.paymentModeAtCreation !== 'YOOKASSA_LIVE' || order.status !== 'PENDING' ||
+          (order.providerCreationState !== 'CREATING' && order.providerCreationState !== 'UNKNOWN')) {
+        throw new Error('Заказ не допускает привязку неизвестного платежа; требуется ручная сверка.');
+      }
+      // Compare against a temporary copy before changing any stored value.
+      assertYooKassaPaymentMatchesOrder({ ...order, externalPaymentId: payment.id }, payment);
+      if (state.transactions.some((item) => item.id !== order.id && item.externalPaymentId === payment.id)) {
+        throw new Error('Этот платёж ЮKassa уже связан с другим заказом.');
+      }
+      order.externalPaymentId = payment.id;
+      order.providerCreationState = 'IDENTIFIED';
+    } else {
+      assertYooKassaPaymentMatchesOrder(order, payment);
+    }
+    return order;
+  });
+}
+
+/**
+ * The optional payment ID is used only by an authenticated administrator who
+ * found it at the provider. Even then all details are fetched and checked.
+ */
+export async function verifyAndSyncYooKassaOrder(
+  orderId: string,
+  discoveredPaymentId?: string,
 ): Promise<OrderTransaction> {
   const state = await readState();
   const tx = state.transactions.find((t) => t.id === orderId);
   if (!tx) throw new Error('Заказ не найден');
-
   if (tx.status !== 'PENDING') return tx;
-
-  if (
-    tx.paymentMethod === 'yookassa' &&
-    state.settings.paymentMode === 'YOOKASSA_LIVE'
-  ) {
-    const check = await verifyYooKassaLivePayment(state.settings, tx.externalPaymentId);
-    assertYooKassaPaymentMatchesOrder(tx, check);
-    if (check.status === 'succeeded' && check.paid) {
-      return fulfillOrderPayment(tx.id, check);
-    }
-    if (check.status === 'canceled' && !check.paid) {
-      return mutateState((draft) => {
-        const found = draft.transactions.find((r) => r.id === tx.id);
-        if (!found) throw new Error('Заказ не найден');
-        assertYooKassaPaymentMatchesOrder(found, check);
-        if (found.status === 'PENDING') found.status = 'CANCELED';
-        return found;
-      });
-    }
+  if (tx.paymentMethod !== 'yookassa' || tx.paymentModeAtCreation === 'TEST_INSTANT' ||
+      (tx.paymentModeAtCreation !== 'YOOKASSA_LIVE' && state.settings.paymentMode !== 'YOOKASSA_LIVE')) {
+    throw new Error('Этот заказ нельзя сверить как реальный платёж ЮKassa.');
   }
+  if (discoveredPaymentId && tx.externalPaymentId && discoveredPaymentId !== tx.externalPaymentId) {
+    throw new Error('У заказа уже указан другой идентификатор платежа.');
+  }
+  const paymentId = tx.externalPaymentId || discoveredPaymentId;
+  // A response may have been lost before the ID was recorded. No guesses or
+  // automatic cancellation: the provider must first identify that payment.
+  if (!paymentId) return tx;
 
-  return tx;
+  const check = await verifyYooKassaLivePayment(state.settings, paymentId);
+  const attached = await attachVerifiedYooKassaPayment(tx.id, check);
+  if (check.status === 'succeeded' && check.paid) {
+    return fulfillOrderPayment(tx.id, check);
+  }
+  if (check.status === 'canceled' && !check.paid) {
+    return mutateState((draft) => {
+      const found = draft.transactions.find((r) => r.id === tx.id);
+      if (!found) throw new Error('Заказ не найден');
+      assertYooKassaPaymentMatchesOrder(found, check);
+      // Do not overwrite a concurrent success or a manual refund.
+      if (found.status === 'PENDING' && !found.externalRefundNotices?.length) found.status = 'CANCELED';
+      return found;
+    });
+  }
+  return attached;
+}
+
+export async function verifyAndSyncOrderFromReturn(orderId: string): Promise<OrderTransaction> {
+  const state = await readState();
+  const tx = state.transactions.find((t) => t.id === orderId);
+  if (!tx) throw new Error('Заказ не найден');
+  // Old simulated or internal-balance orders must never contact the provider.
+  if (tx.status !== 'PENDING' || tx.paymentMethod !== 'yookassa' || tx.paymentModeAtCreation === 'TEST_INSTANT' ||
+      (tx.paymentModeAtCreation !== 'YOOKASSA_LIVE' && state.settings.paymentMode !== 'YOOKASSA_LIVE')) return tx;
+  return verifyAndSyncYooKassaOrder(orderId);
 }
 
 export async function createPredictionByAdmin(input: {
@@ -1678,7 +1829,13 @@ export async function createPredictionByAdmin(input: {
   analysisTeaser: string;
   analysisFull: string;
   pushToTelegram?: boolean;
-}): Promise<PredictionRecord> {
+}, autopilotCommit?: { kind: 'SCAN'; configSnapshot: AiAutopilotConfig } | { kind: 'DRAFT'; draftSnapshot: AiPredictionDraft }): Promise<PredictionRecord> {
+  if (input.authorSource === 'AI_AUTOPILOT' && !autopilotCommit) {
+    throw new Error('AI-происхождение доступно только проверенному конвейеру автопилота.');
+  }
+  if (autopilotCommit && (input.authorSource !== 'AI_AUTOPILOT' || !input.externalFixtureId || !input.agentReport?.trim())) {
+    throw new Error('Для выпуска автопилота необходимы подтверждённая линия и отчёт ролей модели.');
+  }
   validatePredictionForPublication(input);
   const odds = Number(input.fixedOdds);
   const stake = Number(input.stakeUnits);
@@ -1695,6 +1852,17 @@ export async function createPredictionByAdmin(input: {
   });
 
   const created = await mutateState((state) => {
+    if (autopilotCommit) {
+      if (autopilotCommit.kind === 'SCAN') {
+        assertAutopilotConfigUnchanged(state.aiAutopilot, autopilotCommit.configSnapshot);
+      } else {
+        const savedDraft = state.aiDrafts.find((draft) => draft.id === autopilotCommit.draftSnapshot.id);
+        if (!savedDraft || JSON.stringify(savedDraft) !== JSON.stringify(autopilotCommit.draftSnapshot)) {
+          throw new AutopilotCommitConflict('DRAFT_CHANGED', 'Черновик уже удалён, изменён или опубликован.');
+        }
+      }
+      assertNewAutopilotFixture(state, input, autopilotCommit.kind === 'DRAFT' ? autopilotCommit.draftSnapshot.id : undefined);
+    }
     if (input.isFeatured) {
       for (const existing of state.predictions) {
         existing.isFeatured = false;
@@ -1764,6 +1932,10 @@ export async function createPredictionByAdmin(input: {
     };
 
     state.predictions.unshift(pred);
+    if (autopilotCommit?.kind === 'SCAN') state.aiAutopilot.totalGeneratedCount += 1;
+    if (autopilotCommit?.kind === 'DRAFT') {
+      state.aiDrafts = state.aiDrafts.filter((draft) => draft.id !== autopilotCommit.draftSnapshot.id);
+    }
     return { pred, settings: state.settings };
   });
 
@@ -1774,18 +1946,19 @@ export async function createPredictionByAdmin(input: {
       created.pred.accessTier === 'FREE'
         ? '🎁 Открытый бесплатный разбор (0 ₽)'
         : `🔓 Разовый доступ: ${created.pred.singlePriceRub} ₽${
-            created.pred.insuredOnLoss ? ' (🛡 со страховкой 100% на баланс)' : ''
+            created.pred.insuredOnLoss ? ' (🛡 начисление на баланс при минусе или возврате по условиям оферты)' : ''
           }`;
     const msg = [
-      `📊 <b>Новый прогноз на ${created.settings.brandName}</b>`,
-      `🏆 ${created.pred.leagueName}`,
-      `⚔️ <b>${created.pred.homeTeam} — ${created.pred.awayTeam}</b>`,
+      `📊 <b>Новый прогноз на ${escapeTelegramHtml(created.settings.brandName)}</b>`,
+      `🏆 ${escapeTelegramHtml(created.pred.leagueName)}`,
+      `⚔️ <b>${escapeTelegramHtml(created.pred.homeTeam)} — ${escapeTelegramHtml(created.pred.awayTeam)}</b>`,
       `💼 Рекомендуемая ставка: <b>${created.pred.stakeUnits.toFixed(1)}% от банка</b>`,
       `${priceLabel}`,
       ``,
-      `${created.pred.analysisTeaser}`,
+      `${escapeTelegramHtml(created.pred.analysisTeaser)}`,
+      `Прогноз не гарантирует выигрыш. Начисления на баланс не возмещают ставку у букмекера.`,
     ].join('\n');
-    await sendTelegramChannelAnnouncement(
+    const telegram = await sendTelegramChannelAnnouncement(
       created.settings,
       msg,
       matchUrl
@@ -1797,7 +1970,24 @@ export async function createPredictionByAdmin(input: {
             url: matchUrl,
           }
         : undefined,
-    );
+    ).catch(() => ({ sent: false as const, outcome: 'unknown' as const, error: 'Нет подтверждения отправки. Проверьте канал перед повтором.' }));
+    if (input.authorSource === 'AI_AUTOPILOT') {
+      try {
+        await mutateState((state) => {
+          state.aiLogs.unshift({
+            id: `ailog_${randomUUID().slice(0, 8)}`,
+            createdAt: new Date().toISOString(),
+            level: telegram.sent ? 'SUCCESS' : 'WARN',
+            stage: 'PUBLISHER',
+            message: telegram.sent
+              ? `Telegram подтвердил анонс «${created.pred.homeTeam} — ${created.pred.awayTeam}».`
+              : `Прогноз «${created.pred.homeTeam} — ${created.pred.awayTeam}» опубликован на сайте; анонс Telegram не подтверждён: ${telegram.error}`,
+          });
+        });
+      } catch {
+        // The site publication already happened. A log failure must not invite a duplicate retry.
+      }
+    }
   }
 
   return created.pred;
@@ -1809,10 +1999,17 @@ export async function settlePredictionByAdmin(params: {
   finalScore?: string | null;
   cashoutMultiplier?: number | null;
   pushResultToTelegram?: boolean;
-}): Promise<{ prediction: PredictionRecord; compensatedUsers: number }> {
+  // Automatic workers must not repeat a settlement or its Telegram sends.
+  onlyIfPending?: boolean;
+  requireAutoSettleEnabled?: boolean;
+}): Promise<{ prediction: PredictionRecord; compensatedUsers: number; applied: boolean }> {
   const outcome = await mutateState((state) => {
     const pred = state.predictions.find((p) => p.id === params.predictionId);
     if (!pred) throw new Error('Событие не найдено');
+    if ((params.onlyIfPending && pred.resultStatus !== 'PENDING') ||
+        (params.requireAutoSettleEnabled && !state.aiAutopilot.autoSettleEnabled)) {
+      return { prediction: pred, compensatedUsers: 0, settings: state.settings, applied: false };
+    }
 
     let verifiedFinalScore: string | null = null;
     if (params.resultStatus !== 'PENDING') {
@@ -1857,7 +2054,7 @@ export async function settlePredictionByAdmin(params: {
       pred.profitUnits = null;
       pred.profitPercent = null;
       pred.settledAt = null;
-      return { prediction: pred, compensatedUsers: 0, settings: state.settings };
+      return { prediction: pred, compensatedUsers: 0, settings: state.settings, applied: true };
     }
 
     pred.matchStatus = 'FINISHED';
@@ -1886,7 +2083,7 @@ export async function settlePredictionByAdmin(params: {
 
     if (params.resultStatus === 'WIN' || params.resultStatus === 'CASHOUT') {
       for (const u of state.users) {
-        if (u.telegramChatId && u.purchasedPredictionIds.includes(pred.id)) {
+        if (u.telegramBindingVerified && u.telegramChatId && u.purchasedPredictionIds.includes(pred.id)) {
           winDmChatIds.push(u.telegramChatId);
         }
       }
@@ -1910,7 +2107,7 @@ export async function settlePredictionByAdmin(params: {
           continue;
         }
 
-        const share = Math.round(tx.amountRub / Math.max(1, tx.predictionIds.length));
+        const share = insuranceShareForPrediction(tx, pred.id);
         const buyer = state.users.find((u) => u.id === tx.userId);
         if (buyer && share > 0) {
           buyer.balanceRub += share;
@@ -1918,7 +2115,7 @@ export async function settlePredictionByAdmin(params: {
           tx.insuranceRefundedAmountRub = (tx.insuranceRefundedAmountRub || 0) + share;
           tx.insuranceCredited = true;
           compensatedUsers += 1;
-          if (buyer.telegramChatId) {
+          if (buyer.telegramBindingVerified && buyer.telegramChatId) {
             refundedDmQueue.push({
               chatId: buyer.telegramChatId,
               amountRub: share,
@@ -1935,19 +2132,24 @@ export async function settlePredictionByAdmin(params: {
       refundedDmQueue,
       winDmChatIds,
       settings: state.settings,
+      applied: true,
     };
   });
+
+  if (!outcome.applied) {
+    return { prediction: outcome.prediction, compensatedUsers: 0, applied: false };
+  }
 
   // Рассылка личных уведомлений покупателям в Telegram
   if (outcome.refundedDmQueue && outcome.refundedDmQueue.length > 0) {
     const p = outcome.prediction;
     for (const item of outcome.refundedDmQueue) {
       const dm = [
-        `🛡 <b>Сработала страховка 100% (${outcome.settings.brandName})!</b>`,
+        `🛡 <b>Начисление по программе «страховка» (${escapeTelegramHtml(outcome.settings.brandName)})</b>`,
         ``,
-        `Матч «<b>${p.homeTeam} — ${p.awayTeam}</b>» завершился со счетом ${p.finalScore || 'не в нашу пользу'}.`,
-        `💰 На ваш кошелек автоматически возвращено: <b>+${item.amountRub.toLocaleString('ru-RU')} ₽</b> (текущий баланс: <b>${item.newBalance.toLocaleString('ru-RU')} ₽</b>).`,
-        `Заходите на витрину и открывайте любой следующий прогноз бесплатно с баланса!`,
+        `Результат прогноза «<b>${escapeTelegramHtml(p.homeTeam)} — ${escapeTelegramHtml(p.awayTeam)}</b>»: ${escapeTelegramHtml(p.resultStatus === 'PUSH' ? 'возврат' : 'проигрыш')}${p.finalScore ? `, счёт ${escapeTelegramHtml(p.finalScore)}` : ''}.`,
+        `💰 На баланс сайта начислено: <b>+${item.amountRub.toLocaleString('ru-RU')} ₽</b> (текущий баланс: <b>${item.newBalance.toLocaleString('ru-RU')} ₽</b>).`,
+        `Начисление не возмещает ставку у букмекера и не заменяет предусмотренный законом денежный возврат.`,
       ].join('\n');
       void sendTelegramDirectMessage(outcome.settings, item.chatId, dm).catch(
         () => undefined,
@@ -1959,9 +2161,9 @@ export async function settlePredictionByAdmin(params: {
     const p = outcome.prediction;
     for (const chatId of outcome.winDmChatIds) {
       const dm = [
-        `✅ <b>С победой! Ваш прогноз зашел (${p.finalScore || 'Победа'})</b>`,
-        `⚔️ <b>${p.homeTeam} — ${p.awayTeam}</b>`,
-        `🎯 Исход: <b>${p.selectionTitle}</b> @ <b>${p.fixedOdds.toFixed(2)}</b>`,
+        `✅ <b>Ваш прогноз ${p.resultStatus === 'CASHOUT' ? 'досрочно закрыт' : 'рассчитан как выигрыш'} (${escapeTelegramHtml(p.finalScore || 'результат')})</b>`,
+        `⚔️ <b>${escapeTelegramHtml(p.homeTeam)} — ${escapeTelegramHtml(p.awayTeam)}</b>`,
+        `🎯 Исход: <b>${escapeTelegramHtml(p.selectionTitle)}</b> @ <b>${p.fixedOdds.toFixed(2)}</b>`,
       ].join('\n');
       void sendTelegramDirectMessage(outcome.settings, chatId, dm).catch(
         () => undefined,
@@ -1969,18 +2171,18 @@ export async function settlePredictionByAdmin(params: {
     }
   }
 
-  if (params.pushResultToTelegram && params.resultStatus !== 'PENDING') {
+  if (params.pushResultToTelegram && params.resultStatus !== 'PENDING' && !isLegacyStarterDemoPrediction(outcome.prediction)) {
     const p = outcome.prediction;
     const badge =
       p.resultStatus === 'WIN' || p.resultStatus === 'CASHOUT'
-        ? `✅ <b>ПОБЕДА (${p.finalScore || 'расчет'})</b> · +${(p.profitUnits ?? 0).toFixed(2)}% к банку`
+        ? `✅ <b>ПОБЕДА (${escapeTelegramHtml(p.finalScore || 'расчёт')})</b> · +${(p.profitUnits ?? 0).toFixed(2)}% к банку`
         : p.resultStatus === 'PUSH'
-          ? `➖ <b>ВОЗВРАТ (${p.finalScore || 'расчет'})</b>${
-              outcome.compensatedUsers > 0 ? ' · Страховка 100% начислена на баланс' : ''
+          ? `➖ <b>ВОЗВРАТ (${escapeTelegramHtml(p.finalScore || 'расчёт')})</b>${
+              outcome.compensatedUsers > 0 ? ' · Начисления по условиям оферты на баланс сайта' : ''
             }`
-          : `❌ <b>МИНУС (${p.finalScore || 'расчет'})</b>${
+          : `❌ <b>МИНУС (${escapeTelegramHtml(p.finalScore || 'расчёт')})</b>${
               outcome.compensatedUsers > 0
-                ? ' · 🛡 Страховка 100% возвращена на баланс покупателям'
+                ? ' · 🛡 Начисления по условиям оферты на баланс сайта'
                 : ''
             }`;
 
@@ -1988,20 +2190,36 @@ export async function settlePredictionByAdmin(params: {
     const statsUrl = siteBase ? `${siteBase}/stats` : '';
     const msg = [
       badge,
-      `⚽️ <b>${p.homeTeam} — ${p.awayTeam}</b> (${p.leagueName})`,
-      `🎯 Исход: <b>${p.selectionTitle}</b> @ <b>${p.fixedOdds.toFixed(2)}</b>`,
-      `🔐 Проверка честности: <code>${p.verificationHash.slice(0, 16)}…</code>`,
+      `⚽️ <b>${escapeTelegramHtml(p.homeTeam)} — ${escapeTelegramHtml(p.awayTeam)}</b> (${escapeTelegramHtml(p.leagueName)})`,
+      `🎯 Исход: <b>${escapeTelegramHtml(p.selectionTitle)}</b> @ <b>${p.fixedOdds.toFixed(2)}</b>`,
+      `🔐 Отпечаток SHA-256: <code>${p.verificationHash.slice(0, 16)}…</code>`,
     ].join('\n');
-    await sendTelegramChannelAnnouncement(
+    const telegram = await sendTelegramChannelAnnouncement(
       outcome.settings,
       msg,
       statsUrl ? { text: '📊 Проверить всю статистику →', url: statsUrl } : undefined,
-    );
+    ).catch(() => ({ sent: false as const, outcome: 'unknown' as const, error: 'Нет подтверждения отправки. Проверьте канал перед повтором.' }));
+    try {
+      await mutateState((state) => {
+        state.aiLogs.unshift({
+          id: `ailog_${randomUUID().slice(0, 8)}`,
+          createdAt: new Date().toISOString(),
+          level: telegram.sent ? 'SUCCESS' : 'WARN',
+          stage: 'SETTLEMENT',
+          message: telegram.sent
+            ? `Telegram подтвердил сообщение о результате «${p.homeTeam} — ${p.awayTeam}».`
+            : `Результат «${p.homeTeam} — ${p.awayTeam}» рассчитан на сайте; сообщение Telegram не подтверждено: ${telegram.error}`,
+        });
+      });
+    } catch {
+      // The result and balance credits have already committed; never retry them here.
+    }
   }
 
   return {
     prediction: outcome.prediction,
     compensatedUsers: outcome.compensatedUsers,
+    applied: true,
   };
 }
 
@@ -2009,7 +2227,7 @@ export function computeAiPerformanceStats(
   predictions: PredictionRecord[],
 ): AiPerformanceStats {
   // An AI_AUTOPILOT label alone is not evidence of model analysis.
-  const aiItems = predictions.filter(hasAiCommitteeProvenance);
+  const aiItems = predictions.filter((prediction) => !isLegacyStarterDemoPrediction(prediction) && hasAiCommitteeProvenance(prediction));
   const settled = aiItems.filter(hasVerifiedSettledResult);
   let wins = 0;
   let losses = 0;

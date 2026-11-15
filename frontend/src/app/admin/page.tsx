@@ -39,6 +39,8 @@ import { UsersTab } from '@/components/admin/UsersTab';
 import { formatRub, type AdminUser } from '@/components/admin/admin-format';
 import { OrderStatusBadge } from '@/components/admin/AdminTableHelpers';
 import { aggregateSportStats, buildPredictionSalesChart, isPaidPredictionSale, paidAtMs } from '@/lib/admin-metrics';
+import { isPlaceholderLegalInn } from '@/lib/plain-russian';
+import { isActiveStorefrontPrediction, isLegacyStarterDemoPrediction } from '@/server/prediction-data-policy';
 import {
   Badge,
   ConfirmDialog,
@@ -171,7 +173,7 @@ export default function AdminDashboardPage() {
     [data],
   );
   const pendingPredictionsCount = useMemo(
-    () => (data?.predictions ?? []).filter((p) => p.resultStatus === 'PENDING').length,
+    () => (data?.predictions ?? []).filter((p) => isActiveStorefrontPrediction(p)).length,
     [data],
   );
   const pendingPayoutsCount = useMemo(
@@ -183,7 +185,11 @@ export default function AdminDashboardPage() {
     [data],
   );
   const liveCount = useMemo(
-    () => (data?.predictions ?? []).filter((p) => p.matchLifecycleStatus === 'LIVE').length,
+    () => (data?.predictions ?? []).filter((p) => !isLegacyStarterDemoPrediction(p) && p.matchLifecycleStatus === 'LIVE').length,
+    [data],
+  );
+  const realPredictionCount = useMemo(
+    () => (data?.predictions ?? []).filter((p) => !isLegacyStarterDemoPrediction(p)).length,
     [data],
   );
 
@@ -359,7 +365,7 @@ export default function AdminDashboardPage() {
               </h1>
               <p className="hidden text-[11px] text-slate-500 sm:block">
                 {data
-                  ? `Обновлено ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })} · ${data.users.length} пользователей · ${data.predictions.length} событий`
+                  ? `Обновлено ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })} · ${data.users.length} пользователей · ${realPredictionCount} событий без демо`
                   : 'Загрузка данных…'}
               </p>
             </div>
@@ -583,7 +589,7 @@ function OverviewTab({
       bg: 'bg-slate-100 text-slate-600',
     },
     {
-      label: 'Покупателей',
+      label: 'Пользователей с доступом',
       value: `${buyersCount} / ${data.users.length}`,
       icon: Users,
       tone: 'text-slate-950',
@@ -602,7 +608,7 @@ function OverviewTab({
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .slice(0, 6);
   const upcoming = [...data.predictions]
-    .filter((p) => p.resultStatus === 'PENDING')
+    .filter((p) => isActiveStorefrontPrediction(p))
     .sort((a, b) => new Date(a.matchStartsAt).getTime() - new Date(b.matchStartsAt).getTime())
     .slice(0, 5);
   const pendingPayouts = data.payouts.filter((p) => p.status === 'PENDING');
@@ -613,7 +619,7 @@ function OverviewTab({
     [data.transactions],
   );
 
-  const sportStats = useMemo(() => aggregateSportStats(data.predictions), [data.predictions]);
+  const sportStats = useMemo(() => aggregateSportStats(data.predictions.filter((p) => !isLegacyStarterDemoPrediction(p))), [data.predictions]);
 
   const activityFeed = useMemo(() => {
     const items: Array<{ id: string; time: string; text: string; tone: 'emerald' | 'amber' | 'rose' | 'blue' | 'slate' }> = [];
@@ -666,7 +672,7 @@ function OverviewTab({
           <button type="button" onClick={() => onGoTab('FINANCE')} className="font-bold underline">Открыть финансы</button>
         </div>
       )}
-      <p className="text-[11px] text-slate-500">Продажи — сумма заказов прогнозов со статусом «Оплачен»: пополнения, возвращённые заказы и заказы с возвратами ЮKassa на сверке исключены, страховые выплаты не вычитаются. Это не денежный поток.</p>
+      <p className="text-[11px] text-slate-500">Продажи — сумма заказов прогнозов со статусом «Оплачен»: заказы, созданные в тестовом режиме кассы (включая списания с баланса), пополнения, возвращённые заказы и заказы с возвратами ЮKassa на сверке исключены; страховые выплаты не вычитаются. Происхождение средств внутреннего баланса отдельно не отслеживается. Старые заказы без записи режима требуют сверки. Это не денежный поток.</p>
       <div className="grid gap-5 xl:grid-cols-3">
         <SectionCard title="Динамика продаж прогнозов" subtitle="За 14 дней по времени оплаты; только текущий статус «Оплачен»" className="xl:col-span-2">
           <RevenueChart points={revenuePoints} />
@@ -751,6 +757,8 @@ function OverviewTab({
                       {formatRub(o.amountRub)}
                     </div>
                     <OrderStatusBadge status={o.status} />
+                    {o.paymentMethod === 'yookassa' && o.paymentModeAtCreation === 'TEST_INSTANT' && <div className="text-[10px] font-semibold text-amber-800">Тестовый заказ</div>}
+                    {o.paymentMethod === 'internal_balance' && <div className="text-[10px] text-slate-500">С внутреннего баланса</div>}
                   </div>
                 </div>
               ))}
@@ -910,59 +918,79 @@ function PricingPromosTab({
   }, [settings]);
 
   const handleSavePricingRules = async (applyToPending: boolean) => {
-    await fetch('/api/v1/admin/finance', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'SAVE_PRICING_RULES',
-        defaultSinglePriceRub: defaultPriceInput,
-        bundle2DiscountPct: bundle2PctInput,
-        bundle3DiscountPct: bundle3PctInput,
-        applyToPending,
-      }),
-    });
-    onToast(
-      applyToPending
-        ? 'Правила цен и пакетные скидки применены ко всем активным матчам!'
-        : 'Правила цен и пакетных скидок сохранены!',
-    );
-    await onRefresh();
+    try {
+      const res = await fetch('/api/v1/admin/finance', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'SAVE_PRICING_RULES',
+          defaultSinglePriceRub: defaultPriceInput,
+          bundle2DiscountPct: bundle2PctInput,
+          bundle3DiscountPct: bundle3PctInput,
+          applyToPending,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        onToast(json.error || 'Не удалось сохранить правила цен', 'error');
+        return;
+      }
+      onToast(
+        applyToPending
+          ? 'Правила цен и пакетные скидки применены ко всем активным матчам!'
+          : 'Правила цен и пакетных скидок сохранены!',
+      );
+      await onRefresh();
+    } catch {
+      onToast('Не удалось проверить результат сохранения. Обновите данные перед повтором.', 'error');
+    }
   };
 
   const handleCreatePromo = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await fetch('/api/v1/admin/finance', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'CREATE_PROMO',
-        code: newPromoCode,
-        discountPercent: newPromoPct,
-        maxUses: newPromoMaxUses,
-      }),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      onToast(json.error || 'Не удалось создать промокод', 'error');
-      return;
+    try {
+      const res = await fetch('/api/v1/admin/finance', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'CREATE_PROMO',
+          code: newPromoCode,
+          discountPercent: newPromoPct,
+          maxUses: newPromoMaxUses,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        onToast(json.error || 'Не удалось создать промокод', 'error');
+        return;
+      }
+      setNewPromoCode('');
+      onToast('Промокод создан и активен в окне оплаты!');
+      await onRefresh();
+    } catch {
+      onToast('Не удалось проверить результат создания. Обновите данные перед повтором.', 'error');
     }
-    setNewPromoCode('');
-    onToast('Промокод создан и активен в окне оплаты!');
-    await onRefresh();
   };
 
   const confirmDeletePromo = async () => {
     if (!deletePromo) return;
     setDeleting(true);
     try {
-      await fetch('/api/v1/admin/finance', {
+      const res = await fetch('/api/v1/admin/finance', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'DELETE_PROMO', promoId: deletePromo.id }),
       });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        onToast(json.error || 'Не удалось удалить промокод', 'error');
+        return;
+      }
       onToast('Промокод удалён');
       setDeletePromo(null);
       await onRefresh();
+    } catch {
+      onToast('Не удалось проверить результат удаления. Обновите данные перед повтором.', 'error');
     } finally {
       setDeleting(false);
     }
@@ -973,7 +1001,7 @@ function PricingPromosTab({
       <SectionCard title="Ценообразование" subtitle="Правила цен ординаров и пакетные скидки">
         <div className="space-y-4 p-5">
           <p className="text-xs leading-relaxed text-slate-500">
-            Когда покупатель добавляет 2 или 3+ событий кнопкой «+ В пакет», скидка применяется автоматически.
+            При выборе 2 или 3+ прогнозов скидка применяется автоматически. В одном заказе — не более 100 прогнозов. Ожидающие оплаты заказы резервируют применение промокода до подтверждения или отмены.
           </p>
           <div className="grid gap-4 sm:grid-cols-3">
             <Field label="Базовая цена 1 события (₽)">
@@ -1101,6 +1129,7 @@ function SettingsTab({
   const [newAdminPassword, setNewAdminPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [tgBusy, setTgBusy] = useState<string | null>(null);
+  const [telegramDiagnostic, setTelegramDiagnostic] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
     setDraft(settings);
@@ -1137,16 +1166,43 @@ function SettingsTab({
     }
   };
 
+  const handleDiagnoseTelegram = async () => {
+    setTgBusy('diagnose');
+    setTelegramDiagnostic(null);
+    try {
+      const res = await fetch('/api/v1/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'DIAGNOSE_CHANNEL' }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string; error?: string };
+      setTelegramDiagnostic({
+        ok: res.ok && json.ok === true,
+        message: json.message || json.error || 'Не удалось проверить Telegram. Сообщения не отправлялись.',
+      });
+    } catch {
+      setTelegramDiagnostic({ ok: false, message: 'Нет ответа сервера. Диагностическая проверка не отправляет сообщений.' });
+    } finally {
+      setTgBusy(null);
+    }
+  };
+
   const handleTestTelegram = async () => {
     setTgBusy('test');
     try {
-      const res = await fetch('/api/v1/admin/settings', { method: 'POST' });
-      const json = await res.json();
-      if (res.ok) {
+      const res = await fetch('/api/v1/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'TEST_CHANNEL' }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { sent?: boolean; error?: string };
+      if (res.ok && json.sent === true) {
         onToast('Тестовый анонс успешно отправлен в ваш Telegram-канал!');
       } else {
-        onToast(json.error || 'Сначала сохраните Bot Token и ID канала', 'error');
+        onToast(json.error || 'Нет подтверждения отправки. Проверьте канал перед повтором.', 'error');
       }
+    } catch {
+      onToast('Нет ответа сервера. Итог отправки неизвестен: проверьте канал перед повтором.', 'error');
     } finally {
       setTgBusy(null);
     }
@@ -1188,6 +1244,9 @@ function SettingsTab({
             </select>
           </Field>
         </div>
+        <p className="mx-5 mb-5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">
+          Тестовый режим открывает материалы и изменяет внутренние балансы без реальных денег — используйте его только с отдельным тестовым хранилищем. Новые тестовые платежи не начисляют партнёрскую комиссию. Если тестирование раньше выполнялось в рабочей базе, до выплат вручную сверьте старые заказы, начисления и возвраты; автоматически данные не меняются.
+        </p>
       </SectionCard>
 
       <SectionCard title="ЮKassa" subtitle="Ключи платёжного шлюза">
@@ -1223,6 +1282,15 @@ function SettingsTab({
             </button>
             <button
               type="button"
+              onClick={handleDiagnoseTelegram}
+              disabled={tgBusy !== null}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-800 hover:bg-blue-100 disabled:opacity-50"
+            >
+              {tgBusy === 'diagnose' ? <Loader2 className="h-3 w-3 animate-spin" /> : <ShieldCheck className="h-3 w-3" />}
+              Проверить без публикации
+            </button>
+            <button
+              type="button"
               onClick={handleTestTelegram}
               disabled={tgBusy !== null}
               className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-[11px] font-bold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
@@ -1233,6 +1301,14 @@ function SettingsTab({
           </div>
         }
       >
+        <div className="px-5 pt-4 text-[11px] text-slate-600">
+          Проверка использует сохранённые настройки. Сначала сохраните изменения; проверка без публикации не определяет статус ранее отправленного поста. После обновления безопасности повторно установите Mini App и защищённый webhook; старые привязки Telegram необходимо переподключить в кабинетах.
+        </div>
+        {telegramDiagnostic && (
+          <div role={telegramDiagnostic.ok ? 'status' : 'alert'} className={`mx-5 mt-3 rounded-xl border p-3 text-xs ${telegramDiagnostic.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-300 bg-amber-50 text-amber-900'}`}>
+            {telegramDiagnostic.message}
+          </div>
+        )}
         <div className="grid gap-4 p-5 sm:grid-cols-2">
           <Field label="Bot Token (@BotFather)" hint={draft.telegramBotTokenConfigured ? 'Токен сохранён на сервере; введите новый только для замены.' : undefined}>
             <input
@@ -1255,16 +1331,30 @@ function SettingsTab({
         </div>
       </SectionCard>
 
-      <SectionCard title="Реквизиты и аналитика" subtitle="Данные продавца для оферты и счётчик Метрики">
+      <SectionCard title="Реквизиты и аналитика" subtitle="Данные исполнителя для документов и счётчик Метрики">
+        {(isPlaceholderLegalInn(draft.legalSellerName, draft.legalInn) || !draft.legalAddress?.trim() || !draft.supportEmail?.trim()) && (
+          <div role="alert" className="mx-5 mt-4 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">
+            Укажите реальные наименование, ИНН, адрес и контактную почту до начала продаж. Проверьте опубликованные документы, инфраструктуру и порядок работы с данными с юристом.
+          </div>
+        )}
         <div className="grid gap-4 p-5 sm:grid-cols-2">
           <Field label="Наименование продавца (ИП / Самозанятый / ООО)">
             <input value={draft.legalSellerName} onChange={(e) => set('legalSellerName', e.target.value)} placeholder="ИП Иванов И.И." className={inputCls} />
           </Field>
           <Field label="ИНН продавца">
-            <input value={draft.legalInn} onChange={(e) => set('legalInn', e.target.value)} placeholder="770000000000" className={inputMonoCls} />
+            <input value={draft.legalInn} onChange={(e) => set('legalInn', e.target.value)} placeholder="ИНН исполнителя" className={inputMonoCls} />
+          </Field>
+          <Field label="Адрес для обращений">
+            <input value={draft.legalAddress || ''} onChange={(e) => set('legalAddress', e.target.value)} placeholder="Почтовый / юридический адрес" className={inputCls} />
+          </Field>
+          <Field label="Контактная электронная почта">
+            <input type="email" value={draft.supportEmail} onChange={(e) => set('supportEmail', e.target.value)} placeholder="support@example.ru" className={inputCls} />
+          </Field>
+          <Field label="ОГРН / ОГРНИП (если применимо)">
+            <input value={draft.legalRegistrationNumber || ''} onChange={(e) => set('legalRegistrationNumber', e.target.value)} placeholder="Регистрационный номер" className={inputMonoCls} />
           </Field>
           <div className="sm:col-span-2">
-            <Field label="ID счётчика Яндекс.Метрики" hint="Для аналитики рекламы и автоцели «purchase_success». Оставьте пустым, если не используется.">
+            <Field label="ID счётчика Яндекс.Метрики" hint="Загружается только после согласия посетителя. Вебвизор отключён. Оставьте пустым, если не используется.">
               <input
                 value={draft.yandexMetrikaId || ''}
                 onChange={(e) => set('yandexMetrikaId', e.target.value.replace(/\D/g, ''))}

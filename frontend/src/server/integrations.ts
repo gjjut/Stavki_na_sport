@@ -1,5 +1,6 @@
 import type { PlatformSettings } from './types';
 import type { VerifiedYooKassaPayment } from './payment-policy';
+import { telegramWebhookSecret } from './security-policy';
 
 export interface YooKassaCreatePaymentArgs {
   settings: PlatformSettings;
@@ -17,22 +18,26 @@ export interface YooKassaCreatedPayment {
   status: string;
 }
 
-export async function createYooKassaLivePayment(
-  args: YooKassaCreatePaymentArgs,
-): Promise<YooKassaCreatedPayment> {
-  const shopId = (args.settings.yookassaShopId || process.env.YOOKASSA_SHOP_ID || '').trim();
-  const secretKey = (
-    args.settings.yookassaSecretKey ||
-    process.env.YOOKASSA_SECRET_KEY ||
-    ''
-  ).trim();
-
-  if (!shopId || !secretKey || secretKey.includes('replace_with')) {
+function yooKassaCredentials(settings: PlatformSettings): { shopId: string; secretKey: string } {
+  const shopId = (settings.yookassaShopId || process.env.YOOKASSA_SHOP_ID || '').trim();
+  const secretKey = (settings.yookassaSecretKey || process.env.YOOKASSA_SECRET_KEY || '').trim();
+  if (!shopId || !secretKey || shopId.includes('replace_with') || secretKey.includes('replace_with')) {
     throw new Error(
       'Боевые ключи ЮKassa еще не указаны. Заполните Shop ID и Секретный ключ в настройках админ-панели или включите Тестовый режим.',
     );
   }
+  return { shopId, secretKey };
+}
 
+/** Check deterministic configuration errors before reserving a live order. */
+export function assertYooKassaLiveConfigured(settings: PlatformSettings): void {
+  yooKassaCredentials(settings);
+}
+
+export async function createYooKassaLivePayment(
+  args: YooKassaCreatePaymentArgs,
+): Promise<YooKassaCreatedPayment> {
+  const { shopId, secretKey } = yooKassaCredentials(args.settings);
   const amountStr = args.amountRub.toFixed(2);
   const auth = Buffer.from(`${shopId}:${secretKey}`).toString('base64');
 
@@ -68,35 +73,48 @@ export async function createYooKassaLivePayment(
     },
   };
 
-  const res = await fetch('https://api.yookassa.ru/v3/payments', {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${auth}`,
-      'Idempotence-Key': args.idempotenceKey,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Ошибка ЮKassa (${res.status}): ${errText.slice(0, 220)}`);
+  let res: Response;
+  try {
+    res = await fetch('https://api.yookassa.ru/v3/payments', {
+      method: 'POST',
+      signal: AbortSignal.timeout(15_000),
+      headers: {
+        Authorization: `Basic ${auth}`,
+        'Idempotence-Key': args.idempotenceKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // A lost response does not establish whether the provider created a payment.
+    throw new Error('Нет подтверждения от ЮKassa. До повторной оплаты обратитесь в поддержку для проверки заказа.');
   }
 
-  const data = (await res.json()) as {
-    id: string;
-    status: string;
-    confirmation?: { confirmation_url?: string };
-  };
+  if (!res.ok) {
+    // Do not return raw provider response bodies to a customer.
+    throw new Error(`ЮKassa не подтвердила создание платежа (${res.status}). До повтора обратитесь в поддержку.`);
+  }
 
-  if (!data.confirmation?.confirmation_url) {
-    throw new Error('ЮKassa не вернула ссылку на страницу оплаты');
+  let data: { id?: unknown; status?: unknown; confirmation?: { confirmation_url?: unknown } };
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error('Получен неполный ответ ЮKassa. До повторной оплаты обратитесь в поддержку для проверки заказа.');
+  }
+  let confirmationUrl: URL;
+  try {
+    if (typeof data?.id !== 'string' || !data.id.trim() || data.id.length > 128 || typeof data.status !== 'string' ||
+        typeof data.confirmation?.confirmation_url !== 'string') throw new Error('invalid');
+    confirmationUrl = new URL(data.confirmation.confirmation_url);
+    if (confirmationUrl.protocol !== 'https:' || confirmationUrl.username || confirmationUrl.password) throw new Error('invalid');
+  } catch {
+    throw new Error('ЮKassa вернула некорректные данные платежа. До повтора обратитесь в поддержку.');
   }
 
   return {
-    externalPaymentId: data.id,
-    confirmationUrl: data.confirmation.confirmation_url,
-    status: data.status,
+    externalPaymentId: data.id as string,
+    confirmationUrl: confirmationUrl.href,
+    status: data.status as string,
   };
 }
 
@@ -104,6 +122,9 @@ export async function verifyYooKassaLivePayment(
   settings: PlatformSettings,
   externalPaymentId: string,
 ): Promise<VerifiedYooKassaPayment> {
+  if (typeof externalPaymentId !== 'string' || !externalPaymentId.trim() || externalPaymentId.length > 128) {
+    throw new Error('Не указан корректный идентификатор платежа ЮKassa.');
+  }
   const shopId = (settings.yookassaShopId || process.env.YOOKASSA_SHOP_ID || '').trim();
   const secretKey = (
     settings.yookassaSecretKey ||
@@ -120,6 +141,7 @@ export async function verifyYooKassaLivePayment(
     `https://api.yookassa.ru/v3/payments/${encodeURIComponent(externalPaymentId)}`,
     {
       method: 'GET',
+      signal: AbortSignal.timeout(15_000),
       headers: { Authorization: `Basic ${auth}` },
     },
   );
@@ -135,7 +157,7 @@ export async function verifyYooKassaLivePayment(
     amount?: { value?: unknown; currency?: unknown };
     metadata?: { orderId?: unknown; userId?: unknown };
   };
-  if (typeof data.id !== 'string' || typeof data.status !== 'string' ||
+  if (data.id !== externalPaymentId || typeof data.status !== 'string' ||
       typeof data.paid !== 'boolean' || typeof data.amount?.value !== 'string' ||
       typeof data.amount?.currency !== 'string' || !data.metadata || typeof data.metadata !== 'object') {
     throw new Error('ЮKassa вернула неполные данные платежа; требуется ручная проверка.');
@@ -195,57 +217,8 @@ export async function verifyYooKassaLiveRefund(
   };
 }
 
-export async function sendTelegramChannelAnnouncement(
-  settings: PlatformSettings,
-  htmlText: string,
-  button?: { text: string; url: string },
-): Promise<{ sent: boolean; error?: string }> {
-  const token = (settings.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '').trim();
-  const chatId = (
-    settings.telegramChannelId ||
-    process.env.TELEGRAM_VIP_CHANNEL_ID ||
-    ''
-  ).trim();
-
-  if (!token || !chatId || token.includes('replace_with')) {
-    return { sent: false, error: 'Токен бота или ID канала не указаны' };
-  }
-
-  const canAttachButton =
-    button?.url &&
-    /^https?:\/\//i.test(button.url) &&
-    !button.url.includes('localhost') &&
-    !button.url.includes('127.0.0.1');
-
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        parse_mode: 'HTML',
-        text: htmlText,
-        ...(canAttachButton
-          ? {
-              reply_markup: {
-                inline_keyboard: [[{ text: button!.text, url: button!.url }]],
-              },
-            }
-          : {}),
-      }),
-    });
-    const data = (await res.json()) as { ok: boolean; description?: string };
-    if (!data.ok) {
-      return { sent: false, error: data.description || 'Ошибка Telegram API' };
-    }
-    return { sent: true };
-  } catch (err) {
-    return {
-      sent: false,
-      error: err instanceof Error ? err.message : 'Сетевая ошибка Telegram',
-    };
-  }
-}
+export { diagnoseTelegramChannel, escapeTelegramHtml, sendTelegramChannelAnnouncement } from './telegram-channel';
+export type { TelegramChannelSendResult } from './telegram-channel';
 
 export async function sendTelegramDirectMessage(
   settings: PlatformSettings,
@@ -258,9 +231,9 @@ export async function sendTelegramDirectMessage(
     return { sent: false, error: 'Бот или Chat ID не подключены' };
   }
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       signal: controller.signal,
@@ -272,17 +245,17 @@ export async function sendTelegramDirectMessage(
         text: htmlText,
       }),
     });
-    clearTimeout(timer);
-    const data = (await res.json()) as { ok: boolean; description?: string };
-    if (!data.ok) {
-      return { sent: false, error: data.description || 'Ошибка отправки в Telegram' };
+    const data = (await res.json()) as { ok?: boolean };
+    if (!res.ok || !data.ok) {
+      return { sent: false, error: 'Telegram отклонил сообщение. Проверьте привязку и настройки бота.' };
     }
     return { sent: true };
-  } catch (err) {
-    return {
-      sent: false,
-      error: err instanceof Error ? err.message : 'Сетевая ошибка Telegram',
-    };
+  } catch {
+    // Raw fetch errors may contain the URL with the bot token. A timeout or
+    // broken connection also does not prove that Telegram failed to deliver.
+    return { sent: false, error: 'Нет подтверждения отправки. Проверьте Telegram перед повтором.' };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -332,7 +305,7 @@ export async function pollTelegramUpdatesForLinkCode(
       result?: Array<{
         message?: {
           text?: string;
-          chat?: { id?: number | string; username?: string };
+          chat?: { id?: number | string; username?: string; type?: string };
         };
       }>;
     };
@@ -342,10 +315,8 @@ export async function pollTelegramUpdatesForLinkCode(
       const msg = json.result[i]?.message;
       const text = (msg?.text || '').trim();
       if (
-        msg?.chat?.id &&
-        (text === `/start ${linkCode}` ||
-          text === linkCode ||
-          text.endsWith(` ${linkCode}`))
+        msg?.chat?.id && msg.chat.type === 'private' &&
+        (text === `/start ${linkCode}` || text === linkCode)
       ) {
         return {
           chatId: String(msg.chat.id),
@@ -375,14 +346,25 @@ export async function installTelegramMiniAppAndWebhook(
     };
   }
 
-  const base = (process.env.NEXT_PUBLIC_SITE_URL || originUrl).replace(/\/+$/, '');
-  if (!base.startsWith('https://')) {
-    return {
-      ok: false,
-      message: `Telegram Mini App и Webhook требуют HTTPS-домен (сейчас адрес ${base}). Привяжите домен командой: bash deploy/setup-domain-ssl.sh ваш-домен.ru ваш@email.ru — и кнопка установится за 1 секунду!`,
-    };
+  const webhookSecret = telegramWebhookSecret();
+  if (!webhookSecret) {
+    return { ok: false, message: 'Настройте SESSION_SECRET перед установкой защищённого Telegram webhook.' };
   }
 
+  const configuredUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  if (process.env.NODE_ENV === 'production' && !configuredUrl) {
+    return { ok: false, message: 'Для Telegram настройте канонический HTTPS-адрес в NEXT_PUBLIC_SITE_URL.' };
+  }
+  let base: string;
+  try {
+    const parsed = new URL(configuredUrl || originUrl);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw new Error('invalid');
+    base = parsed.origin;
+  } catch {
+    return { ok: false, message: 'Telegram Mini App и webhook требуют корректный HTTPS-адрес сайта в NEXT_PUBLIC_SITE_URL.' };
+  }
+
+  let webhookInstalled = false;
   try {
     const whRes = await fetch(
       `https://api.telegram.org/bot${token}/setWebhook`,
@@ -391,11 +373,16 @@ export async function installTelegramMiniAppAndWebhook(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: `${base}/api/v1/webhooks/telegram`,
+          secret_token: webhookSecret,
           allowed_updates: ['message'],
         }),
       },
     );
-    const whJson = (await whRes.json()) as { ok?: boolean; description?: string };
+    const whJson = (await whRes.json()) as { ok?: boolean };
+    if (!whRes.ok || !whJson.ok) {
+      return { ok: false, message: 'Telegram отклонил установку webhook. Проверьте токен бота и HTTPS-адрес сайта.' };
+    }
+    webhookInstalled = true;
 
     const menuRes = await fetch(
       `https://api.telegram.org/bot${token}/setChatMenuButton`,
@@ -418,24 +405,21 @@ export async function installTelegramMiniAppAndWebhook(
       description?: string;
     };
 
-    if (!whJson.ok || !menuJson.ok) {
-      return {
-        ok: false,
-        message:
-          menuJson.description ||
-          whJson.description ||
-          'Ошибка ответа Telegram API',
-      };
+    if (!menuRes.ok || !menuJson.ok) {
+      return { ok: false, message: 'Webhook установлен, но Telegram отклонил кнопку Mini App. Проверьте настройки бота и адрес сайта.' };
     }
 
     return {
       ok: true,
       message: `Готово! В вашего Telegram-бота установлена кнопка Mini App («🔥 Витрина прогнозов» → ${base}/tg-app) и активирован Webhook уведомлений!`,
     };
-  } catch (err) {
+  } catch {
+    // Never expose an exception containing the token-bearing Telegram URL.
     return {
       ok: false,
-      message: err instanceof Error ? err.message : 'Сетевая ошибка Telegram',
+      message: webhookInstalled
+        ? 'Webhook установлен, но нет подтверждения установки кнопки Mini App. Проверьте настройки бота.'
+        : 'Нет подтверждения установки webhook. Проверьте настройки бота перед повтором.',
     };
   }
 }

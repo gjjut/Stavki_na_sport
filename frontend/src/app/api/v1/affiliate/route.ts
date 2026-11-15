@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { mutateState } from '@/server/database';
+import { mutateState, StorageUnavailableError } from '@/server/database';
 import { requireAuthenticatedUser } from '@/server/guards';
 import { sendTelegramDirectMessage } from '@/server/integrations';
 
@@ -18,6 +18,9 @@ export async function POST(req: NextRequest) {
       | { action: 'CONVERT_TO_BALANCE' };
 
     if (body.action === 'CREATE_LINK') {
+      if (typeof body.code !== 'string' || (body.label !== undefined && typeof body.label !== 'string')) {
+        throw new Error('Укажите код и название партнёрской ссылки');
+      }
       const cleanCode = body.code.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
       if (cleanCode.length < 3) {
         throw new Error('Код ссылки должен содержать минимум 3 латинских символа или цифры');
@@ -32,7 +35,7 @@ export async function POST(req: NextRequest) {
           userId: user.id,
           userEmail: user.email,
           code: cleanCode,
-          label: body.label?.trim() || 'Партнерский канал',
+          label: body.label?.trim().slice(0, 80) || 'Партнерский канал',
           clicks: 0,
           registrations: 0,
           buyers: 0,
@@ -49,8 +52,9 @@ export async function POST(req: NextRequest) {
     if (body.action === 'CONVERT_TO_BALANCE') {
       const transferredRub = await mutateState((state) => {
         const u = state.users.find((row) => row.id === user.id);
-        if (!u || u.affiliateBalanceRub < 50) {
-          throw new Error('Для перевода на баланс нужно минимум 50 ₽ партнерских начислений');
+        if (!u || typeof u.affiliateBalanceRub !== 'number' || !Number.isFinite(u.affiliateBalanceRub) || u.affiliateBalanceRub < 50 ||
+            typeof u.balanceRub !== 'number' || !Number.isFinite(u.balanceRub)) {
+          throw new Error('Для перевода на баланс нужно минимум 50 ₽ партнёрских начислений и корректный баланс');
         }
         const amt = u.affiliateBalanceRub;
         u.affiliateBalanceRub = 0;
@@ -62,17 +66,22 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === 'REQUEST_PAYOUT') {
-      const amount = Math.round(body.amountRub || 0);
-      if (amount < 500) {
-        throw new Error('Минимальная сумма вывода на карту или СБП — 500 ₽');
+      // JSON may contain strings, null or huge numbers despite the TypeScript type.
+      // In particular NaN must never reach subtraction or the persisted JSON state.
+      if (typeof body.amountRub !== 'number' || !Number.isSafeInteger(body.amountRub) || body.amountRub < 500) {
+        throw new Error('Укажите сумму выплаты целым числом рублей, не менее 500 ₽');
       }
-      if (!body.requisites?.trim()) {
-        throw new Error('Укажите телефон для СБП (и банк) или номер карты МИР');
+      const amount = body.amountRub;
+      if (!['SBP', 'CARD', 'USDT_TRC20'].includes(body.method)) {
+        throw new Error('Укажите поддерживаемый способ выплаты');
+      }
+      if (typeof body.requisites !== 'string' || !body.requisites.trim() || body.requisites.trim().length > 160) {
+        throw new Error('Укажите реквизиты выплаты (не более 160 символов)');
       }
 
       const { payout, adminChats, settings } = await mutateState((state) => {
         const u = state.users.find((row) => row.id === user.id);
-        if (!u || u.affiliateBalanceRub < amount) {
+        if (!u || typeof u.affiliateBalanceRub !== 'number' || !Number.isFinite(u.affiliateBalanceRub) || u.affiliateBalanceRub < amount) {
           throw new Error('Недостаточно партнерских средств для вывода');
         }
         u.affiliateBalanceRub -= amount;
@@ -83,14 +92,14 @@ export async function POST(req: NextRequest) {
           userEmail: u.email,
           amountRub: amount,
           method: body.method,
-          requisites: body.requisites.trim().slice(0, 160),
+          requisites: body.requisites.trim(),
           status: 'PENDING' as const,
           createdAt: new Date().toISOString(),
           processedAt: null,
         };
         state.payouts.unshift(reqRow);
         const adminChats = state.users
-          .filter((a) => a.role === 'ADMIN' && a.telegramChatId)
+          .filter((a) => a.role === 'ADMIN' && a.telegramBindingVerified && a.telegramChatId)
           .map((a) => a.telegramChatId!);
         return { payout: reqRow, adminChats, settings: state.settings };
       });
@@ -99,7 +108,7 @@ export async function POST(req: NextRequest) {
         void sendTelegramDirectMessage(
           settings,
           chatId,
-          `🏦 <b>Новая заявка партнера на выплату: ${payout.amountRub.toLocaleString('ru-RU')} ₽</b>\n👤 Партнер: ${payout.userEmail}\n💳 Реквизиты (${payout.method}): <code>${payout.requisites}</code>`,
+          `🏦 <b>Новая заявка партнёра на выплату: ${payout.amountRub.toLocaleString('ru-RU')} ₽</b>\nНомер заявки: <code>${payout.id}</code>\nДанные и реквизиты доступны в защищённой админ-панели.`,
         ).catch(() => undefined);
       }
 
@@ -108,9 +117,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ error: 'Неизвестное действие' }, { status: 400 });
   } catch (err) {
+    const code = err instanceof Error ? err.message : '';
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Ошибка партнерского кабинета' },
-      { status: 400 },
+      { error: code === 'UNAUTHORIZED' ? 'Необходима авторизация' : code === 'BLOCKED' ? 'Доступ ограничен' : code || 'Ошибка партнёрского кабинета' },
+      { status: err instanceof StorageUnavailableError ? 503 : code === 'UNAUTHORIZED' ? 401 : code === 'BLOCKED' ? 403 : 400 },
     );
   }
 }

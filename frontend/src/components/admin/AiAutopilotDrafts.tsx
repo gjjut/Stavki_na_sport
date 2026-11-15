@@ -55,10 +55,10 @@ export const AiAutopilotDrafts: React.FC<AiAutopilotDraftsProps> = ({
                 <span className="text-slate-500">{d.leagueName}</span>
                 <div className="flex items-center gap-1.5">
                   <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-mono text-emerald-800">
-                    EV +{d.valueEdgePct.toFixed(1)}%
+                    Перевес {d.valueEdgePct >= 0 ? '+' : ''}{d.valueEdgePct.toFixed(1)} п.п.
                   </span>
                   <span className="rounded-full bg-blue-100 px-2 py-0.5 font-mono text-blue-800">
-                    Увер. {d.confidencePct}%
+                    Оценка вероятности {d.confidencePct}%
                   </span>
                 </div>
               </div>
@@ -92,7 +92,7 @@ export const AiAutopilotDrafts: React.FC<AiAutopilotDraftsProps> = ({
                 </div>
                 {d.researchSources && d.researchSources.length > 0 && (
                   <div className="mt-1 text-[10px] font-semibold text-emerald-700">
-                    Проверено: {d.researchSources.join(' · ')}
+                    Источники данных: {d.researchSources.join(' · ')}
                   </div>
                 )}
                 <div className="mt-1 text-slate-600">{d.analysisTeaser}</div>

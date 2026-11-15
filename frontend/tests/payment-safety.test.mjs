@@ -135,6 +135,34 @@ test('public webhooks cannot simulate payments or refunds in test mode', async (
   assert.equal(networkCalls, 0);
 });
 
+test('a known live payment remains provider-verifiable after switching to test mode', async () => {
+  const webhookFixture = await fixture('live-before-mode-switch-webhook', { paymentModeAtCreation: 'YOOKASSA_LIVE' });
+  await mutateState((state) => { state.settings.paymentMode = 'TEST_INSTANT'; });
+  mockPayment(webhookFixture.order);
+  const notification = await notify('payment.succeeded', webhookFixture.order.externalPaymentId);
+  assert.equal(notification.status, 200);
+  assert.equal((await readState()).transactions.find((item) => item.id === webhookFixture.order.id).status, 'SUCCEEDED');
+
+  const returnFixture = await fixture('live-before-mode-switch-return', { paymentModeAtCreation: 'YOOKASSA_LIVE' });
+  await mutateState((state) => { state.settings.paymentMode = 'TEST_INSTANT'; });
+  mockPayment(returnFixture.order);
+  returnViewer = returnFixture.user;
+  const response = await checkReturn(returnFixture.order.id);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).order.status, 'SUCCEEDED');
+  returnViewer = null;
+});
+
+test('explicit test orders cannot be verified as real after switching to live mode', async () => {
+  const { order } = await fixture('test-before-mode-switch', { paymentModeAtCreation: 'TEST_INSTANT' });
+  let calls = 0;
+  global.fetch = async () => { calls++; throw new Error('must not contact provider for simulated order'); };
+  const response = await notify('payment.succeeded', order.externalPaymentId);
+  assert.equal(response.status, 400);
+  assert.equal((await verifyAndSyncOrderFromReturn(order.id)).status, 'PENDING');
+  assert.equal(calls, 0);
+});
+
 test('forged or mismatched payment data cannot settle an order; valid repeats are idempotent', async () => {
   const { user, prediction, order } = await fixture('payment-check');
   for (const mismatch of [

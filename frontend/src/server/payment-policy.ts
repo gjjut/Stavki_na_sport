@@ -1,5 +1,23 @@
 import type { OrderTransaction } from './types';
 
+/** Do not create a second payable order for an item already awaiting payment. */
+export function assertNoOverlappingPendingOrder(
+  orders: readonly OrderTransaction[],
+  userId: string,
+  predictionIds: readonly string[],
+  kind?: OrderTransaction['kind'],
+): void {
+  const selected = new Set(predictionIds);
+  if (orders.some((order) => order.userId === userId && order.status === 'PENDING' &&
+      ((kind === 'BALANCE_TOPUP' && order.kind === 'BALANCE_TOPUP') ||
+       (order.predictionId !== null && selected.has(order.predictionId)) ||
+       order.predictionIds.some((id) => selected.has(id))))) {
+    throw new Error(kind === 'BALANCE_TOPUP'
+      ? 'У вас уже есть ожидающее пополнение. Проверьте его статус в кабинете до повторной оплаты.'
+      : 'Для выбранного прогноза уже есть ожидающий заказ. Проверьте его статус в кабинете до повторной оплаты.');
+  }
+}
+
 /** A payment fetched from YooKassa, not values supplied in a webhook body. */
 export interface VerifiedYooKassaPayment {
   id: string;

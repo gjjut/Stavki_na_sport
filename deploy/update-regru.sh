@@ -162,8 +162,8 @@ set_env_value POSTGRES_PASSWORD "${POSTGRES_PASSWORD}" "${ENV_FILE}"
 set_env_value DATABASE_URL "${DATABASE_URL}" "${ENV_FILE}"
 
 NEXT_PUBLIC_SITE_URL="$(get_env_value NEXT_PUBLIC_SITE_URL "${ENV_FILE}")"
-if [[ -z "${NEXT_PUBLIC_SITE_URL}" ]]; then
-  set_env_value NEXT_PUBLIC_SITE_URL "http://${SERVER_IP:-127.0.0.1}" "${ENV_FILE}"
+if [[ ! "${NEXT_PUBLIC_SITE_URL}" =~ ^https:// ]]; then
+  echo "ПРЕДУПРЕЖДЕНИЕ: канонический HTTPS-домен не настроен. Не вводите пароли и не начинайте продажи по HTTP." >&2
 fi
 sed -i 's/^TELEGRAM_BOT_TOKEN=.*replace_with.*/TELEGRAM_BOT_TOKEN=/' "${ENV_FILE}" || true
 sed -i 's/^YOOKASSA_SECRET_KEY=.*replace_with.*/YOOKASSA_SECRET_KEY=/' "${ENV_FILE}" || true
@@ -308,8 +308,12 @@ fi
 
 echo "=================================================================="
 echo " Обновление VALUEX.PRO завершено; режим: ${UPDATE_MODE}."
-echo " Витрина сайта: http://${SERVER_IP:-127.0.0.1}"
-echo " Вход в админку: http://${SERVER_IP:-127.0.0.1}/login"
+if [[ "${NEXT_PUBLIC_SITE_URL}" =~ ^https:// ]]; then
+  echo " Витрина сайта: ${NEXT_PUBLIC_SITE_URL%/}"
+  echo " Вход в админку: ${NEXT_PUBLIC_SITE_URL%/}/login"
+else
+  echo " HTTPS-домен ещё не настроен. Не вводите пароли и персональные данные по HTTP."
+fi
 if [[ "${ADMIN_PASSWORD_CHANGED}" == true ]]; then
   echo "Логин: ${ADMIN_EMAIL}; новый случайный пароль (сохраните сейчас): ${ADMIN_PASSWORD}"
 fi

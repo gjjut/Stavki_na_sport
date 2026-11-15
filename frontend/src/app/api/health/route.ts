@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { isSessionSigningAvailable } from '@/server/auth';
 import { isStorageDegraded } from '@/server/health-policy';
+import { isActiveStorefrontPrediction, isLegacyStarterDemoPrediction } from '@/server/prediction-data-policy';
 import {
   getDatabaseBackendStatus,
   hasVerifiedSettledResult,
@@ -46,11 +47,10 @@ export async function GET() {
       (!sessionAuthConfigured || !adminAccountConfigured || !cronAuthConfigured);
     const degraded = storageDegraded || productionSecurityDegraded;
 
-    const activePredictions = state.predictions.filter(
-      (p) => p.resultStatus === 'PENDING',
-    ).length;
-    const settledPredictions = state.predictions.filter(hasVerifiedSettledResult).length;
-    const unverifiedSettlements = state.predictions.filter(
+    const realPredictions = state.predictions.filter((prediction) => !isLegacyStarterDemoPrediction(prediction));
+    const activePredictions = realPredictions.filter((prediction) => isActiveStorefrontPrediction(prediction)).length;
+    const settledPredictions = realPredictions.filter(hasVerifiedSettledResult).length;
+    const unverifiedSettlements = realPredictions.filter(
       (p) => p.resultStatus !== 'PENDING' && !hasVerifiedSettledResult(p),
     ).length;
     const mskDate = new Date(Date.now() + 3 * 3600_000);

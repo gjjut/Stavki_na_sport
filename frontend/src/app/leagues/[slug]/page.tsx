@@ -2,24 +2,28 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { LeagueLandingClient } from '@/components/predictions/LeagueLandingClient';
 import { getSeoLeagueBySlug, SEO_LEAGUE_PAGES } from '@/lib/seo-leagues';
+import { configuredSiteOrigin } from '@/lib/site-origin';
 
 export function generateStaticParams() {
   return SEO_LEAGUE_PAGES.map((item) => ({ slug: item.slug }));
 }
 
-export function generateMetadata({
+export async function generateMetadata({
   params,
 }: {
-  params: { slug: string };
-}): Metadata {
-  const cfg = getSeoLeagueBySlug(params.slug);
+  params: Promise<{ slug: string }>;
+}): Promise<Metadata> {
+  const { slug } = await params;
+  const cfg = getSeoLeagueBySlug(slug);
   if (!cfg) {
     return { title: 'Раздел не найден' };
   }
 
+  const siteOrigin = configuredSiteOrigin();
   return {
     title: cfg.metaTitle,
     description: cfg.metaDescription,
+    ...(siteOrigin ? { alternates: { canonical: `${siteOrigin}/leagues/${encodeURIComponent(cfg.slug)}` } } : {}),
     openGraph: {
       title: cfg.metaTitle,
       description: cfg.metaDescription,
@@ -29,12 +33,13 @@ export function generateMetadata({
   };
 }
 
-export default function LeagueLandingPage({
+export default async function LeagueLandingPage({
   params,
 }: {
-  params: { slug: string };
+  params: Promise<{ slug: string }>;
 }) {
-  const cfg = getSeoLeagueBySlug(params.slug);
+  const { slug } = await params;
+  const cfg = getSeoLeagueBySlug(slug);
   if (!cfg) {
     notFound();
   }

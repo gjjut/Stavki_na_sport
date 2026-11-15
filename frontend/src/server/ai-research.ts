@@ -1,4 +1,23 @@
-import type { SportType } from './types';
+import type { AiAutopilotConfig, SportType } from './types';
+import { normalizeLlmBaseUrl } from './llm-config-policy';
+
+interface PlusVibeSearchConnection {
+  apiKey: string;
+  baseUrl: string;
+}
+
+/** Only the actively selected PlusVibe connection may supply a paid search key. */
+export function plusVibeSearchConnection(
+  config: Pick<AiAutopilotConfig, 'llmProvider' | 'llmApiKey' | 'llmBaseUrl'>,
+): PlusVibeSearchConnection | undefined {
+  const apiKey = (config.llmApiKey || '').trim();
+  if (config.llmProvider !== 'PLUSVIBE' || !apiKey.startsWith('sk-pv-')) return undefined;
+  try {
+    return { apiKey, baseUrl: normalizeLlmBaseUrl(config.llmBaseUrl, config.llmProvider) };
+  } catch {
+    return undefined;
+  }
+}
 
 export interface OpenSourceMatchIntel {
   homeTeam: string;
@@ -80,81 +99,56 @@ export function computeFairMarketProbabilities(params: {
   };
 }
 
-/**
- * 0. Коммерческий веб-поиск РФ через PlusVibeAPI (POST /api/search · Turbo 0.13 ₽ · регион ru)
- * Автоматически включается, если у владельца задан платный ключ sk-pv-...
- */
+/** Commercial search may be billed separately. Never retry it on another host. */
 async function fetchPlusVibeRussianSearch(
   query: string,
-  plusVibeApiKey?: string,
+  connection?: PlusVibeSearchConnection,
   maxItems = 5,
 ): Promise<{ headlines: string[]; snippets: string[]; sourceTag: string | null }> {
-  const key = (plusVibeApiKey || process.env.PLUSVIBE_API_KEY || '').trim();
-  if (!key.startsWith('sk-pv-')) {
-    return { headlines: [], snippets: [], sourceTag: null };
-  }
+  const empty = { headlines: [] as string[], snippets: [] as string[], sourceTag: null };
+  if (!connection?.apiKey.startsWith('sk-pv-')) return empty;
+  try {
+    const base = new URL(normalizeLlmBaseUrl(connection.baseUrl, 'PLUSVIBE'));
+    const configuredSearchUrl = (process.env.PLUSVIBE_SEARCH_URL || '').trim();
+    const endpoint = configuredSearchUrl ? new URL(configuredSearchUrl) : new URL('/api/search', base);
+    // A search override must not silently forward a stored key to another origin.
+    if (endpoint.origin !== base.origin || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) return empty;
+    const res = await fetch(endpoint.toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${connection.apiKey}`,
+        'User-Agent': BROWSER_UA,
+      },
+      body: JSON.stringify({ query: query.slice(0, 500), num: maxItems, region: 'ru' }),
+      signal: AbortSignal.timeout(5000),
+      redirect: 'error',
+      cache: 'no-store',
+    });
+    if (!res.ok) return empty;
+    const json = (await res.json()) as {
+      ok?: boolean;
+      results?: Array<{ title?: string; url?: string; snippet?: string }>;
+    };
+    if (json.ok === false || !Array.isArray(json.results)) return empty;
 
-  const endpoints = [
-    process.env.PLUSVIBE_SEARCH_URL || 'https://plusvibeapi.ru/api/search',
-    'https://gw.plusvibeapi.ru/api/search',
-  ];
-
-  for (const endpoint of endpoints) {
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          Authorization: `Bearer ${key}`,
-          'User-Agent': BROWSER_UA,
-        },
-        body: JSON.stringify({
-          query: query.slice(0, 500),
-          num: maxItems,
-          region: 'ru',
-        }),
-        signal: AbortSignal.timeout(5000),
-        cache: 'no-store',
-      });
-
-      if (!res.ok) continue;
-      const json = (await res.json()) as {
-        ok?: boolean;
-        results?: Array<{ title?: string; url?: string; snippet?: string }>;
-      };
-      if (json.ok === false || !Array.isArray(json.results)) continue;
-
-      const headlines: string[] = [];
-      const snippets: string[] = [];
-
-      for (const item of json.results.slice(0, maxItems)) {
-        const title = decodeXmlEntities(item.title || '');
-        const snippet = decodeXmlEntities(item.snippet || '');
-        if (title.length > 12 && !headlines.includes(title)) {
-          headlines.push(title);
-        }
-        if (snippet.length > 25) {
-          const combined = title ? `${title}: ${snippet}` : snippet;
-          if (!snippets.includes(combined)) {
-            snippets.push(combined.slice(0, 240));
-          }
-        }
+    const headlines: string[] = [];
+    const snippets: string[] = [];
+    for (const item of json.results.slice(0, maxItems)) {
+      const title = decodeXmlEntities(item.title || '');
+      const snippet = decodeXmlEntities(item.snippet || '');
+      if (title.length > 12 && !headlines.includes(title)) headlines.push(title);
+      if (snippet.length > 25) {
+        const combined = title ? `${title}: ${snippet}` : snippet;
+        if (!snippets.includes(combined)) snippets.push(combined.slice(0, 240));
       }
-
-      if (headlines.length > 0 || snippets.length > 0) {
-        return {
-          headlines,
-          snippets,
-          sourceTag: 'PlusVibe RU Web Search',
-        };
-      }
-    } catch {
-      // пробуем резервный шлюз gw.plusvibeapi.ru или бесплатные RSS
     }
+    return { headlines, snippets, sourceTag: headlines.length || snippets.length ? 'PlusVibe RU Web Search' : null };
+  } catch {
+    // Free sources are queried independently; a paid request is not repeated.
+    return empty;
   }
-
-  return { headlines: [], snippets: [], sourceTag: null };
 }
 
 /**
@@ -405,7 +399,7 @@ export async function gatherMatchOpenSourceIntel(params: {
   drawOdds: number | null;
   awayOdds: number;
   existingNotes?: string;
-  plusVibeApiKey?: string;
+  plusVibeSearch?: PlusVibeSearchConnection;
 }): Promise<OpenSourceMatchIntel> {
   const fair = computeFairMarketProbabilities({
     homeOdds: params.homeOdds,
@@ -417,7 +411,7 @@ export async function gatherMatchOpenSourceIntel(params: {
   const previewQuery = `${params.homeTeam} ${params.awayTeam} прогноз состав форма травмы`;
 
   const [pvSearch, gNews, bNews, webPrev, espnData] = await Promise.all([
-    fetchPlusVibeRussianSearch(previewQuery, params.plusVibeApiKey, 5),
+    fetchPlusVibeRussianSearch(previewQuery, params.plusVibeSearch, 5),
     fetchRussianSportsNewsRss(matchQuery, 4),
     fetchBingSportsNewsRss(`${matchQuery} спорт`, 3),
     fetchOpenWebPreviewSnippets(previewQuery, 3),
@@ -538,7 +532,7 @@ export async function gatherMatchOpenSourceIntel(params: {
  */
 export async function searchOpenSourcesForAdmin(
   query: string,
-  plusVibeApiKey?: string,
+  plusVibeSearch?: PlusVibeSearchConnection,
 ): Promise<{
   query: string;
   headlines: string[];
@@ -546,7 +540,7 @@ export async function searchOpenSourcesForAdmin(
   sources: string[];
 }> {
   const [pvSearch, gNews, bNews, webPrev] = await Promise.all([
-    fetchPlusVibeRussianSearch(query, plusVibeApiKey, 6),
+    fetchPlusVibeRussianSearch(query, plusVibeSearch, 6),
     fetchRussianSportsNewsRss(query, 6),
     fetchBingSportsNewsRss(query, 4),
     fetchOpenWebPreviewSnippets(query, 5),
