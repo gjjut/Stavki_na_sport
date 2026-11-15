@@ -92,6 +92,8 @@ git pull --ff-only origin arena/e775bce3-stavki-na-sport &&
 
 ## Установка с нуля на чистый VPS Reg.ru Cloud (Ubuntu 22.04 / 24.04 / 26.04 LTS)
 
+**Только для пустого сервера.** Установщик настраивает пакеты, PostgreSQL, Nginx, PM2 и системные задания; он создаёт новую базу, но не переносит пользователей, заказы или настройки со старого сервера. Если это переезд действующего сайта, заранее подготовьте и проверьте восстановление его базы и конфигурации. Не переключайте DNS и платежи до согласованной миграции.
+
 ```bash
 apt update && apt install -y git
 git clone --branch arena/e775bce3-stavki-na-sport --single-branch https://github.com/gjjut/Stavki_na_sport.git /opt/Stavki_na_sport

@@ -198,8 +198,11 @@ else
   fi
   sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='tipster_db'" | grep -q 1 || \
     sudo -u postgres psql -c "CREATE DATABASE tipster_db OWNER tipster_user;"
-  sudo -u postgres psql -d tipster_db -c "GRANT ALL ON SCHEMA public TO tipster_user;" >/dev/null 2>&1 || true
-  sudo -u postgres psql -d tipster_db -f "${PROJECT_DIR}/database/schema.sql" >/dev/null 2>&1 || true
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -d tipster_db -c "GRANT ALL ON SCHEMA public TO tipster_user;"
+  # Create application tables as the application role, not as postgres. Schema
+  # privileges alone do not grant SELECT/INSERT/UPDATE on postgres-owned tables.
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -d tipster_db \
+    -c "SET ROLE tipster_user;" -f "${PROJECT_DIR}/database/schema.sql"
 
   echo "[5/6] Сборка фронтенда и серверного API Next.js..."
   cd "${PROJECT_DIR}/frontend"
@@ -287,8 +290,9 @@ else
   echo " HTTPS-домен ещё не настроен. Не вводите пароли и персональные данные по HTTP."
 fi
 echo ""
-echo " Чтобы привязать ваш домен и включить бесплатный HTTPS (для ЮKassa):"
-echo "   bash deploy/setup-domain-ssl.sh ваш-домен.ru ваш@email.ru"
+echo " Для подключения predictlab.ru и настройки HTTPS следуйте инструкции:"
+echo "   ${PROJECT_DIR}/deploy/PREDICTLAB-DOMAIN-SSL.md"
+echo " Домен и сертификат не настраиваются автоматически при установке."
 if [[ "${ADMIN_PASSWORD_CHANGED}" == true ]]; then
   echo "Первичный вход: ${ADMIN_EMAIL}; случайный пароль (сохраните сейчас): ${ADMIN_PASSWORD}"
 fi
