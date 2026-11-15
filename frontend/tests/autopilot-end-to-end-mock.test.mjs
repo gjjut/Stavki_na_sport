@@ -70,12 +70,19 @@ async function reset(provider = 'PLUSVIBE') {
           }
         });
       }
-      if (modelFailure) return response({ error: 'offline' }, 503);
+      if (modelFailure === 'invalid-json') return response({ model: 'mock-returned-model', choices: [{ message: { content: 'not a valid role response' } }] });
+      if (modelFailure === 'invalid-envelope') return response({ error: 'private model response text' });
+      if (modelFailure === 'empty') return response({ choices: [{ message: { content: '' } }] });
+      if (modelFailure === 'truncated') return response({ model: 'mock-returned-model', choices: [{ finish_reason: 'length', message: { content: '' } }] });
+      if (modelFailure === 'timeout') { const error = new Error('timeout'); error.name = 'TimeoutError'; throw error; }
+      if (modelFailure && modelFailure !== 'veto' && modelFailure !== 'leader-sensitive') {
+        return response({ error: 'offline sk-pv-mock-secret-fixture' }, 503);
+      }
       const body = JSON.parse(options.body);
       const rows = JSON.parse(body.messages[1].content);
       const content = body.messages[0].content.includes('финального аналитика')
-        ? { selectedIds: rows.map((row) => row.id), summary: 'Макетный ответ финальной роли' }
-        : { opinions: rows.map((row) => ({ id: row.id, verdict: 'PASS', probabilityPct: 80, confidencePct: 85, riskScore: 10, reason: 'Макетный ответ роли' })) };
+        ? { selectedIds: rows.map((row) => row.id), summary: modelFailure === 'leader-sensitive' ? 'untrusted leader text sk-pv-mock-secret-fixture' : 'Макетный ответ финальной роли' }
+        : { opinions: rows.map((row) => ({ id: row.id, verdict: modelFailure === 'veto' ? 'VETO' : 'PASS', probabilityPct: 80, confidencePct: 85, riskScore: 10, reason: modelFailure === 'veto' ? 'untrusted veto text' : 'Макетный ответ роли' })) };
       return response({ model: 'mock-returned-model', choices: [{ message: { content: JSON.stringify(content) } }] });
     }
     throw new Error(`Unexpected external request in isolated test: ${url}`);
@@ -146,8 +153,13 @@ test('failed model or selected local mode never invents forecasts or calls a sav
   modelFailure = true;
   const failed = await autopilot.runAiScanAndGenerateCycle({ forcePublish: true });
   assert.equal(failed.createdCount, 0);
-  assert.equal((await db.readState()).predictions.length, 0);
+  const failedState = await db.readState();
+  assert.equal(failedState.predictions.length, 0);
   assert.ok(modelCalls >= 3);
+  const agentLog = failedState.aiLogs.find((item) => item.stage === 'AGENTS');
+  assert.match(agentLog.message, /HTTP 503/);
+  assert.match(agentLog.message, /финального аналитика не вызывалась/);
+  assert.doesNotMatch(agentLog.message, /mock-secret-fixture|offline/);
   await reset('BUILTIN_QUANT');
   const local = await autopilot.runAiScanAndGenerateCycle({ forcePublish: true });
   assert.equal(local.createdCount, 0);
@@ -241,4 +253,50 @@ test('manual admin API cannot manufacture an AI provenance label or report', asy
   const prediction = (await res.json()).prediction;
   assert.equal(prediction.authorSource, 'HUMAN');
   assert.equal(prediction.agentReport, null);
+});
+
+test('role logs differentiate unusable model JSON, token truncation and timeout without publishing', async () => {
+  for (const [failure, description] of [
+    ['invalid-json', /ожидаемый JSON/],
+    ['invalid-envelope', /некорректный формат ответа/],
+    ['empty', /видимый текст модели пуст/],
+    ['truncated', /лимиту токенов/],
+    ['timeout', /истёк срок ожидания/],
+  ]) {
+    await reset();
+    modelFailure = failure;
+    const result = await autopilot.runAiScanAndGenerateCycle({ forcePublish: false });
+    assert.equal(result.createdCount, 0);
+    assert.equal(modelCalls, 3);
+    const state = await db.readState();
+    const log = state.aiLogs.find((entry) => entry.stage === 'AGENTS');
+    assert.match(log.message, description);
+    assert.match(log.message, /0\/3/);
+    assert.match(log.message, /не вызывалась/);
+    assert.doesNotMatch(log.message, /sk-pv-mock-secret-fixture|not a valid role response/);
+    assert.equal(state.aiDrafts.length, 0);
+    assert.equal(state.predictions.length, 0);
+  }
+});
+
+test('agent logs contain veto and leader status without free-form model text', async () => {
+  await reset();
+  modelFailure = 'veto';
+  const veto = await autopilot.runAiScanAndGenerateCycle({ forcePublish: false });
+  assert.equal(veto.createdCount, 0);
+  let state = await db.readState();
+  let log = state.aiLogs.find((entry) => entry.stage === 'AGENTS');
+  assert.match(log.message, /Вето FORM, NEWS, MATCHUP/);
+  assert.match(log.message, /не вызывалась/);
+  assert.doesNotMatch(log.message, /untrusted veto text/);
+
+  await reset();
+  modelFailure = 'leader-sensitive';
+  const selected = await autopilot.runAiScanAndGenerateCycle({ forcePublish: false });
+  assert.equal(selected.createdCount, 1);
+  state = await db.readState();
+  log = state.aiLogs.find((entry) => entry.stage === 'AGENTS');
+  assert.match(log.message, /финального аналитика выполнила отбор/);
+  assert.doesNotMatch(log.message, /untrusted leader text|sk-pv-mock-secret-fixture/);
+  assert.doesNotMatch(state.aiDrafts[0].agentReport, /sk-pv-mock-secret-fixture/);
 });

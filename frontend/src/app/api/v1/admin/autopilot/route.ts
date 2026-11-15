@@ -8,6 +8,7 @@ import {
   runAutopilotDiagnostics,
   runAutoSettlementCycle,
   testLlmConnectionAndModels,
+  testAutopilotAgentResponseFormat,
 } from '@/server/ai-autopilot';
 import {
   mutateState,
@@ -18,6 +19,7 @@ import {
 import { requireAdminAccount } from '@/server/guards';
 import { assertLlmKeyMatchesProvider, assertLlmKeyScope, normalizeLlmBaseUrl, validateLlmProvider } from '@/server/llm-config-policy';
 import { applyAutopilotConfigPatch } from '@/server/autopilot-config-policy';
+import { checkRateLimit } from '@/server/rate-limit';
 
 function operationError(err: unknown, fallback: string) {
   if (err instanceof StorageUnavailableError) return NextResponse.json({ error: err.message }, { status: 503 });
@@ -69,8 +71,9 @@ export async function PATCH(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    await requireAdminAccount();
+    const admin = await requireAdminAccount();
     const body = (await req.json()) as
+      | { action: 'TEST_AGENT_FORMAT' }
       | { action: 'RUN_SCAN_NOW'; forcePublish?: boolean }
       | { action: 'REPLACE_DEMO_WITH_REAL' }
       | { action: 'BROADCAST_DAILY_DIGEST' }
@@ -87,6 +90,35 @@ export async function POST(req: NextRequest) {
       | { action: 'APPROVE_ALL_DRAFTS' }
       | { action: 'DELETE_DRAFT'; draftId: string }
       | { action: 'CLEAR_LOGS' };
+
+    if (body.action === 'TEST_AGENT_FORMAT') {
+      // This is a paid operation. This per-process guard limits accidental rapid
+      // clicks; deployments with multiple instances need a shared rate limiter.
+      const limit = checkRateLimit({ key: `agent-format:${admin.id}`, limit: 4, windowMs: 60_000 });
+      if (!limit.allowed) {
+        return NextResponse.json(
+          { error: `Слишком много проверок. Подождите ${limit.retryAfterSec} сек. и проверьте списания у провайдера перед повтором.` },
+          { status: 429, headers: { 'Retry-After': String(limit.retryAfterSec) } },
+        );
+      }
+      const state = await readState();
+      const testedConfig = state.aiAutopilot;
+      // Do not hold a state write lock while waiting for a paid network call.
+      const result = await testAutopilotAgentResponseFormat(testedConfig);
+      const currentConfig = (await readState()).aiAutopilot;
+      const connectionChanged = testedConfig.llmProvider !== currentConfig.llmProvider ||
+        testedConfig.llmBaseUrl !== currentConfig.llmBaseUrl ||
+        testedConfig.llmModel !== currentConfig.llmModel ||
+        testedConfig.llmApiKey !== currentConfig.llmApiKey;
+      if (connectionChanged) {
+        return NextResponse.json({
+          ...result,
+          ok: false,
+          message: `Сохранённое подключение изменилось во время проверки; результат относится к прежним настройкам, а не к текущим. Новый запрос может оплачиваться. ${result.message}`,
+        });
+      }
+      return NextResponse.json(result);
+    }
 
     if (body.action === 'TEST_LLM') {
       if (typeof body.llmProvider !== 'string' || typeof body.llmBaseUrl !== 'string' ||

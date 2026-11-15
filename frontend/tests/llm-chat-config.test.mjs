@@ -336,3 +336,101 @@ test('environment defaults pair each key with its own provider, URL and model', 
   });
   assert.equal(initialLlmConfigFromEnv({}).llmProvider, 'BUILTIN_QUANT');
 });
+
+test('transport distinguishes invalid API envelopes, empty answers, truncation and timeouts', async () => {
+  const params = { baseUrl: 'https://example.test/v1', apiKey: oldKey, model: 'm', allowRetry: false, messages: [{ role: 'user', content: 'hello' }] };
+  global.fetch = async () => new Response('<html>not json</html>', { status: 200 });
+  let result = await autopilot.postLlmChatCompletion(params);
+  assert.equal(result.status, 200);
+  assert.equal(result.failureReason, 'invalid_api_response');
+  assert.doesNotMatch(JSON.stringify(result), /<html>/);
+
+  global.fetch = async () => response({ model: 'actual-model', choices: [{ finish_reason: 'length', message: { content: '', reasoning_content: 'SECRET THOUGHT' } }] });
+  result = await autopilot.postLlmChatCompletion(params);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 200);
+  assert.equal(result.finishReason, 'length');
+  assert.equal(result.returnedModel, 'actual-model');
+  assert.equal(result.failureReason, 'truncated');
+  assert.doesNotMatch(JSON.stringify(result), /SECRET THOUGHT/);
+
+  global.fetch = async () => response({ choices: [{ message: { content: '' } }] });
+  result = await autopilot.postLlmChatCompletion(params);
+  assert.equal(result.failureReason, 'empty_response');
+
+  global.fetch = async () => { const error = new Error(`timeout ${oldKey}`); error.name = 'TimeoutError'; throw error; };
+  result = await autopilot.postLlmChatCompletion(params);
+  assert.equal(result.status, 0);
+  assert.equal(result.failureReason, 'timeout');
+  assert.doesNotMatch(JSON.stringify(result), /old-secret-fixture/);
+});
+
+test('model check uses fixed safe HTTP diagnostics instead of showing an untrusted provider error body', async () => {
+  global.fetch = async (url) => {
+    if (url.endsWith('/models')) return response({ data: [] });
+    if (url.endsWith('/balance')) return response({});
+    return response({ error: `secret echoed ${oldKey}; private data from provider` }, 401);
+  };
+  const result = await autopilot.testLlmConnectionAndModels({
+    llmProvider: 'PLUSVIBE', llmBaseUrl: 'https://plusvibeapi.ru/v1', llmApiKey: oldKey, llmModel: 'test-model',
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.message, /HTTP 401/);
+  assert.doesNotMatch(JSON.stringify(result), /secret echoed|old-secret-fixture|private data from provider/);
+});
+
+test('HTTP error redaction happens before length limiting and probe redirects can be disabled', async () => {
+  const params = { baseUrl: 'https://example.test/v1', apiKey: oldKey, model: 'm', allowRetry: false, messages: [{ role: 'user', content: 'hello' }] };
+  global.fetch = async () => new Response(`${'a'.repeat(990)}${oldKey}`, { status: 401 });
+  const failed = await autopilot.postLlmChatCompletion(params);
+  assert.doesNotMatch(failed.rawError, /sk-pv/);
+  assert.match(failed.rawError, /\[ключ/);
+
+  let calls = 0;
+  global.fetch = async () => { calls++; return new Response(null, { status: 307, headers: { location: '/v2/chat/completions' } }); };
+  const redirect = await autopilot.postLlmChatCompletion({ ...params, maxRedirects: 0 });
+  assert.equal(calls, 1);
+  assert.equal(redirect.ok, false);
+  assert.equal(redirect.status, 307);
+});
+
+test('malformed Chat Completions envelopes are distinct from a network failure while reading the body', async () => {
+  const params = { baseUrl: 'https://example.test/v1', apiKey: oldKey, model: 'm', allowRetry: false, messages: [{ role: 'user', content: 'hello' }] };
+  for (const body of [{ error: 'private text' }, { choices: [] }, { choices: [null] }, { choices: [{ message: null }] }]) {
+    global.fetch = async () => response(body);
+    const result = await autopilot.postLlmChatCompletion(params);
+    assert.equal(result.failureReason, 'invalid_api_response');
+    assert.doesNotMatch(JSON.stringify(result), /private text/);
+  }
+  global.fetch = async () => ({ ok: true, status: 200, json: async () => { throw new TypeError(`socket closed ${oldKey}`); } });
+  const failedRead = await autopilot.postLlmChatCompletion(params);
+  assert.equal(failedRead.failureReason, 'network');
+  assert.doesNotMatch(JSON.stringify(failedRead), /socket closed|old-secret-fixture/);
+});
+
+test('untrusted returned model IDs cannot echo an API key or its clipped fragment', async () => {
+  const params = { baseUrl: 'https://example.test/v1', apiKey: oldKey, model: 'm', allowRetry: false, messages: [{ role: 'user', content: 'hello' }] };
+  for (const id of [`${'x'.repeat(198)}${oldKey}`, `model-${oldKey.slice(0, 15)}`, 'untrusted model text']) {
+    global.fetch = async () => response({ model: id, choices: [{ message: { content: 'ready' } }] });
+    const result = await autopilot.postLlmChatCompletion(params);
+    assert.equal(result.ok, true);
+    assert.equal(result.returnedModel, undefined);
+    assert.doesNotMatch(JSON.stringify(result), /old-secret-fixture|sk-pv-old/);
+  }
+});
+
+test('the short model check does not follow a redirected paid request', async () => {
+  let completionCalls = 0;
+  global.fetch = async (url) => {
+    if (url.endsWith('/models')) return response({ data: [] });
+    if (url.endsWith('/balance')) return response({});
+    completionCalls++;
+    return new Response(null, { status: 307, headers: { location: '/v2/chat/completions' } });
+  };
+  const result = await autopilot.testLlmConnectionAndModels({
+    llmProvider: 'PLUSVIBE', llmBaseUrl: 'https://plusvibeapi.ru/v1', llmApiKey: oldKey, llmModel: 'test-model',
+  });
+  assert.equal(completionCalls, 1);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /HTTP 307.*адрес API/);
+});

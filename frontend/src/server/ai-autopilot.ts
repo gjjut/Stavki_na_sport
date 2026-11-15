@@ -16,7 +16,14 @@ import type { TelegramChannelSendResult } from './integrations';
 import type { PersistentState } from './database';
 import { assertLlmKeyMatchesProvider, normalizeLlmBaseUrl } from './llm-config-policy';
 import { hasSameVerifiedBookmakerQuote } from './bookmaker-line';
-import { runAgentCommittee, buildAgentAnalysis, type AgentCandidateInput } from './ai-agents';
+import {
+  runAgentCommittee,
+  buildAgentAnalysis,
+  describeAgentRoleDiagnostic,
+  probeAgentResponseFormat,
+  type AgentCandidateInput,
+  type AgentTransportFailure,
+} from './ai-agents';
 import { normalizeFonbetTeamImageUrl } from './fonbet-team-logos';
 import { evaluateMarketByScore } from './market-settlement';
 import { isActiveStorefrontPrediction, isLegacyStarterDemoPrediction, removeUnownedLegacyDemoPredictions } from './prediction-data-policy';
@@ -1236,17 +1243,20 @@ export async function postLlmChatCompletion(params: {
   maxTokens?: number;
   timeoutMs?: number;
   allowRetry?: boolean;
+  maxRedirects?: number;
 }): Promise<{
   ok: boolean;
   status: number;
   content: string;
   returnedModel?: string;
+  finishReason?: string;
+  failureReason?: AgentTransportFailure;
   rawError: string;
 }> {
   const sendOnce = async (
     targetUrl: string,
     payloadObj: Record<string, unknown>,
-    redirectsLeft = 3,
+    redirectsLeft = params.maxRedirects ?? 3,
   ): Promise<Response> => {
     const res = await fetch(targetUrl, {
       method: 'POST',
@@ -1296,25 +1306,48 @@ export async function postLlmChatCompletion(params: {
   }
 
   const extractReplyFromJson = (json: {
-    model?: string;
+    model?: unknown;
     choices?: Array<{
       message?: {
         content?: string | Array<{ text?: string }>;
       };
+      finish_reason?: unknown;
     }>;
-  }): { text: string; returnedModel?: string } => {
-    const msg = json.choices?.[0]?.message;
+  }): { text: string; returnedModel?: string; finishReason?: string } | null => {
+    const choices = Array.isArray(json.choices) ? json.choices : [];
+    const choice = choices[0];
+    const msg = choice?.message;
+    if (!choice || typeof choice !== 'object' || Array.isArray(choice) ||
+        !msg || typeof msg !== 'object' || Array.isArray(msg)) return null;
     let rawText = '';
-    if (typeof msg?.content === 'string') {
+    if (typeof msg.content === 'string') {
       rawText = msg.content;
-    } else if (Array.isArray(msg?.content)) {
-      rawText = msg!.content.map((part) => part?.text || '').join('');
+    } else if (Array.isArray(msg.content)) {
+      rawText = msg.content.map((part) => typeof part?.text === 'string' ? part.text : '').join('');
     }
+
+    // Treat the returned model ID as untrusted metadata. Omit unexpectedly long
+    // or non-ID text and anything that could expose the key (even a fragment).
+    const modelId = typeof json.model === 'string' ? json.model.trim() : '';
+    const key = params.apiKey.trim();
+    let containsKey = Boolean(key && modelId.includes(key));
+    if (!containsKey && key.length >= 12 && modelId.length >= 12 && modelId.length <= 200) {
+      for (let index = 0; index <= key.length - 12; index += 1) {
+        if (modelId.includes(key.slice(index, index + 12))) { containsKey = true; break; }
+      }
+    }
+    const returnedModel = modelId.length <= 200 && /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/.test(modelId) && !containsKey
+      ? modelId : undefined;
     return {
       text: stripReasoningThinkTags(rawText),
-      returnedModel: typeof json.model === 'string' ? json.model.replace(/\s+/g, ' ').trim().slice(0, 200) || undefined : undefined,
+      returnedModel,
+      // Only the recognized finish reason is needed; do not expose arbitrary provider text.
+      finishReason: choice.finish_reason === 'length' ? 'length' : undefined,
     };
   };
+
+  const isTimeout = (err: unknown) => err instanceof Error &&
+    (err.name === 'TimeoutError' || err.name === 'AbortError');
 
   try {
     let res = await sendOnce(endpoint, primaryPayload);
@@ -1361,14 +1394,33 @@ export async function postLlmChatCompletion(params: {
     }
 
     if (res.ok) {
-      const json = await res.json();
-      const { text, returnedModel } = extractReplyFromJson(json);
+      let json: unknown;
+      try {
+        json = await res.json();
+      } catch (err) {
+        const timeout = isTimeout(err);
+        const invalidJson = err instanceof SyntaxError;
+        return {
+          ok: false, status: res.status, content: '',
+          failureReason: timeout ? 'timeout' : invalidJson ? 'invalid_api_response' : 'network',
+          rawError: timeout ? 'Истекло время ожидания ответа API' : invalidJson ? 'API вернул некорректный JSON' : 'Сбой чтения ответа API',
+        };
+      }
+      if (!json || typeof json !== 'object' || Array.isArray(json)) {
+        return { ok: false, status: res.status, content: '', failureReason: 'invalid_api_response', rawError: 'API вернул некорректный JSON' };
+      }
+      const reply = extractReplyFromJson(json);
+      if (!reply) {
+        return { ok: false, status: res.status, content: '', failureReason: 'invalid_api_response', rawError: 'API вернул некорректный формат Chat Completions' };
+      }
+      const { text, returnedModel, finishReason } = reply;
       if (text) {
         return {
           ok: true,
           status: res.status,
           content: text,
           returnedModel,
+          finishReason,
           rawError: '',
         };
       }
@@ -1376,7 +1428,10 @@ export async function postLlmChatCompletion(params: {
         ok: false,
         status: res.status,
         content: '',
-        rawError: 'Модель вернула пустой текст ответа',
+        returnedModel,
+        finishReason,
+        failureReason: finishReason === 'length' ? 'truncated' : 'empty_response',
+        rawError: finishReason === 'length' ? 'Ответ модели оборван по лимиту токенов' : 'Модель вернула пустой текст ответа',
       };
     }
 
@@ -1385,13 +1440,16 @@ export async function postLlmChatCompletion(params: {
       ok: false,
       status: res.status,
       content: '',
-      rawError: redact(errText.slice(0, 1_000)),
+      failureReason: 'http_error',
+      // Redact before truncation so an echoed key cannot be exposed as a prefix.
+      rawError: redact(errText).slice(0, 1_000),
     };
   } catch (err) {
     return {
       ok: false,
       status: 0,
       content: '',
+      failureReason: isTimeout(err) ? 'timeout' : 'network',
       rawError: err instanceof Error ? redact(`${err.name}: ${err.message}`) : 'Сбой сети',
     };
   }
@@ -1471,7 +1529,7 @@ export async function testLlmConnectionAndModels(input: {
     listModels(),
     isPlusVibe ? fetchPlusVibeBalanceRub(key, base) : Promise.resolve(null),
     postLlmChatCompletion({
-      baseUrl: base, apiKey: key, model, timeoutMs: 22_000, allowRetry: false,
+      baseUrl: base, apiKey: key, model, timeoutMs: 22_000, allowRetry: false, maxRedirects: 0,
       messages: [{ role: 'user', content: 'Ответь одним словом на русском: Готов' }],
     }),
   ]);
@@ -1482,23 +1540,60 @@ export async function testLlmConnectionAndModels(input: {
       availableModels, balanceRub,
       modelProbeResults: [{ model, ok: true, status: out.status, detail: 'Тестовый запрос получил ответ.' }],
       latencyMs: Date.now() - t0,
-      message: `Модель «${model}» ответила на тестовый запрос. Проверка подтверждает только этот запрос.`,
+      message: `Модель «${model}» ответила на короткий тестовый запрос. Это не подтверждает формат или скорость ответа ролей автопилота.`,
     };
   }
-  const snippet = out.rawError.includes('<html')
-    ? 'Шлюз вернул HTML вместо ответа API'
-    : out.rawError.replace(/\s+/g, ' ').trim().slice(0, 150) || 'нет ответа';
-  const explanation = out.status === 401 ? 'Провайдер отклонил ключ (HTTP 401).'
-    : out.status === 402 ? 'Провайдер сообщил о платёжном ограничении (HTTP 402).'
-    : out.status === 429 ? 'Провайдер ограничил частоту запросов (HTTP 429).'
-    : out.status ? `Выбранная модель не ответила (HTTP ${out.status}): ${snippet}.`
-    : `Нет ответа от API: ${snippet}.`;
+  // Never display raw provider error bodies: they may echo credentials or request data.
+  const explanation = describeAgentRoleDiagnostic({
+    agent: 'FORM', issue: out.failureReason || 'unknown',
+    ...(out.status ? { httpStatus: out.status } : {}), validCount: 0, expectedCount: 1,
+  });
   return {
     ok: false, detectedProvider, resolvedBaseUrl: base, testedModel: model,
     availableModels, balanceRub,
     modelProbeResults: [{ model, ok: false, status: out.status, detail: explanation }],
     latencyMs: Date.now() - t0,
-    message: `${explanation} Проверьте ключ, Base URL и точный ID модели у провайдера. Другие модели не запускались.`,
+    message: `${explanation}. Другие модели не запускались.`,
+  };
+}
+
+/** One explicit paid probe with synthetic inputs; no forecasts or settings are changed. */
+export async function testAutopilotAgentResponseFormat(config: AiAutopilotConfig): Promise<{
+  ok: boolean;
+  message: string;
+  validCount: number;
+  expectedCount: number;
+  requestCount: number;
+}> {
+  if (config.llmProvider === 'BUILTIN_QUANT') {
+    return { ok: false, message: 'Выбран локальный режим: внешний запрос не отправлялся. Сначала сохраните внешнего провайдера.', validCount: 0, expectedCount: 9, requestCount: 0 };
+  }
+  const key = config.llmApiKey.trim();
+  const model = config.llmModel.trim();
+  if (!model) {
+    return { ok: false, message: 'ID модели не сохранён; запрос не отправлялся.', validCount: 0, expectedCount: 9, requestCount: 0 };
+  }
+  const baseUrls = buildCandidateLlmBaseUrls(config.llmBaseUrl, config.llmProvider, key);
+  let requestCount = 0;
+  const diagnostic = await probeAgentResponseFormat({
+    apiKey: key,
+    model,
+    baseUrls,
+    complete: async (request) => {
+      requestCount += 1;
+      return postLlmChatCompletion({ ...request, allowRetry: false, maxRedirects: 0 });
+    },
+  });
+  const detail = describeAgentRoleDiagnostic(diagnostic);
+  const success = diagnostic.issue === null;
+  return {
+    ok: success,
+    message: success
+      ? `Одна роль вернула распознаваемые оценки для ${diagnostic.validCount}/${diagnostic.expectedCount} тестовых событий. Это не проверка качества оценок, трёх одновременных ролей, реальных данных или доступности в будущем.`
+      : `${detail}. Распознано оценок: ${diagnostic.validCount}/${diagnostic.expectedCount}; реальные прогнозы не создавались.`,
+    validCount: diagnostic.validCount,
+    expectedCount: diagnostic.expectedCount,
+    requestCount,
   };
 }
 
@@ -1584,16 +1679,16 @@ async function evaluateCandidatesWithAgentCommittee(
         maxTokens: request.maxTokens,
         timeoutMs: request.timeoutMs,
       });
-      if (result.ok && result.returnedModel && !result.returnedModel.includes(config.llmApiKey)) {
+      if (result.returnedModel && !result.returnedModel.includes(config.llmApiKey)) {
         returnedModels.add(result.returnedModel.replace(/\s+/g, ' ').trim().slice(0, 200));
       }
-      return { ok: result.ok, content: result.content, rawError: result.rawError };
+      return result;
     },
   });
   const requestedModel = config.llmApiKey && config.llmModel.includes(config.llmApiKey)
     ? '[скрыто]' : config.llmModel.trim().slice(0, 200);
   const modelDescription = `Провайдер ${config.llmProvider}; запрошенная модель ${requestedModel || 'не указана'}. ${
-    returnedModels.size ? `ID по ответам провайдера: ${[...returnedModels].join(', ')}.` : 'ID модели в ответах провайдера не указан.'
+    returnedModels.size ? `ID по ответам провайдера: ${[...returnedModels].join(', ')}.` : 'ID модели от провайдера не подтверждён.'
   }`;
 
   const evaluationsById = new Map(
@@ -1601,7 +1696,9 @@ async function evaluateCandidatesWithAgentCommittee(
   );
   const leaderSummary = committee.leaderModelReviewed
     ? `Дополнительная роль финального аналитика той же AI-модели выполнила отбор: ${committee.leaderSummary}`
-    : `Отдельный ответ роли финального аналитика не получен; выбор основан на порогах и консенсусе специализированных ролей: ${committee.leaderSummary}`;
+    : committee.leaderAttempted
+      ? `Роль финального аналитика не вернула корректный отбор; использованы серверные пороги и консенсус специализированных ролей: ${committee.leaderSummary}`
+      : `Роль финального аналитика не вызывалась. ${committee.leaderSummary}`;
   const shortlistById = new Map(shortlist.map((item) => [item.cand.externalFixtureId, item]));
   const selected = committee.selectedIds.flatMap((id) => {
     const item = shortlistById.get(id);
@@ -1615,15 +1712,39 @@ async function evaluateCandidatesWithAgentCommittee(
   const rejected = committee.evaluations
     .filter((evaluation) => !acceptedIds.has(evaluation.id))
     .slice(0, 8)
-    .map((evaluation) => `${evaluation.id}: ${evaluation.rejectionReason || 'не прошёл финальный отбор'}`);
+    .map((evaluation) => {
+      // The detailed VETO reason is model-supplied text. Keep only the role IDs
+      // in this diagnostic log; other rejection reasons are server-generated.
+      const vetoes = evaluation.opinions.filter((opinion) => opinion.verdict === 'VETO');
+      const reason = vetoes.length
+        ? `Вето ${vetoes.map((opinion) => opinion.agent).join(', ')}`
+        : evaluation.rejectionReason || 'не прошёл финальный отбор';
+      return `${evaluation.id}: ${reason}`;
+    });
+  const issueGroups = new Map<string, string[]>();
+  for (const diagnostic of committee.roleDiagnostics) {
+    if (!diagnostic.issue) continue;
+    const description = config.llmProvider === 'BUILTIN_QUANT'
+      ? 'выбран локальный режим; внешняя модель не вызывалась'
+      : describeAgentRoleDiagnostic(diagnostic);
+    issueGroups.set(description, [...(issueGroups.get(description) || []), diagnostic.agent]);
+  }
+  const issues = [...issueGroups].map(([description, roles]) => `${roles.join(', ')} — ${description}`).join('; ');
+  // Status is fixed text, not the leader's potentially sensitive free-form reply.
+  const leaderStatus = committee.leaderModelReviewed
+    ? 'Роль финального аналитика выполнила отбор.'
+    : committee.leaderAttempted
+      ? 'Роль финального аналитика не вернула распознаваемый отбор; использован серверный консенсус.'
+      : 'Роль финального аналитика не вызывалась.';
   const summary = [
+    `Ролей с распознаваемой оценкой хотя бы одного события: ${committee.specialistRolesResponded}/3; отобрано событий: ${selected.length}/${shortlist.length}.`,
+    issues ? `Диагностика ролей: ${issues}.` : '',
+    leaderStatus,
     modelDescription,
-    `Ответивших специализированных ролей: ${committee.specialistRolesResponded}/3; консенсус отобранных: ${selected.length}/${shortlist.length}.`,
-    leaderSummary,
     ...rejected,
-  ].join(' | ').slice(0, 1_200);
+  ].filter(Boolean).join(' | ').slice(0, 1_200);
   await appendAutopilotLog(
-    selected.length > 0 ? 'SUCCESS' : 'WARN',
+    selected.length > 0 && issueGroups.size === 0 ? 'SUCCESS' : 'WARN',
     'AGENTS',
     summary,
   );

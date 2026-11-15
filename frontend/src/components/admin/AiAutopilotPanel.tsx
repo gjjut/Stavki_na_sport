@@ -52,6 +52,16 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
     ok: boolean;
     message: string;
   } | null>(null);
+  const [agentCheckStatus, setAgentCheckStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const connectionDirty = draftConfig.llmProvider !== config.llmProvider ||
+    draftConfig.llmBaseUrl.trim() !== config.llmBaseUrl.trim() ||
+    draftConfig.llmModel.trim() !== config.llmModel.trim() ||
+    Boolean(draftConfig.llmApiKey);
+
+  useEffect(() => {
+    setAgentCheckStatus(null);
+  }, [draftConfig.llmProvider, draftConfig.llmBaseUrl, draftConfig.llmModel, draftConfig.llmApiKey,
+    config.llmProvider, config.llmBaseUrl, config.llmModel, config.llmApiKeyConfigured]);
 
   useEffect(() => {
     if (!dirtyRef.current) {
@@ -237,6 +247,33 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
       setLlmCheckStatus({
         ok: false,
         message: err instanceof Error ? err.message : 'Не удалось проверить соединение с моделью',
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleTestAgentFormat = async () => {
+    if (connectionDirty || busyAction !== null) return;
+    setBusyAction('TEST_AGENT_FORMAT');
+    setAgentCheckStatus(null);
+    try {
+      const res = await fetch('/api/v1/admin/autopilot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'TEST_AGENT_FORMAT' }),
+      });
+      const json = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string };
+      setAgentCheckStatus({
+        ok: res.ok && Boolean(json.ok),
+        message: res.ok
+          ? json.message || 'Сервер не вернул результат проверки. Проверьте возможное списание у провайдера перед повтором.'
+          : `${json.error || `Не удалось проверить роль (HTTP ${res.status}).`} Если результат неизвестен, проверьте возможное списание у провайдера перед повтором.`,
+      });
+    } catch {
+      setAgentCheckStatus({
+        ok: false,
+        message: 'Ответ от сайта не получен. Результат и возможное списание неизвестны: проверьте историю провайдера перед повтором.',
       });
     } finally {
       setBusyAction(null);
@@ -587,9 +624,12 @@ export const AiAutopilotPanel: React.FC<AiAutopilotPanelProps> = ({
           configDirty={configDirty}
           availableModels={availableModels}
           llmCheckStatus={llmCheckStatus}
+          agentCheckStatus={agentCheckStatus}
+          connectionDirty={connectionDirty}
           onApplyProviderPreset={handleApplyProviderPreset}
           onConnectionChange={() => { setAvailableModels([]); setLlmCheckStatus(null); }}
           onTestLlm={handleTestLlmAndFetchModels}
+          onTestAgentFormat={handleTestAgentFormat}
           onToggleSport={toggleSport}
           onSaveConfig={handleSaveConfig}
         />

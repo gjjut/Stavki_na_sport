@@ -24,9 +24,12 @@ interface AiAutopilotConfigFormProps {
   configDirty: boolean;
   availableModels: string[];
   llmCheckStatus: { ok: boolean; message: string } | null;
+  agentCheckStatus: { ok: boolean; message: string } | null;
+  connectionDirty: boolean;
   onApplyProviderPreset: (provider: AiLlmProvider) => void;
   onConnectionChange: () => void;
   onTestLlm: () => void;
+  onTestAgentFormat: () => void;
   onToggleSport: (sport: SportType) => void;
   onSaveConfig: (e: React.FormEvent) => void;
 }
@@ -38,9 +41,12 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
   configDirty,
   availableModels,
   llmCheckStatus,
+  agentCheckStatus,
+  connectionDirty,
   onApplyProviderPreset,
   onConnectionChange,
   onTestLlm,
+  onTestAgentFormat,
   onToggleSport,
   onSaveConfig,
 }) => {
@@ -238,8 +244,12 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
             )}
           </div>
 
+          <p className="text-[11px] leading-relaxed text-slate-600">
+            Проверка токена делает короткий запрос и сохраняет показанные провайдер, адрес, модель и введённый ключ даже при ошибке. Короткий ответ не гарантирует, что модель вернёт оценки для всех событий.
+          </p>
           {llmCheckStatus && (
             <div
+              role="status"
               className={`whitespace-pre-line rounded-xl border p-2.5 text-xs font-semibold ${
                 llmCheckStatus.ok
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
@@ -249,6 +259,28 @@ export const AiAutopilotConfigForm: React.FC<AiAutopilotConfigFormProps> = ({
               {llmCheckStatus.message}
             </div>
           )}
+          <div className="space-y-2 border-t border-blue-100 pt-3">
+            <button
+              type="button"
+              disabled={busyAction !== null || connectionDirty}
+              onClick={onTestAgentFormat}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-blue-300 bg-white px-3.5 py-2 text-xs font-bold text-blue-800 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busyAction === 'TEST_AGENT_FORMAT' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Activity className="h-3.5 w-3.5" />}
+              <span>Проверить формат ответа роли</span>
+            </button>
+            <p className="text-[11px] leading-relaxed text-slate-600">
+              Один запрос к сохранённой модели без повтора и перенаправлений, может оплачиваться. Проверяются 9 вымышленных событий: прогнозы не создаются и не публикуются. Тест проверяет распознаваемость, а не качество оценок или три параллельных запроса на реальных данных.
+            </p>
+            {connectionDirty && <p className="text-[11px] font-semibold text-amber-800">Сначала сохраните изменения провайдера, адреса, модели или ключа.</p>}
+            {agentCheckStatus && (
+              <div role="status" className={`rounded-xl border p-2.5 text-xs font-semibold ${
+                agentCheckStatus.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'
+              }`}>
+                {agentCheckStatus.message}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

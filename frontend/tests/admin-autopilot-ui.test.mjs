@@ -248,3 +248,53 @@ test('the configuration form keeps the chosen provider and clears an unsaved sec
   await fillInput(urlInput, 'https://other.example/v1');
   assert.equal(nextKey.value, '');
 });
+
+test('format diagnostic tests only the saved connection and warns about one paid synthetic request', async (t) => {
+  const { act, dom } = require('./ui-test-utils.cjs');
+  const connected = {
+    ...config, llmProvider: 'PLUSVIBE', llmBaseUrl: 'https://plusvibeapi.ru/v1',
+    llmModel: 'deepseek-v4.1-flash', llmApiKeyConfigured: true,
+  };
+  const requests = [];
+  global.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    return response({ ok: true, message: 'Одна роль вернула распознаваемые оценки для 9/9 тестовых событий.' });
+  };
+  const view = await mount(AiAutopilotPanel, props({ config: connected }));
+  t.after(view.cleanup);
+  assert.match(view.container.textContent, /Один запрос к сохранённой модели без повтора и перенаправлений, может оплачиваться/);
+  assert.match(view.container.textContent, /прогнозы не создаются и не публикуются/);
+  assert.match(view.container.textContent, /сохраняет показанные провайдер, адрес, модель и введённый ключ даже при ошибке/);
+  let button = buttonWithText(view.container, 'Проверить формат ответа роли');
+  assert.equal(button.disabled, false);
+  await click(button);
+  assert.deepEqual(requests, [{ action: 'TEST_AGENT_FORMAT' }]);
+  assert.match(view.container.textContent, /распознаваемые оценки для 9\/9/);
+
+  const model = [...view.container.querySelectorAll('input')].find((input) => input.value === 'deepseek-v4.1-flash');
+  assert.ok(model);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(model, 'other-model');
+    model.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  button = buttonWithText(view.container, 'Проверить формат ответа роли');
+  assert.equal(button.disabled, true);
+  assert.match(view.container.textContent, /Сначала сохраните изменения провайдера/);
+  assert.doesNotMatch(view.container.textContent, /распознаваемые оценки для 9\/9/);
+  assert.equal(requests.length, 1);
+});
+
+test('a lost format-test response warns about unknown charges instead of retrying', async (t) => {
+  const connected = {
+    ...config, llmProvider: 'PLUSVIBE', llmBaseUrl: 'https://plusvibeapi.ru/v1',
+    llmModel: 'deepseek-v4.1-flash', llmApiKeyConfigured: true,
+  };
+  let calls = 0;
+  global.fetch = async () => { calls++; throw new Error('connection lost'); };
+  const view = await mount(AiAutopilotPanel, props({ config: connected }));
+  t.after(view.cleanup);
+  await click(buttonWithText(view.container, 'Проверить формат ответа роли'));
+  assert.equal(calls, 1);
+  assert.match(view.container.textContent, /списание неизвестны/);
+  assert.match(view.container.textContent, /проверьте историю провайдера перед повтором/);
+});

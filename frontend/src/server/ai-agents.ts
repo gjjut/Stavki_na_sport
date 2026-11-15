@@ -49,12 +49,40 @@ export interface AgentEvaluation {
   report: string;
 }
 
+export type AgentTransportFailure =
+  | 'http_error'
+  | 'timeout'
+  | 'network'
+  | 'invalid_api_response'
+  | 'empty_response'
+  | 'truncated';
+
+export type AgentRoleIssue =
+  | AgentTransportFailure
+  | 'no_key'
+  | 'no_endpoint'
+  | 'invalid_json'
+  | 'invalid_opinions'
+  | 'partial_response'
+  | 'unknown';
+
+/** Safe metadata only: never persist a provider error body or the model's reply here. */
+export interface AgentRoleDiagnostic {
+  agent: ForecastAgentId;
+  issue: AgentRoleIssue | null;
+  httpStatus?: number;
+  validCount: number;
+  expectedCount: number;
+}
+
 export interface AgentCommitteeResult {
   evaluations: AgentEvaluation[];
   selectedIds: string[];
   leaderSummary: string;
   leaderModelReviewed: boolean;
+  leaderAttempted: boolean;
   specialistRolesResponded: number;
+  roleDiagnostics: AgentRoleDiagnostic[];
 }
 
 export interface AgentChatRequest {
@@ -69,7 +97,14 @@ export interface AgentChatRequest {
 
 export type AgentChatCompletion = (
   params: AgentChatRequest,
-) => Promise<{ ok: boolean; content: string; rawError: string }>;
+) => Promise<{
+  ok: boolean;
+  content: string;
+  rawError: string;
+  status?: number;
+  failureReason?: AgentTransportFailure;
+  finishReason?: string;
+}>;
 
 interface AgentResponseRow {
   id: string;
@@ -111,6 +146,11 @@ const AGENT_PROFILES: Array<{
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
+}
+
+function redactModelKey(text: string, key: string): string {
+  const secret = key.trim();
+  return secret ? text.split(secret).join('[ключ скрыт]') : text;
 }
 
 function parsePct(value: unknown): number | null {
@@ -178,6 +218,37 @@ function baselineRisk(candidate: AgentCandidateInput): number {
   return Math.round(clamp(risk, 0, 90));
 }
 
+/** Human-readable diagnostics are generated from fixed strings, not untrusted provider text. */
+export function describeAgentRoleDiagnostic(diagnostic: AgentRoleDiagnostic): string {
+  switch (diagnostic.issue) {
+    case null: return `распознанные оценки: ${diagnostic.validCount}/${diagnostic.expectedCount}`;
+    case 'no_key': return 'ключ внешней модели не сохранён; запрос не отправлялся';
+    case 'no_endpoint': return 'запрос не отправлялся: проверьте выбранного провайдера, адрес API и соответствие ключа';
+    case 'timeout': return 'истёк срок ожидания ответа; результат и возможное списание проверьте в кабинете провайдера перед повтором';
+    case 'network': return 'ошибка соединения с API; проверьте сеть, DNS и TLS, а также историю запросов и возможное списание перед повтором';
+    case 'invalid_api_response': return 'API вернул некорректный формат ответа вместо JSON Chat Completions';
+    case 'empty_response': return 'API ответил, но видимый текст модели пуст';
+    case 'truncated': return 'ответ модели остановлен по лимиту токенов (finish_reason: length) и может быть неполным';
+    case 'invalid_json': return 'модель ответила, но ожидаемый JSON с массивом opinions не распознан';
+    case 'invalid_opinions': return 'JSON получен, но в нём нет распознаваемых оценок запрошенных событий';
+    case 'partial_response': return `модель вернула распознаваемые оценки только для ${diagnostic.validCount}/${diagnostic.expectedCount} событий`;
+    case 'http_error': {
+      const status = diagnostic.httpStatus;
+      if (status && status >= 300 && status <= 399) return `HTTP ${status}: шлюз перенаправил запрос вместо ответа; проверьте точный адрес API`;
+      if (status === 400) return 'HTTP 400: провайдер отклонил запрос; проверьте ID модели и поддерживаемые параметры';
+      if (status === 401) return 'HTTP 401: провайдер отклонил ключ; проверьте его в кабинете провайдера';
+      if (status === 402) return 'HTTP 402: платёжное ограничение; проверьте баланс и лимиты у провайдера';
+      if (status === 403) return 'HTTP 403: доступ запрещён; проверьте права ключа, доступ к модели и ограничения IP';
+      if (status === 404) return 'HTTP 404: проверьте адрес API и точный ID модели в каталоге провайдера';
+      if (status === 429) return 'HTTP 429: провайдер ограничил частоту запросов или квоту; проверьте лимиты';
+      if (status && status >= 500 && status <= 599) return `HTTP ${status}: ошибка на стороне провайдера; проверьте статус сервиса`;
+      if (status && status >= 100 && status <= 599) return `HTTP ${status}: провайдер не принял запрос; проверьте настройки и журнал провайдера`;
+      return 'провайдер не принял запрос; проверьте настройки и журнал провайдера';
+    }
+    default: return 'не удалось получить корректную оценку; проверьте настройки и журнал провайдера';
+  }
+}
+
 function unavailableOpinion(
   candidate: AgentCandidateInput,
   agent: ForecastAgentId,
@@ -201,8 +272,23 @@ async function runOneAgent(
     baseUrls: string[];
     complete: AgentChatCompletion;
   },
-): Promise<Map<string, AgentOpinion>> {
+): Promise<{ rows: Map<string, AgentOpinion>; diagnostic: AgentRoleDiagnostic }> {
   const map = new Map<string, AgentOpinion>();
+  let issue: AgentRoleIssue | null = null;
+  let httpStatus: number | undefined;
+  const finish = () => ({
+    rows: map,
+    diagnostic: {
+      agent: profile.id,
+      issue,
+      ...(httpStatus ? { httpStatus } : {}),
+      validCount: map.size,
+      expectedCount: candidates.length,
+    },
+  });
+  if (!params.apiKey.trim()) { issue = 'no_key'; return finish(); }
+  if (params.baseUrls.length === 0) { issue = 'no_endpoint'; return finish(); }
+
   const userPayload = candidates.map((candidate) => ({
     id: candidate.id,
     sport: candidate.sport,
@@ -253,9 +339,19 @@ async function runOneAgent(
           { role: 'user', content: JSON.stringify(userPayload) },
         ],
       });
-      if (!out.ok) continue;
+      if (!out.ok) {
+        httpStatus = Number.isInteger(out.status) && out.status! >= 100 && out.status! <= 599
+          ? out.status : undefined;
+        issue = out.failureReason ||
+          (httpStatus && (httpStatus < 200 || httpStatus >= 300) ? 'http_error' : 'unknown');
+        continue;
+      }
+      httpStatus = undefined;
       const parsed = extractJson(out.content) as { opinions?: unknown } | null;
-      if (!Array.isArray(parsed?.opinions)) continue;
+      if (!Array.isArray(parsed?.opinions)) {
+        issue = out.finishReason === 'length' ? 'truncated' : 'invalid_json';
+        continue;
+      }
 
       for (const raw of parsed.opinions) {
         if (!raw || typeof raw !== 'object') continue;
@@ -275,16 +371,64 @@ async function runOneAgent(
           riskScore: parsePct(row.riskScore) ?? 50,
           reason:
             typeof row.reason === 'string'
-              ? row.reason.replace(/\s+/g, ' ').trim().slice(0, 240)
+              ? redactModelKey(row.reason, params.apiKey).replace(/\s+/g, ' ').trim().slice(0, 240)
               : 'Обоснование не предоставлено.',
         });
       }
-      if (map.size === candidates.length) return map;
-    } catch {
-      // пробуем следующую базовую точку шлюза, если модель или JSON не ответили
+      // Even a parseable response may have hit the limit just after completing
+      // its JSON; keep the existing per-event evaluations but flag that limit.
+      if (map.size === candidates.length) {
+        issue = out.finishReason === 'length' ? 'truncated' : null;
+        return finish();
+      }
+      issue = out.finishReason === 'length'
+        ? 'truncated'
+        : map.size > 0 ? 'partial_response' : 'invalid_opinions';
+    } catch (err) {
+      // Do not copy arbitrary exception text, provider responses or credentials into the log.
+      httpStatus = undefined;
+      issue = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
+        ? 'timeout' : 'unknown';
     }
   }
-  return map;
+  return finish();
+}
+
+/** One representative, synthetic role request; it never evaluates or publishes real matches. */
+export async function probeAgentResponseFormat(params: {
+  apiKey: string;
+  model: string;
+  baseUrls: string[];
+  complete: AgentChatCompletion;
+}): Promise<AgentRoleDiagnostic> {
+  const candidates: AgentCandidateInput[] = Array.from({ length: 9 }, (_, index) => ({
+    id: `test_fixture_${index + 1}`,
+    sport: 'FOOTBALL',
+    leagueName: 'Тестовая лига',
+    homeTeam: `Тестовая команда А${index + 1}`,
+    awayTeam: `Тестовая команда Б${index + 1}`,
+    market: 'Победа 1',
+    odds: 1.9,
+    homeOdds: 1.9,
+    drawOdds: 3.4,
+    awayOdds: 4.2,
+    overOdds: null,
+    underOdds: null,
+    fairHomeProbPct: 51,
+    fairDrawProbPct: 28,
+    fairAwayProbPct: 21,
+    reliabilityScore: 70,
+    sources: ['Тестовый источник'],
+    facts: ['Искусственные данные для проверки формата, не реальный матч.'],
+    headlines: [],
+    riskFlags: [],
+  }));
+  // Probe one role and one endpoint only; the caller also disables HTTP retries.
+  const result = await runOneAgent(AGENT_PROFILES[0], candidates, {
+    ...params,
+    baseUrls: params.baseUrls.slice(0, 1),
+  });
+  return result.diagnostic;
 }
 
 function makeEvaluation(
@@ -389,22 +533,20 @@ export async function runAgentCommittee(params: {
   baseUrls: string[];
   complete: AgentChatCompletion;
 }): Promise<AgentCommitteeResult> {
-  const profilesWithResponses = params.apiKey.trim()
-    ? await Promise.all(
-        AGENT_PROFILES.map((profile) =>
-          runOneAgent(profile, params.candidates, {
-            apiKey: params.apiKey,
-            model: params.model,
-            baseUrls: params.baseUrls,
-            complete: params.complete,
-          }),
-        ),
-      )
-    : AGENT_PROFILES.map(() => new Map<string, AgentOpinion>());
+  const profilesWithResponses = await Promise.all(
+    AGENT_PROFILES.map((profile) =>
+      runOneAgent(profile, params.candidates, {
+        apiKey: params.apiKey,
+        model: params.model,
+        baseUrls: params.baseUrls,
+        complete: params.complete,
+      }),
+    ),
+  );
 
   const evaluations = params.candidates.map((candidate) => {
     const opinions = profilesWithResponses.map(
-      (rows, index) => rows.get(candidate.id) || unavailableOpinion(candidate, AGENT_PROFILES[index].id),
+      ({ rows }, index) => rows.get(candidate.id) || unavailableOpinion(candidate, AGENT_PROFILES[index].id),
     );
     return makeEvaluation(candidate, opinions, {
       minimumConfidencePct: params.minimumConfidencePct,
@@ -426,6 +568,7 @@ export async function runAgentCommittee(params: {
     ? `Серверные пороги и консенсус оставили ${eligible.length} кандидатов: ${eligible.map((item) => item.id).join(', ')}.`
     : `Ни один кандидат не прошёл пороги уверенности, value edge, риска и консенсуса; выпуск запрещён.`;
   let leaderModelReviewed = false;
+  let leaderAttempted = false;
 
   if (eligible.length > 0 && params.apiKey.trim()) {
     const compact = eligible.map((evaluation) => ({
@@ -447,6 +590,7 @@ export async function runAgentCommittee(params: {
       'Ответ только JSON: {"selectedIds":["id"],"summary":"краткое обоснование на русском"}. Выбирай только из переданных id и не добавляй новых кандидатов.',
     ].join(' ');
     for (const baseUrl of params.baseUrls) {
+      leaderAttempted = true;
       try {
         const out = await params.complete({
           baseUrl,
@@ -476,7 +620,7 @@ export async function runAgentCommittee(params: {
         leaderModelReviewed = true;
         leaderSummary =
           typeof parsed.summary === 'string' && parsed.summary.trim()
-            ? parsed.summary.replace(/\s+/g, ' ').trim().slice(0, 360)
+            ? redactModelKey(parsed.summary, params.apiKey).replace(/\s+/g, ' ').trim().slice(0, 360)
             : `Дополнительная роль финального аналитика оставила ${filtered.length} из ${allow.size} кандидатов.`;
         break;
       } catch {
@@ -490,7 +634,9 @@ export async function runAgentCommittee(params: {
     selectedIds: eligible.map((evaluation) => evaluation.id),
     leaderSummary,
     leaderModelReviewed,
-    specialistRolesResponded: profilesWithResponses.filter((rows) => rows.size > 0).length,
+    leaderAttempted,
+    specialistRolesResponded: profilesWithResponses.filter(({ rows }) => rows.size > 0).length,
+    roleDiagnostics: profilesWithResponses.map(({ diagnostic }) => diagnostic),
   };
 }
 
