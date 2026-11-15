@@ -4,6 +4,7 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { explainMarketInPlainRussian } from '../lib/plain-russian';
 import { LEGAL_DOCUMENT_VERSION } from '../lib/legal-version';
+import { BRAND_NAME, publicBrandName } from '../lib/brand';
 import { MAX_BUNDLE_ITEMS } from '../lib/checkout-policy';
 import { hashPassword, verifyPassword } from './auth';
 import { newTelegramLinkCode, secureTelegramLinkCode } from './security-policy';
@@ -121,7 +122,7 @@ function createInitialState(): PersistentState {
   const canSeedAdmin = adminEmail.includes('@') && adminPassword.length >= 12;
 
   const settings: PlatformSettings = {
-    brandName: 'VALUEX',
+    brandName: BRAND_NAME,
     supportTelegram: 'https://t.me/valuex_support',
     freeTelegramUrl: 'https://t.me/valuex_analytics',
     legalSellerName: 'Самозанятый / ИП (укажите реквизиты в Админ-панели)',
@@ -154,7 +155,7 @@ function createInitialState(): PersistentState {
         status: 'ACTIVE',
         balanceRub: 0,
         referenceBankrollRub: 100_000,
-        telegramUsername: '@valuex_admin',
+        telegramUsername: null,
         telegramChatId: null,
         telegramBindingVerified: false,
         telegramLinkCode: newTelegramLinkCode(),
@@ -262,6 +263,8 @@ function normalizeLoadedState(
   const settings: PlatformSettings = {
     ...fallback.settings,
     ...rawSettings,
+    // Legacy installations persisted the old default. Do not overwrite a custom brand.
+    brandName: publicBrandName(rawSettings.brandName),
     bundle2DiscountPct: rawSettings.bundle2DiscountPct ?? 15,
     bundle3DiscountPct: rawSettings.bundle3DiscountPct ?? 25,
     telegramChannelId:

@@ -3,6 +3,7 @@ import '@fontsource-variable/inter';
 import '@fontsource-variable/jetbrains-mono';
 import { AnalyticsConsentMonitor } from '@/components/layout/AnalyticsConsent';
 import { configuredSiteOrigin } from '@/lib/site-origin';
+import { BRAND_NAME } from '@/lib/brand';
 import './globals.css';
 
 export const viewport: Viewport = {
@@ -16,7 +17,7 @@ const siteOrigin = configuredSiteOrigin();
 
 export const metadata: Metadata = {
   ...(siteOrigin ? { metadataBase: new URL(siteOrigin) } : {}),
-  title: 'VALUEX — Понятные прогнозы на спорт без подписок',
+  title: `${BRAND_NAME} — Понятные прогнозы на спорт без подписок`,
   description:
     'Разовые спортивные прогнозы и аналитические материалы. Результат спортивного события не гарантирован.',
   icons: {

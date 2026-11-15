@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { ImageResponse } from 'next/og';
 import { readState } from '@/server/database';
 import { isLegacyStarterDemoPrediction } from '@/server/prediction-data-policy';
+import { BRAND_MONOGRAM, BRAND_NAME } from '@/lib/brand';
 
 export const runtime = 'nodejs';
 const size = { width: 1200, height: 630 };
@@ -73,7 +74,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
   const pred = state.predictions.find((p) => p.slug === slug);
   if (!pred || isLegacyStarterDemoPrediction(pred)) return new Response('Not found', { status: 404 });
 
-  const brandLabel = `${state.settings.brandName || 'VALUEX'}.`;
+  const brandLabel = `${state.settings.brandName || BRAND_NAME}.`;
   const league = pred.leagueName || 'Спортивная аналитика';
   const matchTitle = `${pred.homeTeam} — ${pred.awayTeam}`;
   const teaserText = pred.analysisTeaser?.slice(0, 145) ||
@@ -125,7 +126,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
                 fontWeight: 700,
               }}
             >
-              VX
+              {BRAND_MONOGRAM}
             </div>
             <div style={{ display: 'flex', fontSize: '30px', fontWeight: 700 }}>
               {brandLabel}

@@ -1,5 +1,7 @@
 'use client';
 
+import { BRAND_NAME } from '@/lib/brand';
+
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Script from 'next/script';
@@ -110,7 +112,7 @@ export default function TelegramMiniAppPage() {
           <div>
             <div className="flex items-center gap-1.5 text-base font-black">
               <span>
-                {data?.brand.brandName ?? 'VALUEX'}
+                {data?.brand.brandName ?? BRAND_NAME}
                 <span className="text-blue-500">.</span>
               </span>
               <span className="rounded bg-blue-600/25 px-1.5 py-0.5 text-[10px] font-bold text-blue-300">

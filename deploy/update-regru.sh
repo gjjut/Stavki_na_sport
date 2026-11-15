@@ -307,7 +307,7 @@ if [[ "${HEALTH_STATUS}" != '200' ]]; then
 fi
 
 echo "=================================================================="
-echo " Обновление VALUEX.PRO завершено; режим: ${UPDATE_MODE}."
+echo " Обновление PredictLab завершено; режим: ${UPDATE_MODE}."
 if [[ "${NEXT_PUBLIC_SITE_URL}" =~ ^https:// ]]; then
   echo " Витрина сайта: ${NEXT_PUBLIC_SITE_URL%/}"
   echo " Вход в админку: ${NEXT_PUBLIC_SITE_URL%/}/login"

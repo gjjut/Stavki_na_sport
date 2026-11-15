@@ -134,6 +134,16 @@ test('an explicit Telegram rejection is reported as rejected without retry', asy
   assert.match(result.assistantMessage.content, /не нашёл канал/);
 });
 
+test('the built-in assistant greeting uses the PredictLab product name without a network call', async () => {
+  await resetState('BUILTIN_QUANT');
+  let calls = 0;
+  global.fetch = async () => { calls++; throw new Error('Unexpected network'); };
+  const result = await processAdminAiChatTurn('привет');
+  assert.match(result.assistantMessage.content, /PredictLab/);
+  assert.doesNotMatch(result.assistantMessage.content, /VALUEX/);
+  assert.equal(calls, 0);
+});
+
 test('negative/question fallback never posts or changes a price', async () => {
   await resetState('BUILTIN_QUANT');
   let calls = 0;

@@ -19,7 +19,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER_IP="$(hostname -I | awk '{print $1}')"
 
 echo "=================================================================="
-echo " Старт установки VALUEX.PRO на сервер Reg.ru Cloud (${SERVER_IP})"
+echo " Старт установки PredictLab на сервер Reg.ru Cloud (${SERVER_IP})"
 echo " Режим развертывания: ${MODE}"
 echo "=================================================================="
 

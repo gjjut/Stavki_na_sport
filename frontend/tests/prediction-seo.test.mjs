@@ -34,6 +34,8 @@ test('prediction metadata emits no localhost image without an explicit origin, a
   assert.equal(unconfigured.openGraph.images, undefined);
   process.env.NEXT_PUBLIC_SITE_URL = 'https://shop.example.test';
   const configured = await predictionPage.generateMetadata({ params });
+  assert.match(configured.title, /PredictLab/);
+  assert.equal(configured.openGraph.siteName, 'PredictLab');
   const canonical = `https://shop.example.test/predictions/${prediction.slug}`;
   assert.equal(configured.alternates.canonical, canonical);
   assert.equal(configured.openGraph.images[0].url, `${canonical}/opengraph-image`);

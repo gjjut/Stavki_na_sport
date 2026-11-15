@@ -40,6 +40,7 @@ import { formatRub, type AdminUser } from '@/components/admin/admin-format';
 import { OrderStatusBadge } from '@/components/admin/AdminTableHelpers';
 import { aggregateSportStats, buildPredictionSalesChart, isPaidPredictionSale, paidAtMs } from '@/lib/admin-metrics';
 import { isPlaceholderLegalInn } from '@/lib/plain-russian';
+import { BRAND_NAME } from '@/lib/brand';
 import { isActiveStorefrontPrediction, isLegacyStarterDemoPrediction } from '@/server/prediction-data-policy';
 import {
   Badge,
@@ -255,7 +256,7 @@ export default function AdminDashboardPage() {
             <ShieldCheck className="h-5 w-5" />
           </div>
           <div>
-            <div className="text-sm font-black tracking-tight text-white">VALUEX</div>
+            <div className="text-sm font-black tracking-tight text-white">{BRAND_NAME}</div>
             <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
               Admin Console
             </div>

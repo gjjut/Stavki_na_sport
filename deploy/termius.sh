@@ -96,7 +96,7 @@ fast_start() {
 }
 
 smart_start() {
-  echo "⚡ Проверка сервера VALUEX (${SERVER_IP:-адрес не определён})..."
+  echo "⚡ Проверка сервера PredictLab (${SERVER_IP:-адрес не определён})..."
   update_current_branch
 }
 
@@ -170,7 +170,7 @@ esac
 
 while true; do
   echo ""
-  echo "====== ПУЛЬТ VALUEX (Termius) ======"
+  echo "====== ПУЛЬТ PredictLab (Termius) ======"
   print_status
   echo "1) 🚀 Быстрый запуск / рестарт (3 сек)"
   echo "2) 🔄 Обновить с GitHub + пересобрать"

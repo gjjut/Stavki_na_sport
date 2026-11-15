@@ -80,7 +80,7 @@ export function FinanceTab({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `valuex_orders_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `predictlab_orders_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   };

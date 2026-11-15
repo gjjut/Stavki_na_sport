@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { isPlaceholderLegalInn } from '@/lib/plain-russian';
+import { BRAND_MONOGRAM, BRAND_NAME } from '@/lib/brand';
 import type { SafeSessionUser } from '@/server/types';
 
 export interface PublicBrandInfo {
@@ -47,7 +48,7 @@ interface SiteShellProps {
 }
 
 const DEFAULT_BRAND: PublicBrandInfo = {
-  brandName: 'VALUEX',
+  brandName: BRAND_NAME,
   supportTelegram: 'https://t.me/valuex_support',
   freeTelegramUrl: 'https://t.me/valuex_open',
   legalSellerName: '',
@@ -124,7 +125,7 @@ export const SiteShell: React.FC<SiteShellProps> = ({
             {/* Логотип */}
             <Link href="/" className="flex shrink-0 items-center gap-2.5">
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-blue-700 font-mono text-xs font-black tracking-tighter text-white shadow-md shadow-blue-600/35">
-                VX
+                {BRAND_MONOGRAM}
               </div>
               <div className="leading-none">
                 <span className="text-base font-black tracking-tight text-white">
@@ -438,7 +439,7 @@ export const SiteShell: React.FC<SiteShellProps> = ({
             <div className="md:col-span-2">
               <div className="flex items-center gap-2 text-base font-black text-slate-900">
                 <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#0B0F19] font-mono text-[10px] font-black text-white">
-                  VX
+                  {BRAND_MONOGRAM}
                 </div>
                 <span>
                   {brand.brandName}
